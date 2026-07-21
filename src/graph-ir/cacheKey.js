@@ -7,9 +7,32 @@
 // anything that changes what was actually analyzed (revision, analyzer
 // version, schema version, depth/reduction options, or the requested
 // coordinate) must change the key.
-import { createHash } from 'node:crypto';
+//
+// Deliberately no `node:crypto`: this module is part of the
+// src/graph-ir/index.js barrel documented as the one import surface for
+// every consumer, including browser-side code, and Vite does not polyfill
+// Node's crypto module for the browser. `fingerprint()` below is a
+// non-cryptographic FNV-1a-64 hash — collision resistance adequate for a
+// cache-key fingerprint, not a security primitive — built only from
+// `TextEncoder` and `BigInt`, both available unprefixed in every runtime
+// this project targets. If MOO-72's server-side cache ever wants a
+// cryptographic digest instead, that's an addition to its own server-only
+// module, not a change here.
 import { contextIdentityKey } from './githubContext.js';
 import { encodeCoordinateToken } from './sourceCoordinate.js';
+
+const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+
+function fingerprint(str) {
+  const bytes = new TextEncoder().encode(str);
+  let hash = FNV_OFFSET_BASIS;
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * FNV_PRIME);
+  }
+  return hash.toString(16).padStart(16, '0');
+}
 
 /**
  * Recursively sort object keys so structurally-equal inputs always
@@ -64,7 +87,7 @@ export function buildCacheKey(input) {
     depth: input.depth != null ? input.depth : null,
     options: input.options || {},
   });
-  const hash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  const hash = fingerprint(JSON.stringify(payload));
   return `graphir:v${input.graphSchemaVersion}:${hash}`;
 }
 

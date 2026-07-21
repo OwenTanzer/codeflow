@@ -19,6 +19,19 @@ All modules live under `src/graph-ir/` and are re-exported from
 `server/*`, or any UI code — a real adapter for a new language or renderer
 only ever needs to import from `src/graph-ir/`.
 
+**Runtime-neutral by construction.** The barrel is the one import surface
+for every consumer, and that explicitly includes browser-side
+renderer/navigation code (MOO-69's repository renderer, and whatever
+MOO-70/71 add), not just the server. Nothing under `src/graph-ir/` depends
+on `Buffer`, `node:crypto`, or any other Node-only global — coordinate
+route tokens use `TextEncoder`/`TextDecoder` plus the global `btoa`/`atob`,
+and cache-key fingerprints use a small dependency-free FNV-1a-64 hash
+(`cacheKey.js`), both available unprefixed in every runtime this project
+targets. `scripts/verify-graph-ir-browser-import.mjs` drives the real
+barrel through a headless-Chromium page (against `npm run dev`) specifically
+to catch a Node-only global a plain `node --test` run can't see, since Node
+itself provides those globals.
+
 ## The repository → file → function identity flow
 
 1. **A request arrives** naming a repository plus a repository, branch,

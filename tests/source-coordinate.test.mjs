@@ -41,6 +41,50 @@ test('makeCoordinate rejects a missing required field', () => {
   assert.throws(() => makeCoordinate({ revision: REVISION, path: 'a.py', symbolKind: 'module' }), SourceCoordinateError);
 });
 
+test('makeCoordinate rejects a revision that is not a resolved SHA (a branch name, e.g.)', () => {
+  assert.throws(() => makeCoordinate({ repository: REPO, revision: 'main', path: 'a.py', symbolKind: 'module' }), SourceCoordinateError);
+  assert.throws(() => makeCoordinate({ repository: REPO, revision: 'not-hex-zzzz', path: 'a.py', symbolKind: 'module' }), SourceCoordinateError);
+});
+
+test('makeCoordinate accepts a short 7-character abbreviated SHA', () => {
+  assert.doesNotThrow(() => makeCoordinate({ repository: REPO, revision: 'abc1234', path: 'a.py', symbolKind: 'module' }));
+});
+
+test('makeCoordinate rejects a path containing ".." or "." segments', () => {
+  assert.throws(() => makeCoordinate({ repository: REPO, revision: REVISION, path: '../secrets.py', symbolKind: 'module' }), SourceCoordinateError);
+  assert.throws(() => makeCoordinate({ repository: REPO, revision: REVISION, path: 'src/../a.py', symbolKind: 'module' }), SourceCoordinateError);
+  assert.throws(() => makeCoordinate({ repository: REPO, revision: REVISION, path: 'src/./a.py', symbolKind: 'module' }), SourceCoordinateError);
+});
+
+test('makeCoordinate accepts the empty path for a repository-level coordinate', () => {
+  assert.doesNotThrow(() => makeCoordinate({ repository: REPO, revision: REVISION, path: '', symbolKind: 'module' }));
+});
+
+test('makeCoordinate rejects a non-positive line number', () => {
+  assert.throws(
+    () => makeCoordinate({ repository: REPO, revision: REVISION, path: 'a.py', symbolKind: 'module', range: { startLine: 0, startColumn: 0, endLine: 1, endColumn: 0 } }),
+    SourceCoordinateError
+  );
+});
+
+test('makeCoordinate rejects a negative column', () => {
+  assert.throws(
+    () => makeCoordinate({ repository: REPO, revision: REVISION, path: 'a.py', symbolKind: 'module', range: { startLine: 1, startColumn: -1, endLine: 1, endColumn: 0 } }),
+    SourceCoordinateError
+  );
+});
+
+test('makeCoordinate rejects a range whose end precedes its start', () => {
+  assert.throws(
+    () => makeCoordinate({ repository: REPO, revision: REVISION, path: 'a.py', symbolKind: 'module', range: { startLine: 5, startColumn: 0, endLine: 3, endColumn: 0 } }),
+    SourceCoordinateError
+  );
+  assert.throws(
+    () => makeCoordinate({ repository: REPO, revision: REVISION, path: 'a.py', symbolKind: 'module', range: { startLine: 5, startColumn: 10, endLine: 5, endColumn: 2 } }),
+    SourceCoordinateError
+  );
+});
+
 test('makeCoordinate rejects an invalid symbolKind', () => {
   assert.throws(
     () => makeCoordinate({ repository: REPO, revision: REVISION, path: 'a.py', symbolKind: 'bogus' }),

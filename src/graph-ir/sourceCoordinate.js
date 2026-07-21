@@ -11,6 +11,25 @@
 // `decodeCoordinateToken` exist specifically so routes and cache keys never
 // need to split on a chosen delimiter character that a path, symbol name,
 // or repo name could itself contain.
+//
+// Runtime-neutral on purpose: this module (and the rest of the
+// src/graph-ir/index.js barrel) is documented as the one import surface for
+// every consumer, which includes browser-side renderer/navigation code, not
+// just the server. It must not depend on Node's `Buffer` or `node:crypto` —
+// `encodeCoordinateToken`/`decodeCoordinateToken` below use only
+// `TextEncoder`/`TextDecoder` and the global `btoa`/`atob`, all of which are
+// available unprefixed in both browsers and Node >=20.19/22.12 (this
+// project's own engines floor).
+
+// Same resolved-SHA rule githubContext.js enforces on AnalysisContext,
+// duplicated rather than imported: sourceCoordinate.js and githubContext.js
+// are peer identity primitives (graphIR.js depends on both), so a coordinate
+// staying revision-shaped shouldn't require pulling in the whole request-
+// context module.
+const SHA_PATTERN = /^[0-9a-f]{7,40}$/i;
+function isResolvedSha(value) {
+  return typeof value === 'string' && SHA_PATTERN.test(value);
+}
 
 /**
  * @typedef {Object} RepositoryIdentity
@@ -74,6 +93,17 @@ export function normalizePath(path) {
     .replace(/\/+$/, '');
 }
 
+// Rejects '.'/'..' segments and a leading '/' — normalizePath() already
+// strips a leading slash and collapses repeated slashes, but validate() must
+// not trust that every coord.path passed to it went through normalizePath
+// first (serializeCoordinate/coordinatesEqual accept a caller-built object
+// directly), so the check is real here, not just documentation.
+function isValidRelativePath(path) {
+  if (path === '') return true;
+  if (path.startsWith('/')) return false;
+  return path.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
 function validate(coord) {
   const errors = [];
   const repo = coord.repository;
@@ -84,11 +114,13 @@ function validate(coord) {
     if (!repo.owner) errors.push('repository.owner is required');
     if (!repo.name) errors.push('repository.name is required');
   }
-  if (!coord.revision || typeof coord.revision !== 'string') {
-    errors.push('revision is required and must be a resolved commit SHA string');
+  if (!isResolvedSha(coord.revision)) {
+    errors.push('revision is required and must be a resolved commit SHA (hex, 7-40 characters) — a branch/tag name is not a valid revision');
   }
   if (typeof coord.path !== 'string') {
     errors.push('path is required (use "" only for a repository-level coordinate)');
+  } else if (!isValidRelativePath(coord.path)) {
+    errors.push(`path must be repo-root-relative with no "." or ".." segments, got: ${JSON.stringify(coord.path)}`);
   }
   if (!Array.isArray(coord.symbolPath) || coord.symbolPath.some((s) => typeof s !== 'string')) {
     errors.push('symbolPath must be an array of strings ([] for module scope)');
@@ -107,6 +139,13 @@ function validate(coord) {
       !Number.isInteger(r.endColumn)
     ) {
       errors.push('range must be null or {startLine,startColumn,endLine,endColumn} integers');
+    } else {
+      if (r.startLine < 1 || r.endLine < 1) errors.push('range.startLine/endLine must be >= 1 (1-based)');
+      if (r.startColumn < 0 || r.endColumn < 0) errors.push('range.startColumn/endColumn must be >= 0');
+      if (r.endLine < r.startLine) errors.push('range.endLine must not precede range.startLine');
+      else if (r.endLine === r.startLine && r.endColumn < r.startColumn) {
+        errors.push('range.endColumn must not precede range.startColumn on the same line');
+      }
     }
   }
   if (typeof coord.ambiguous !== 'boolean') {
@@ -203,6 +242,26 @@ export function parseCoordinate(json) {
   return makeCoordinate(raw);
 }
 
+// btoa/atob operate on binary strings (one code unit per byte), not UTF-8
+// text directly, so a round-trip through TextEncoder/TextDecoder is needed
+// on either side — this is the runtime-neutral replacement for
+// `Buffer.from(json, 'utf8').toString('base64url')`.
+function utf8ToBase64Url(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function base64UrlToUtf8(token) {
+  const padded = token.replace(/-/g, '+').replace(/_/g, '/');
+  const base64 = padded + '='.repeat((4 - (padded.length % 4)) % 4);
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
 /**
  * Base64url-encode a coordinate's canonical serialization — an opaque token
  * safe to embed as a single route segment or query value without any
@@ -212,7 +271,7 @@ export function parseCoordinate(json) {
  */
 export function encodeCoordinateToken(coord) {
   const json = serializeCoordinate(coord);
-  return Buffer.from(json, 'utf8').toString('base64url');
+  return utf8ToBase64Url(json);
 }
 
 /**
@@ -222,7 +281,7 @@ export function encodeCoordinateToken(coord) {
 export function decodeCoordinateToken(token) {
   let json;
   try {
-    json = Buffer.from(token, 'base64url').toString('utf8');
+    json = base64UrlToUtf8(token);
   } catch (err) {
     throw new SourceCoordinateError([`not a valid coordinate token: ${err.message}`]);
   }
