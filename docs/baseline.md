@@ -866,6 +866,74 @@ suite: 207/207 (132 pre-existing + 75 new). No UI wiring in this issue by
 design — `src/render/repositoryGraph.js`'s `activateFileRef` stays a no-op
 until MOO-69 wires a real `createDrillDownEvent` dispatch into it.
 
+## MOO-69 — adapt the repository layer to GraphIR and unified navigation
+
+MOO-69 (all 7 commits) adapts CodeFlow's existing repository analysis into
+MOO-68's GraphIR contract and wires the real navigation/selection events
+into the live app. See `docs/graph-ir-contract.md` for the contract
+reference and `docs/repository-layer-density.md` for Commit 7's density
+documentation/Garrison-Step handoff. Summary:
+
+1. `src/adapters/repositoryGraphAdapter.js` — normalizes
+   `buildAnalysisData()`'s output into a repository-layer `GraphIR`: one
+   node per file, one group per folder, one edge per connection (not
+   pre-aggregated), repository-wide summaries (issues/patterns/security/
+   architecture diagram/stats) carried under an open graph-level
+   `metadata` field.
+2. `server/routes/graph-repository.js` — `POST /api/graph/repository`,
+   the GraphIR-returning counterpart to MOO-67's `/api/analyze-repo`.
+   `github-analyzer-bridge.js`'s `analyzeGithubRepo` now also resolves and
+   returns `sourceOwner`/`sourceRepo`/`resolvedSha` (added one extra
+   "get a commit" API call for non-PR refs, which previously stayed
+   unresolved branch names).
+3. `src/render/repositoryRenderModel.js` — pure translation from either the
+   legacy analysis object or a GraphIR into the flat `{nodes,links}` shape
+   `src/render/repositoryGraph.js`'s D3 code already built; the renderer
+   itself stays unaware of GraphIR entirely.
+4. Real selection/drill-down wiring: `GitHub.resolveRepositoryRevision`
+   (client-side SHA resolution, mirroring the server's own), a
+   `repositoryGraph` state built once right after analysis completes, and
+   `activateFileRef` (MOO-67 Commit 4E's no-op seam) now dispatches a real
+   `createDrillDownEvent` into a placeholder panel (MOO-70's file-layer
+   view doesn't exist yet) with breadcrumbs/back-forward
+   (`NavigationHistory`) and a "View on GitHub" open-source action.
+   Local-folder/zip analysis has no GitHub revision identity and stays on
+   the legacy render/selection path entirely (a deliberate scope
+   boundary, confirmed with the operator).
+5. Changed-area rendering hints (from the existing PR-impact-overlay
+   feature's `prData.files`, not a new data model) and a visible
+   ref@shortSha revision badge. Real PR-head-revision analysis (drilling
+   into a PR's own code state, not just an impact overlay against the
+   base) was scoped out as a materially larger feature — recorded as a
+   Linear comment on MOO-69 rather than silently narrowed.
+6. Split fetch/parse-phase vs. graph-build-phase error handling in the new
+   endpoint, with GitHub rate-limit detection (429, `retryable:true`), a
+   request timeout (`GRAPH_ANALYSIS_TIMEOUT_MS`, closing a gap Commit 2's
+   own checklist called for but initially missed), and richer success
+   logging (revision identity, duration, node/edge counts, cache
+   key/status, warning count).
+7. `docs/repository-layer-density.md` — current node/edge counts for all
+   four committed fixtures (largest: 19 nodes), confirms existing
+   reduction/filtering behavior (`ANALYSIS_LIMITS`, `folderFilter`, the
+   large-graph adaptive rendering threshold) was left untouched, and
+   defers clustering/neighborhood-isolation/changed-files-only-mode/
+   blast-radius-reduction/node-budgets to the Garrison Step (MOO-44).
+
+**Checks:** ~35 new tests across
+`tests/repository-graph-adapter.test.mjs`,
+`tests/server-graph-repository.test.mjs`,
+`tests/repository-render-model.test.mjs`,
+`tests/repository-drill-down.test.mjs`, and expansions to
+`tests/github-context.test.mjs`/`tests/server-config.test.mjs`. Full
+suite: 273/273. Clean build. `tests/ui-smoke.mjs` re-verified against a
+production build at multiple points (still 6/6) to confirm the legacy
+local-folder path stayed unaffected; `scripts/verify-repository-graph-ir-render.mjs`
+(Commit 3) confirms the renderer accepts a real GraphIR fixture directly.
+The full GitHub-backed round trip (real scan → resolved SHA → real
+placeholder panel; the new endpoint's timeout/rate-limit paths) needs a
+live GitHub credential to exercise end-to-end, same manual-precondition
+category as `tests/server-smoke.mjs`'s other GitHub-requiring steps.
+
 ## What this baseline does not cover
 
 - Browser-only behavior (D3 rendering, drag/zoom/click interactions, local
