@@ -27,11 +27,20 @@
 // index.html already loads) rather than imported — same pattern
 // src/analyzer.js uses for TreeSitter/Babel/acorn.
 /* eslint-disable no-undef */
+//
+// MOO-69 Commit 3: `data` may now be either the legacy buildAnalysisData()
+// output (local-folder analysis) or a repository-layer GraphIR
+// (GitHub-backed analysis, via src/adapters/repositoryGraphAdapter.js) --
+// buildRepositoryRenderModel() (src/render/repositoryRenderModel.js)
+// normalizes either into the same {nodes,links} shape this file's D3 code
+// already built inline, so nothing below this point needs to know which
+// shape `data` actually was.
+import { buildRepositoryRenderModel } from './repositoryRenderModel.js';
 
 /**
  * @param {object} options
  * @param {SVGSVGElement} options.svgEl
- * @param {object} options.data - analysis data (buildAnalysisData() output)
+ * @param {object} options.data - buildAnalysisData()'s legacy output, or a repository-layer GraphIR (see buildRepositoryRenderModel)
  * @param {Record<string,string>} options.colorMap
  * @param {'folder'|'layer'|'churn'} options.colorMode
  * @param {'light'|'dark'} options.theme
@@ -63,18 +72,9 @@ export function renderRepositoryGraph(options) {
         try{
         var w=svgEl.clientWidth;
         var h=svgEl.clientHeight;
-        var filteredFiles=folderFilter?data.files.filter(function(f){return f.folder===folderFilter||f.folder.startsWith(folderFilter+'/');}):data.files;
-        var fileIds=new Set(filteredFiles.map(function(f){return f.path;}));
-        var nodes=filteredFiles.map(function(f){return{id:f.path,name:f.name,folder:f.folder,fnCount:f.functions.length,layer:f.layer,churn:f.churn||0};});
-        var linkMap=new Map();
-        data.connections.forEach(function(c){
-            if(!fileIds.has(c.source)||!fileIds.has(c.target))return;
-            if(c.source===c.target)return;// Skip self-links
-            var k=c.source+'|'+c.target;
-            if(!linkMap.has(k))linkMap.set(k,{source:c.source,target:c.target,count:0});
-            linkMap.get(k).count+=c.count;
-        });
-        var links=Array.from(linkMap.values());
+        var renderModel=buildRepositoryRenderModel(data,folderFilter);
+        var nodes=renderModel.nodes;
+        var links=renderModel.links;
         function getR(d){return Math.max(8,Math.min(24,5+d.fnCount*0.8));}
         function getC(d){
             if(colorMode==='folder')return colorMap[d.folder]||COLORS[0];
