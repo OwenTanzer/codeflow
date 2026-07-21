@@ -67,6 +67,20 @@ test('a forked PR carries a distinct resolved source repository (the fork), sepa
   assert.equal(ctx.sourceRepo, 'Hello-World');
 });
 
+test('sourceOwner and sourceRepo must be provided together, not one without the other', () => {
+  assert.throws(
+    () => normalizeContext({ owner: 'octocat', repo: 'Hello-World', prNumber: 1, resolvedSha: SHA_A, sourceOwner: 'a-contributor' }),
+    AnalysisContextError
+  );
+  assert.throws(
+    () => normalizeContext({ owner: 'octocat', repo: 'Hello-World', prNumber: 1, resolvedSha: SHA_A, sourceRepo: 'renamed-fork' }),
+    AnalysisContextError
+  );
+  assert.doesNotThrow(() =>
+    normalizeContext({ owner: 'octocat', repo: 'Hello-World', prNumber: 1, resolvedSha: SHA_A, sourceOwner: 'a-contributor', sourceRepo: 'Hello-World' })
+  );
+});
+
 test('sourceOwner/sourceRepo may only be set in pr mode', () => {
   assert.throws(
     () => normalizeContext({ owner: 'octocat', repo: 'Hello-World', mode: 'commit', resolvedSha: SHA_A, sourceOwner: 'someone-else' }),

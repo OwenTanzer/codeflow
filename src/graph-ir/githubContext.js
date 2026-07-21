@@ -88,6 +88,13 @@ export function normalizeContext(input) {
     if (raw.headSha != null && !isSha(raw.headSha)) errors.push('headSha must be a resolved commit SHA when present');
     if (raw.sourceOwner != null && !OWNER_REPO_PATTERN.test(raw.sourceOwner)) errors.push('sourceOwner must be a valid GitHub owner name when present');
     if (raw.sourceRepo != null && !OWNER_REPO_PATTERN.test(raw.sourceRepo)) errors.push('sourceRepo must be a valid GitHub repository name when present');
+    if ((raw.sourceOwner == null) !== (raw.sourceRepo == null)) {
+      // Supplying only one half would otherwise silently default the other
+      // to the base repository's value, constructing a nonexistent hybrid
+      // identity (e.g. sourceOwner: 'contributor' + the base's own repo
+      // name, when the fork actually renamed the repo too).
+      errors.push('sourceOwner and sourceRepo must be provided together, or neither (a partial override would construct a nonexistent hybrid repository identity)');
+    }
   } else {
     if (raw.prNumber != null) errors.push(`prNumber must not be set outside pr mode (got mode: ${mode})`);
     if (raw.baseSha != null || raw.headSha != null) errors.push(`baseSha/headSha must not be set outside pr mode (got mode: ${mode})`);
