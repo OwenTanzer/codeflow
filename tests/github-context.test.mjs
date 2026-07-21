@@ -18,6 +18,8 @@ test('repository-mode fixture normalizes correctly', () => {
   assert.equal(ctx.mode, 'commit');
   assert.equal(ctx.ref, null);
   assert.equal(ctx.resolvedSha, SHA_A);
+  assert.equal(ctx.sourceOwner, 'octocat');
+  assert.equal(ctx.sourceRepo, 'Hello-World');
 });
 
 test('branch-mode fixture normalizes correctly', () => {
@@ -46,6 +48,30 @@ test('PR-mode fixture normalizes correctly, including base/head', () => {
   assert.equal(ctx.prNumber, 42);
   assert.equal(ctx.baseSha, SHA_B);
   assert.equal(ctx.headSha, SHA_A);
+  assert.equal(ctx.sourceOwner, 'octocat', 'same-repository PR: source defaults to the base repository');
+  assert.equal(ctx.sourceRepo, 'Hello-World');
+});
+
+test('a forked PR carries a distinct resolved source repository (the fork), separate from the requested base repository', () => {
+  const ctx = normalizeContext({
+    owner: 'octocat',
+    repo: 'Hello-World',
+    prNumber: 10590,
+    resolvedSha: SHA_A,
+    sourceOwner: 'angelg84',
+    sourceRepo: 'Hello-World',
+  });
+  assert.equal(ctx.owner, 'octocat', 'base repository is preserved for provenance/allowlist checks');
+  assert.equal(ctx.repo, 'Hello-World');
+  assert.equal(ctx.sourceOwner, 'angelg84', 'source repository is the fork the SHA actually resolved in');
+  assert.equal(ctx.sourceRepo, 'Hello-World');
+});
+
+test('sourceOwner/sourceRepo may only be set in pr mode', () => {
+  assert.throws(
+    () => normalizeContext({ owner: 'octocat', repo: 'Hello-World', mode: 'commit', resolvedSha: SHA_A, sourceOwner: 'someone-else' }),
+    AnalysisContextError
+  );
 });
 
 test('rejects a non-SHA resolvedSha (this module never resolves refs itself)', () => {
@@ -107,4 +133,36 @@ test('contextIdentityKey is stable for equivalent normalized contexts and distin
   assert.equal(contextIdentityKey(a1), contextIdentityKey(a2));
   assert.notEqual(contextIdentityKey(a1), contextIdentityKey(b));
   assert.notEqual(contextIdentityKey(a1), contextIdentityKey(pr));
+});
+
+test('contextIdentityKey keys off the resolved source repository, not the requested base repository, for a forked PR', () => {
+  const forkedPr = normalizeContext({
+    owner: 'octocat',
+    repo: 'Hello-World',
+    prNumber: 10590,
+    resolvedSha: SHA_A,
+    sourceOwner: 'angelg84',
+    sourceRepo: 'Hello-World',
+  });
+  const sameRepoPr = normalizeContext({ owner: 'octocat', repo: 'Hello-World', prNumber: 10590, resolvedSha: SHA_A });
+  assert.match(contextIdentityKey(forkedPr), /^angelg84\//);
+  assert.notEqual(contextIdentityKey(forkedPr), contextIdentityKey(sameRepoPr));
+});
+
+test('sameRevision compares the resolved source repository, so two different-fork resolutions of the same base repo/SHA are not the same revision', () => {
+  const forkA = normalizeContext({ owner: 'octocat', repo: 'Hello-World', prNumber: 1, resolvedSha: SHA_A, sourceOwner: 'contributor-a', sourceRepo: 'Hello-World' });
+  const forkB = normalizeContext({ owner: 'octocat', repo: 'Hello-World', prNumber: 2, resolvedSha: SHA_A, sourceOwner: 'contributor-b', sourceRepo: 'Hello-World' });
+  assert.equal(sameRevision(forkA, forkB), false);
+});
+
+test('assertContextPropagation rejects a child resolving to a different fork even when the base repository and SHA match', () => {
+  const parent = normalizeContext({ owner: 'octocat', repo: 'Hello-World', prNumber: 1, resolvedSha: SHA_A, sourceOwner: 'contributor-a', sourceRepo: 'Hello-World' });
+  const child = normalizeContext({ owner: 'octocat', repo: 'Hello-World', prNumber: 1, resolvedSha: SHA_A, sourceOwner: 'contributor-b', sourceRepo: 'Hello-World' });
+  assert.throws(() => assertContextPropagation(parent, child), AnalysisContextError);
+});
+
+test('assertContextPropagation allows a child that resolves to the same fork as its parent', () => {
+  const parent = normalizeContext({ owner: 'octocat', repo: 'Hello-World', prNumber: 1, resolvedSha: SHA_A, sourceOwner: 'contributor-a', sourceRepo: 'Hello-World' });
+  const child = normalizeContext({ owner: 'octocat', repo: 'Hello-World', prNumber: 1, resolvedSha: SHA_A, sourceOwner: 'contributor-a', sourceRepo: 'Hello-World' });
+  assert.doesNotThrow(() => assertContextPropagation(parent, child));
 });
