@@ -18,6 +18,8 @@
     "mode": "branch",
     "ref": "main",
     "resolvedSha": "deadbeef00deadbeef00deadbeef00deadbeef0",
+    "sourceOwner": "octocat",
+    "sourceRepo": "Hello-World",
     "baseSha": null,
     "headSha": null,
     "prNumber": null

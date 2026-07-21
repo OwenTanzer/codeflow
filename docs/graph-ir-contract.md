@@ -81,10 +81,40 @@ routes stay deep-linkable (a coordinate token from
 |---|---|
 | `sourceCoordinate.js` | `SourceCoordinate` — repository identity + resolved revision + path + symbol scope chain + kind + range + ambiguity flag. Canonical (key-order-stable) JSON serialization, plus an opaque base64url route/cache-key token. Structured on purpose — no delimiter-based string splitting. |
 | `githubContext.js` | `AnalysisContext` — normalizes repository/branch/commit/PR requests into one shape, always pinned to a resolved SHA. Distinguishes the requested **base** repository (`owner`/`repo` — provenance and allowlist identity) from the resolved **source** repository (`sourceOwner`/`sourceRepo` — where content is actually fetched from, which differs from the base for a forked PR; equal to it otherwise). `assertContextPropagation` enforces that a drill-down request cannot silently switch revisions *or* source repositories relative to its parent graph. |
-| `graphIR.js` | `GraphIR` itself: schema version, layer, context, nodes/edges/groups, analyzer provenance, confidence, warnings, rendering hints. `validateGraphIR` rejects cross-layer node/edge references and dangling edges with a specific message, but ignores unknown extra fields anywhere in the tree so future schema growth stays backward-compatible. |
+| `graphIR.js` | `GraphIR` itself: schema version, layer, context, nodes/edges/groups, analyzer provenance, confidence, warnings, rendering hints. `validateGraphIR` rejects cross-layer node/edge references and dangling edges with a specific message, but ignores unknown extra fields anywhere in the tree so future schema growth stays backward-compatible. It also enforces coordinate/context consistency: a node's `origin` (default `'local'`) says whether its coordinate must belong to the graph's own analyzed context (same resolved source repository + revision) or is an intentionally different reference (`'external'`, `'cached'`) or has no single real location (`'synthetic'`) — see below. |
 | `adapterResult.js` | `AdapterResult` (graph, warnings, diagnostics, provenance, timing, cache info, partial flag) and the fixed `ErrorCategory` set (`github_access`, `unsupported_input`, `parser_failure`, `subprocess_failure`, `malformed_analyzer_output`, `timeout`, `renderer_failure`, `internal_error`). `sanitizeDiagnostic` strips stack traces and redacts secret-shaped keys at any depth, applied unconditionally inside `buildAdapterResult`. |
 | `navigation.js` | Interaction contract: single click → `createSelectionEvent` (select/focus only); double click → `createDrillDownEvent` (drill-down intent), gated by `isDrillDownEligible` so an unresolved/ambiguous coordinate can never dispatch an incorrect drill-down. `createOpenSourceEvent` for "view raw source." `NavigationHistory` is the back/forward breadcrumb stack. |
 | `cacheKey.js` | `buildCacheKey` — a stable sha256-based key from normalized context + analyzer name/version + GraphIR schema version + requested coordinate + depth/options, so equivalent normalized requests collapse to one key while any real difference never collides. `isCacheStale` and `buildProvenanceSummary` (visible provenance plus resolved/unresolved adapter-match counts). |
+
+## Coordinate/context consistency (`node.origin`)
+
+MOO-68's central invariant is that a graph pinned to one revision must never
+be silently anchored to a coordinate from another. `rootCoordinate` (what
+the graph is "of") must always match the graph's own analyzed context —
+same resolved source repository (`context.sourceOwner`/`sourceRepo`, not
+necessarily the requested base repository — see the forked-PR note above)
+and the same `context.resolvedSha`. Individual nodes follow the same rule
+by default, via an optional `origin` field:
+
+- **`'local'` (default, if omitted)** — the node's coordinate must match the
+  graph's context exactly. This is what most nodes in most graphs are.
+- **`'external'`** — an intentional cross-repository reference (e.g. a
+  repository-layer dependency edge into another project). The coordinate
+  may name a different repository/revision, but must still be present —
+  an external reference has to say what it's referencing.
+- **`'cached'`** — resolved from a previously cached, compatible analysis
+  rather than the current one; same "must still be present" rule as
+  `'external'`.
+- **`'synthetic'`** — the node has no single real source location (a
+  control-flow entry/exit marker, a synthetic PR/diff summary node).
+  Coordinate is typically `null`, and is not required to be non-null.
+
+Blanket repository/revision equality across *every* coordinate in a graph
+was deliberately rejected as too strict — it would make legitimate
+cross-repository dependency edges, cached references, and synthetic nodes
+needlessly hard to represent. `origin` lets a graph be explicit about which
+coordinates are guaranteed local and which aren't, rather than leaving that
+distinction for MOO-69/70/71 to invent independently (or not at all).
 
 ## Extension rules
 
