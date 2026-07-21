@@ -644,7 +644,21 @@ import * as analyzer from './src/analyzer.js';
 import { renderRepositoryGraph } from './src/render/repositoryGraph.js';
 import { useRepositorySelection } from './src/state/selection.js';
 import { buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute } from './src/state/route.js';
-Object.assign(window, analyzer, { renderRepositoryGraph, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute });
+import { adaptRepositoryAnalysis } from './src/adapters/repositoryGraphAdapter.js';
+import { normalizeContext } from './src/graph-ir/githubContext.js';
+import {
+  tryCreateDrillDown,
+  createSelectionEventForPath,
+  tryCreateOpenSourceEvent,
+  githubBlobUrl,
+} from './src/state/repositoryDrillDown.js';
+import { useRepositoryDrillDownPanel } from './src/state/repositoryDrillDownPanel.js';
+Object.assign(window, analyzer, {
+  renderRepositoryGraph, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute,
+  adaptRepositoryAnalysis, normalizeContext,
+  tryCreateDrillDown, createSelectionEventForPath, tryCreateOpenSourceEvent, githubBlobUrl,
+  useRepositoryDrillDownPanel,
+});
 </script>
 <script type="text/babel">
 /*
@@ -1182,6 +1196,18 @@ function App(){
     var _f=useState(null),error=_f[0],setError=_f[1];
     var _g=useState(null),data=_g[0],setData=_g[1];
     var _h=useState(null),repoInfo=_h[0],setRepoInfo=_h[1];
+    // MOO-69 Commit 4: the repository-layer GraphIR for the current
+    // analysis, built once (see finishAnalysis' GitHub-backed branch) from
+    // a resolved commit SHA -- null for local-folder/zip analysis, which
+    // has no GitHub revision identity to build an AnalysisContext from (see
+    // src/render/repositoryRenderModel.js's comment on the same boundary).
+    var _rg=useState(null),repositoryGraph=_rg[0],setRepositoryGraph=_rg[1];
+    // Real navigation contract (src/graph-ir/navigation.js), wired to a
+    // placeholder panel until MOO-70's real file-layer view exists -- named
+    // distinctly from the pre-existing `drillDown`/`setDrillDown` below
+    // (useRepositorySelection's unrelated issue/pattern/security modal
+    // state), not a rename of it.
+    var _nav=useRepositoryDrillDownPanel(),navTrail=_nav.trail,navPanel=_nav.panel,navCanGoBack=_nav.canGoBack,openFileDrillDown=_nav.openDrillDown,goNavBack=_nav.goBack,resetNavHistory=_nav.resetHistory;
     var _i=useState('folder'),colorMode=_i[0],setColorMode=_i[1];
     // MOO-67 Commit 4C: selected/blastRadius/rightTab/drillDown (the state
     // the repository view's selection + detail panel needs) now live in
@@ -1419,6 +1445,8 @@ function App(){
     function resetAnalysisState(){
         setError(null);
         setData(null);
+        setRepositoryGraph(null);
+        resetNavHistory();
         setSelected(null);
         setBlastRadius(null);
         setOwnership(null);
@@ -1619,6 +1647,22 @@ function App(){
                         setData(dataObj);
                         setExpandedPaths(new Set(['']));
                         writeRepoRoute(p.owner+'/'+p.repo);
+                        // MOO-69 Commit 4: resolve the SHA -> build the
+                        // AnalysisContext -> produce the repository GraphIR,
+                        // in that order, once, right here -- never inside
+                        // the double-click handler (see
+                        // src/state/repositoryDrillDown.js's own comment on
+                        // this invariant). Best-effort: if revision
+                        // resolution fails (rate-limited, network error),
+                        // repositoryGraph stays null and drill-down simply
+                        // reports "not drillable" rather than blocking the
+                        // rest of the analysis.
+                        GitHub.resolveRepositoryRevision(p.owner,p.repo).then(function(revision){
+                            if(!revision||!revision.resolvedSha)return;
+                            var context=normalizeContext({owner:p.owner,repo:p.repo,mode:'branch',ref:revision.ref,resolvedSha:revision.resolvedSha});
+                            var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:context,analyzer:{name:'codeflow-repository-adapter',version:'1.0.0'}});
+                            setRepositoryGraph(graph);
+                        }).catch(function(){/* best-effort; repositoryGraph stays null */});
                         setLoading(false);
                     }catch(err){
                         setError('Analysis failed: '+(err.message||err)+'. Try a smaller repository.');
@@ -2106,6 +2150,23 @@ function App(){
     },[data,repoInfo,localSourceKind,isMobile]);
     selectFileRef.current=selectFile;
 
+    // MOO-69 Commit 4: double-click drill-down. Reads only the already-built
+    // repositoryGraph (see finishAnalysis' GitHub-backed branch) -- never
+    // resolves a SHA itself, per src/state/repositoryDrillDown.js's own
+    // documented invariant. When there's no GraphIR context at all
+    // (local-folder/zip analysis) or the coordinate isn't eligible
+    // (ambiguous, unresolved), this surfaces a clear notification instead of
+    // silently doing nothing.
+    var activateFile=useCallback(function(path){
+        var result=tryCreateDrillDown(repositoryGraph,path);
+        if(result.eligible){
+            openFileDrillDown(result.event);
+        }else{
+            showNotification(result.reason||'This file cannot be drilled into.','warning');
+        }
+    },[repositoryGraph,openFileDrillDown]);
+    activateFileRef.current=activateFile;
+
     function updateGraphHighlight(path,blast){
         if(!nodesRef.current||!linksRef.current)return;
         var affectedSet=new Set(blast?blast.affected:[]);
@@ -2262,14 +2323,20 @@ function App(){
     // already read directly, so nothing else needed to change.
     useEffect(function(){
         if(!data||!svgRef.current)return;
+        // MOO-69 Commit 3/4: prefer the repository-layer GraphIR once it's
+        // resolved (GitHub-backed analysis) -- renderRepositoryGraph/
+        // buildRepositoryRenderModel accept either shape identically (see
+        // src/render/repositoryRenderModel.js). Falls back to the legacy
+        // `data` object for local-folder/zip analysis, which never gets a
+        // repositoryGraph at all.
         return renderRepositoryGraph({
-            svgEl:svgRef.current,data,colorMap,colorMode,theme,folderFilter,graphConfig,
+            svgEl:svgRef.current,data:repositoryGraph||data,colorMap,colorMode,theme,folderFilter,graphConfig,
             COLORS,LAYER_COLORS,
             zoomRef,simRef,linksRef,nodesRef,selectFileRef,activateFileRef,
             onHover:setTooltip,
             onBackgroundClick:function(){setSelected(null);setBlastRadius(null);}
         });
-    },[data,colorMap,colorMode,theme,folderFilter,graphConfig]);
+    },[data,repositoryGraph,colorMap,colorMode,theme,folderFilter,graphConfig]);
 
     // 3D Force Graph Hook
     useEffect(function(){
@@ -3682,7 +3749,7 @@ function App(){
         navigator.clipboard.writeText(shareUrl).then(function(){showNotification('Link copied to clipboard!');}).catch(function(){showNotification('Failed to copy link','error');});
     }
     function analyzePR(){if(!prUrl||!repoInfo)return;var m=prUrl.match(/\/pull\/(\d+)/);if(!m){showNotification('Invalid PR URL','error');return;}GitHub.getPR(repoInfo.owner,repoInfo.repo,m[1]).then(function(pr){if(pr)setPrData(pr);else showNotification('Could not load PR','error');});}
-    function resetAnalysis(){setData(null);setSelected(null);setBlastRadius(null);setOwnership(null);setRepoInfo(null);setRepoUrl('');setPrData(null);setFolderFilter(null);setLocalDirHandle(null);setLocalSourceKind(null);setArchitectureIncludeTests(false);setArchitectureIncludeBuildOutput(false);zipArchiveRef.current=null;zipFileRef.current=null;clearRoute();}
+    function resetAnalysis(){setData(null);setRepositoryGraph(null);resetNavHistory();setSelected(null);setBlastRadius(null);setOwnership(null);setRepoInfo(null);setRepoUrl('');setPrData(null);setFolderFilter(null);setLocalDirHandle(null);setLocalSourceKind(null);setArchitectureIncludeTests(false);setArchitectureIncludeBuildOutput(false);zipArchiveRef.current=null;zipFileRef.current=null;clearRoute();}
     function filterByFolder(path){setFolderFilter(function(prev){return prev===path?null:path;});}
     function getArchitectureViewStats(diagram,includeTests,includeBuildOutput){
         if(!diagram)return{blocks:0,dependencies:0,routes:0,apiRoutes:0,databaseTouchpoints:0,warnings:0};
@@ -4108,6 +4175,23 @@ function App(){
                     document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);
                 }}),
                 data?React.createElement(React.Fragment,null,
+                    // MOO-69 Commit 4: breadcrumb + back button for the real
+                    // navigation contract (src/graph-ir/navigation.js's
+                    // NavigationHistory) -- visible once a drill-down has
+                    // been opened at least once. MOO-70 doesn't have a real
+                    // file-layer view yet, so this coexists with (rather
+                    // than replaces) the existing tab content below; the
+                    // placeholder panel itself renders just below this.
+                    navTrail.length>1&&React.createElement('div',{className:'panel-header',style:{margin:'0 -12px 0',padding:'8px 12px',display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid var(--bd)'}},
+                        React.createElement('button',{className:'top-btn',disabled:!navCanGoBack,onClick:goNavBack,style:{padding:'4px 8px',fontSize:11}},'← Back'),
+                        React.createElement('div',{style:{fontSize:11,color:'var(--t3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},navTrail.map(function(entry){return entry.label;}).join(' / '))
+                    ),
+                    navPanel&&React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
+                        React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' Drill down ('+navPanel.layer+')'),
+                        React.createElement('div',{className:'panel-subtitle',style:{marginBottom:8}},navPanel.coordinate?navPanel.coordinate.path:''),
+                        React.createElement('div',{style:{fontSize:12,color:'var(--t2)',marginBottom:navPanel.coordinate?8:0}},'File-layer view not yet implemented (MOO-70). This proves the navigation contract (coordinate, breadcrumb, back/forward history) end-to-end ahead of the real view.'),
+                        navPanel.coordinate&&React.createElement('button',{className:'top-btn',onClick:function(){window.open(githubBlobUrl(navPanel.coordinate),'_blank','noopener');}},iconLabel('eye','View on GitHub'))
+                    ),
                     React.createElement('div',{className:'panel-tabs'},
                         React.createElement('button',{className:'panel-tab'+(rightTab==='details'?' active':''),onClick:function(){setRightTab('details');setDrillDown(null);}},selected?iconLabel('file','FILE'):(graphConfig.vizType==='architecture'?iconLabel('layers','ARCH'):iconLabel('search','ISSUES'))),
                         React.createElement('button',{className:'panel-tab'+(rightTab==='patterns'?' active':''),onClick:function(){setRightTab('patterns');setDrillDown(null);}},iconLabel('puzzle','PATTERNS'),' ',React.createElement('span',{className:'badge badge-default'},data.patterns.length)),

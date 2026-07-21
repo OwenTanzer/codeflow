@@ -2478,6 +2478,22 @@ var GitHub={
     getFile:function(o,r,p){
         return this.fetch(buildRepoApiUrl(o,r,['contents'].concat(splitRepoPath(p)))).then(function(d){return d.content?decodeBase64Utf8(d.content):null;}).catch(function(){return null;});
     },
+    // MOO-69 Commit 4: scanTree/scan (above/below) fetch whatever the
+    // default branch's tip currently is, but never expose a resolved commit
+    // SHA to the caller -- GraphIR's AnalysisContext (src/graph-ir/
+    // githubContext.js) requires one always. Mirrors
+    // server/lib/github-analyzer-bridge.js's resolveCommitSha (same two-step
+    // default-branch-name -> commit-SHA resolution), just via the browser's
+    // own GitHub.fetch instead of the server's apiRequest.
+    resolveRepositoryRevision:function(o,r){
+        var self=this;
+        return this.fetch(buildRepoApiUrl(o,r)).then(function(repo){
+            var branch=repo.default_branch||'main';
+            return self.fetch(buildRepoApiUrl(o,r,['commits',branch])).then(function(commit){
+                return{ref:branch,resolvedSha:commit&&commit.sha};
+            });
+        });
+    },
     getCommits:function(o,r,path,limit){
         if(this.rateLimit.remaining<20&&!this.token)return Promise.resolve([]);// Skip when rate limited
         return this.fetch(buildRepoApiUrl(o,r,['commits'],{per_page:limit||30,path:path||undefined})).catch(function(){return[];});
