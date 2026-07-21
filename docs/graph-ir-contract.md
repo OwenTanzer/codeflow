@@ -83,7 +83,7 @@ routes stay deep-linkable (a coordinate token from
 | `githubContext.js` | `AnalysisContext` — normalizes repository/branch/commit/PR requests into one shape, always pinned to a resolved SHA. Distinguishes the requested **base** repository (`owner`/`repo` — provenance and allowlist identity) from the resolved **source** repository (`sourceOwner`/`sourceRepo` — where content is actually fetched from, which differs from the base for a forked PR; equal to it otherwise). `assertContextPropagation` enforces that a drill-down request cannot silently switch revisions *or* source repositories relative to its parent graph. |
 | `graphIR.js` | `GraphIR` itself: schema version, layer, context, nodes/edges/groups, analyzer provenance, confidence, warnings, rendering hints. `validateGraphIR` rejects cross-layer node/edge references and dangling edges with a specific message, but ignores unknown extra fields anywhere in the tree so future schema growth stays backward-compatible. It also enforces coordinate/context consistency: a node's `origin` (default `'local'`) says whether its coordinate must belong to the graph's own analyzed context (same resolved source repository + revision) or is an intentionally different reference (`'external'`, `'cached'`) or has no single real location (`'synthetic'`) — see below. |
 | `adapterResult.js` | `AdapterResult` (graph, warnings, diagnostics, provenance, timing, cache info, partial flag) and the fixed `ErrorCategory` set (`github_access`, `unsupported_input`, `parser_failure`, `subprocess_failure`, `malformed_analyzer_output`, `timeout`, `renderer_failure`, `internal_error`). `sanitizeDiagnostic` strips stack traces and redacts secret-shaped keys at any depth, applied unconditionally inside `buildAdapterResult`. |
-| `navigation.js` | Interaction contract: single click → `createSelectionEvent` (select/focus only); double click → `createDrillDownEvent` (drill-down intent), gated by `isDrillDownEligible` so an unresolved/ambiguous coordinate can never dispatch an incorrect drill-down. `createOpenSourceEvent` for "view raw source." `NavigationHistory` is the back/forward breadcrumb stack. |
+| `navigation.js` | Interaction contract: single click → `createSelectionEvent` (select/focus only); double click → `createDrillDownEvent` (drill-down intent), gated by `isDrillDownEligible` so an unresolved/ambiguous coordinate can never dispatch an incorrect drill-down. Carries the selected node's `origin` (see `graphIR.js`) into an `intent` (`localDrillDown`/`newContext`/`cachedContext`) a renderer must branch on — a synthetic node has no source location of its own and requires an explicit `anchorCoordinate`. `createOpenSourceEvent` for "view raw source." `NavigationHistory` is the back/forward breadcrumb stack. |
 | `cacheKey.js` | `buildCacheKey` — a stable sha256-based key from normalized context + analyzer name/version + GraphIR schema version + requested coordinate + depth/options, so equivalent normalized requests collapse to one key while any real difference never collides. `isCacheStale` and `buildProvenanceSummary` (visible provenance plus resolved/unresolved adapter-match counts). |
 
 ## Coordinate/context consistency (`node.origin`)
@@ -115,6 +115,19 @@ cross-repository dependency edges, cached references, and synthetic nodes
 needlessly hard to represent. `origin` lets a graph be explicit about which
 coordinates are guaranteed local and which aren't, rather than leaving that
 distinction for MOO-69/70/71 to invent independently (or not at all).
+
+**This distinction doesn't stop at schema validation** — `navigation.js`'s
+`createDrillDownEvent` accepts the selected node itself (not just its bare
+coordinate) specifically to read `origin` and translate it into an
+`intent` a renderer must branch on: `local` → `localDrillDown` (ordinary
+same-context navigation), `external` → `newContext` (the target needs a
+new `AnalysisContext`, not a same-context drill-down), `cached` →
+`cachedContext` (resolve through cache lookup/revalidation, possibly
+against a different context). A `synthetic` node has no source location of
+its own to drill into and is rejected unless the caller separately supplies
+`options.anchorCoordinate` naming a concrete target. This keeps the
+local/external/cached/synthetic distinction from being stranded in
+validation — the one place it's meant to govern behavior actually sees it.
 
 ## Extension rules
 

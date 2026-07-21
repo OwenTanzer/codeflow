@@ -97,7 +97,12 @@ function consume(result) {
   const summary = buildProvenanceSummary(result.graph);
   const entryNode = result.graph.nodes.find((n) => n.hints && n.hints.colorRole === 'entryPoint');
   const selection = createSelectionEvent(entryNode.id, entryNode.coordinate);
-  const drillDown = createDrillDownEvent(entryNode.coordinate, 'file');
+  // Pass the node itself (not just its coordinate) so createDrillDownEvent
+  // can read its `origin` — every node here is the default 'local', so this
+  // produces an ordinary same-context 'localDrillDown' intent; an
+  // 'external'/'cached'/'synthetic' node would produce a different intent
+  // (see navigation.js) a real renderer must branch on.
+  const drillDown = createDrillDownEvent(entryNode, 'file');
   return { summary, selection, drillDown };
 }
 

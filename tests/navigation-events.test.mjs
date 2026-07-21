@@ -43,6 +43,41 @@ test('repository -> file drill-down succeeds for a resolved coordinate with a pa
   assert.equal(evt.targetLayer, 'file');
 });
 
+test('a bare coordinate (no origin) defaults to origin "local" and intent "localDrillDown"', () => {
+  const evt = createDrillDownEvent(coord(), 'repository');
+  assert.equal(evt.origin, 'local');
+  assert.equal(evt.intent, 'localDrillDown');
+});
+
+test('a node object {coordinate, origin: "local"} produces an ordinary localDrillDown intent', () => {
+  const evt = createDrillDownEvent({ coordinate: coord(), origin: 'local' }, 'repository');
+  assert.equal(evt.intent, 'localDrillDown');
+});
+
+test('a node object with origin "external" produces a newContext intent, not an ordinary drill-down', () => {
+  const evt = createDrillDownEvent({ coordinate: coord(), origin: 'external' }, 'repository');
+  assert.equal(evt.origin, 'external');
+  assert.equal(evt.intent, 'newContext');
+});
+
+test('a node object with origin "cached" produces a cachedContext intent', () => {
+  const evt = createDrillDownEvent({ coordinate: coord(), origin: 'cached' }, 'repository');
+  assert.equal(evt.origin, 'cached');
+  assert.equal(evt.intent, 'cachedContext');
+});
+
+test('a synthetic node cannot drill down using its own (typically absent) coordinate', () => {
+  assert.throws(() => createDrillDownEvent({ coordinate: coord(), origin: 'synthetic' }, 'repository'), NavigationError);
+  assert.throws(() => createDrillDownEvent({ coordinate: null, origin: 'synthetic' }, 'repository'), NavigationError);
+});
+
+test('a synthetic node can drill down when the caller supplies an explicit anchorCoordinate', () => {
+  const anchor = coord({ path: 'src/real-target.py' });
+  const evt = createDrillDownEvent({ coordinate: null, origin: 'synthetic' }, 'repository', { anchorCoordinate: anchor });
+  assert.deepEqual(evt.coordinate, anchor);
+  assert.equal(evt.intent, 'localDrillDown');
+});
+
 test('file -> function drill-down requires a resolved function/method symbolPath', () => {
   const fnCoord = coord({ symbolPath: ['Service', 'run'], symbolKind: 'method' });
   const evt = createDrillDownEvent(fnCoord, 'file');

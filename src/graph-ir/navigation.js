@@ -80,23 +80,80 @@ export function createSelectionEvent(nodeId, coordinate) {
 }
 
 /**
+ * @typedef {'localDrillDown'|'newContext'|'cachedContext'} DrillDownIntent
+ * The behavioral distinction a renderer must actually branch on — this is
+ * `node.origin` (see graphIR.js) carried from validation into the one place
+ * that distinction is supposed to govern, rather than being stranded in
+ * schema validation and re-invented (or ignored) per renderer:
+ * - 'localDrillDown' (from origin 'local') — ordinary same-context
+ *   drill-down: request the next layer's graph using the *same*
+ *   AnalysisContext the current graph already has.
+ * - 'newContext' (from origin 'external') — the target lives in a
+ *   different repository/revision; the renderer must establish a new
+ *   AnalysisContext (a new top-level navigation, not a same-context
+ *   drill-down) rather than silently reusing the current one.
+ * - 'cachedContext' (from origin 'cached') — the target should be resolved
+ *   through cache lookup/revalidation against its own (possibly different)
+ *   context rather than assumed identical to the current graph's.
+ */
+
+/** @type {Record<import('./graphIR.js').CoordinateOrigin, DrillDownIntent>} */
+const INTENT_BY_ORIGIN = { local: 'localDrillDown', external: 'newContext', cached: 'cachedContext' };
+
+/**
  * @typedef {Object} DrillDownEvent
  * @property {'drillDown'} type
  * @property {import('./sourceCoordinate.js').SourceCoordinate} coordinate
  * @property {import('./graphIR.js').GraphLayer} sourceLayer
  * @property {import('./graphIR.js').GraphLayer} targetLayer
+ * @property {import('./graphIR.js').CoordinateOrigin} origin
+ * @property {DrillDownIntent} intent
  */
 
 /**
- * Double-click intent: carries the selected coordinate and the layer it
- * should open into. Throws rather than producing an event when the
- * coordinate is unresolved/ineligible, so an unresolved-symbol double-click
- * never silently dispatches an incorrect drill-down.
- * @param {import('./sourceCoordinate.js').SourceCoordinate} coordinate
+ * Double-click intent: carries the selected coordinate, the layer it should
+ * open into, and — carrying graphIR.js's local/external/cached/synthetic
+ * node classification into the one place it's meant to govern — an
+ * `intent` a renderer must branch on rather than treating every drill-down
+ * identically. Throws rather than producing an event when the coordinate is
+ * unresolved/ineligible, so an unresolved-symbol double-click never
+ * silently dispatches an incorrect drill-down.
+ *
+ * @param {import('./sourceCoordinate.js').SourceCoordinate | {coordinate: import('./sourceCoordinate.js').SourceCoordinate, origin?: import('./graphIR.js').CoordinateOrigin}} node
+ *   Either a bare coordinate (treated as `origin: 'local'`, matching the
+ *   pre-origin call shape), or `{coordinate, origin}` — typically the
+ *   selected GraphNode itself, since GraphNode already has both fields.
  * @param {import('./graphIR.js').GraphLayer} sourceLayer
+ * @param {object} [options]
+ * @param {import('./sourceCoordinate.js').SourceCoordinate} [options.anchorCoordinate]
+ *   Required when the node's origin is 'synthetic' — a synthetic node (e.g.
+ *   a control-flow entry/exit marker) has no source location of its own to
+ *   drill down to, so the caller must separately supply a concrete
+ *   navigation target.
+ * @param {import('./graphIR.js').CoordinateOrigin} [options.anchorOrigin] - origin of options.anchorCoordinate; defaults to 'local'
  * @returns {DrillDownEvent}
  */
-export function createDrillDownEvent(coordinate, sourceLayer) {
+export function createDrillDownEvent(node, sourceLayer, options = {}) {
+  let coordinate;
+  let origin;
+  if (node && typeof node === 'object' && 'coordinate' in node) {
+    coordinate = node.coordinate;
+    origin = node.origin || 'local';
+  } else {
+    coordinate = node;
+    origin = 'local';
+  }
+
+  if (origin === 'synthetic') {
+    if (!options.anchorCoordinate) {
+      throw new NavigationError(
+        "a synthetic node has no source location of its own to drill down to; supply options.anchorCoordinate naming a concrete navigation target"
+      );
+    }
+    coordinate = options.anchorCoordinate;
+    origin = options.anchorOrigin || 'local';
+  }
+
   const targetLayer = DRILL_DOWN_TARGET[sourceLayer];
   if (!targetLayer) {
     throw new NavigationError(`layer ${JSON.stringify(sourceLayer)} has no drill-down target`);
@@ -106,7 +163,12 @@ export function createDrillDownEvent(coordinate, sourceLayer) {
       `coordinate is not a valid drill-down target for layer ${JSON.stringify(targetLayer)} (ambiguous or missing required identity)`
     );
   }
-  return { type: 'drillDown', coordinate, sourceLayer, targetLayer };
+  const intent = INTENT_BY_ORIGIN[origin];
+  if (!intent) {
+    throw new NavigationError(`unknown coordinate origin ${JSON.stringify(origin)} for drill-down`);
+  }
+
+  return { type: 'drillDown', coordinate, sourceLayer, targetLayer, origin, intent };
 }
 
 /**
