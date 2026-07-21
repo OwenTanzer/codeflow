@@ -56,12 +56,13 @@ import { buildRepositoryRenderModel } from './repositoryRenderModel.js';
  * @param {{current: (id: string) => void}} options.activateFileRef - double-click ("node-activate"); no-op until MOO-68
  * @param {(info: {x:number,y:number,title:string,content:string}|null) => void} options.onHover
  * @param {() => void} options.onBackgroundClick - fires on empty-canvas click; caller clears selection/blast-radius state
+ * @param {Set<string>|null} [options.changedPaths] - MOO-69 Commit 5: file paths changed by the currently-loaded PR (see App()'s prData), highlighted as a rendering hint (a distinct ring) rather than a separate graph/model -- null/omitted when no PR context is active
  * @returns {() => void} cleanup function (stops the force simulation)
  */
 export function renderRepositoryGraph(options) {
   const {
     svgEl, data, colorMap, colorMode, theme, folderFilter, graphConfig,
-    COLORS, LAYER_COLORS,
+    COLORS, LAYER_COLORS, changedPaths,
     zoomRef, simRef, linksRef, nodesRef, selectFileRef, activateFileRef,
     onHover, onBackgroundClick,
   } = options;
@@ -168,7 +169,10 @@ export function renderRepositoryGraph(options) {
         node.on('dblclick',function(e,d){e.stopPropagation();if(activateFileRef&&activateFileRef.current)activateFileRef.current(d.id);});
         node.on('mouseenter',function(e,d){var r=svgEl.getBoundingClientRect();onHover({x:e.clientX-r.left+10,y:e.clientY-r.top,title:d.name,content:d.fnCount+' functions\n'+d.layer+' layer\n'+d.churn+' recent commits'});}).on('mouseleave',function(){onHover(null);});
         svg.on('click',function(e){if(e.target===svgEl){onBackgroundClick();link.attr('stroke',theme==='light'?'#ccc':'#333').attr('stroke-opacity',0.4);node.selectAll('.nc').attr('opacity',1).attr('fill',getC);}});
-        node.append('circle').attr('class','nc').attr('r',getR).attr('fill',getC).attr('stroke',function(d){var c=d3.color(getC(d));return c?c.brighter(0.3):'#fff';}).attr('stroke-width',1.5);
+        node.append('circle').attr('class','nc').attr('r',getR).attr('fill',getC)
+            .attr('stroke',function(d){if(changedPaths&&changedPaths.has(d.id))return'#f59e0b';var c=d3.color(getC(d));return c?c.brighter(0.3):'#fff';})
+            .attr('stroke-width',function(d){return changedPaths&&changedPaths.has(d.id)?3:1.5;})
+            .attr('stroke-dasharray',function(d){return changedPaths&&changedPaths.has(d.id)?'3,2':null;});
         // Hide labels for large graphs to reduce DOM overhead
         if(!isLargeGraph||graphConfig.showLabels){
             node.append('text').attr('text-anchor','middle').attr('dy',0).attr('fill',theme==='light'?'#333':'#eee').attr('font-size',function(d){return Math.max(6,Math.min(10,getR(d)*0.6))+'px';}).attr('font-family','JetBrains Mono').attr('font-weight','500').attr('pointer-events','none').text(function(d){var n=d.name.replace(/\.[^.]+$/,'');var maxLen=Math.max(4,Math.floor(getR(d)/2));return n.length>maxLen+1?n.slice(0,maxLen)+'…':n;});

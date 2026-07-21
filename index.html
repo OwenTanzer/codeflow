@@ -2321,6 +2321,15 @@ function App(){
     // selectFileRef are the same ref objects other parts of App() (zoom
     // controls, blast-radius highlighting, PDF export, "Back to Issues")
     // already read directly, so nothing else needed to change.
+    //
+    // MOO-69 Commit 5: changed-area markers as a rendering hint (a distinct
+    // ring around changed nodes), not a separate graph/model -- derived
+    // directly from the existing PR-impact-overlay feature's prData.files,
+    // no new data source. null (no highlight) outside an active PR context.
+    var changedPaths=useMemo(function(){
+        if(!prData||!prData.files)return null;
+        return new Set(prData.files.map(function(f){return f.filename;}));
+    },[prData]);
     useEffect(function(){
         if(!data||!svgRef.current)return;
         // MOO-69 Commit 3/4: prefer the repository-layer GraphIR once it's
@@ -2331,12 +2340,12 @@ function App(){
         // repositoryGraph at all.
         return renderRepositoryGraph({
             svgEl:svgRef.current,data:repositoryGraph||data,colorMap,colorMode,theme,folderFilter,graphConfig,
-            COLORS,LAYER_COLORS,
+            COLORS,LAYER_COLORS,changedPaths,
             zoomRef,simRef,linksRef,nodesRef,selectFileRef,activateFileRef,
             onHover:setTooltip,
             onBackgroundClick:function(){setSelected(null);setBlastRadius(null);}
         });
-    },[data,repositoryGraph,colorMap,colorMode,theme,folderFilter,graphConfig]);
+    },[data,repositoryGraph,colorMap,colorMode,theme,folderFilter,graphConfig,changedPaths]);
 
     // 3D Force Graph Hook
     useEffect(function(){
@@ -4182,9 +4191,12 @@ function App(){
                     // file-layer view yet, so this coexists with (rather
                     // than replaces) the existing tab content below; the
                     // placeholder panel itself renders just below this.
-                    navTrail.length>1&&React.createElement('div',{className:'panel-header',style:{margin:'0 -12px 0',padding:'8px 12px',display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid var(--bd)'}},
-                        React.createElement('button',{className:'top-btn',disabled:!navCanGoBack,onClick:goNavBack,style:{padding:'4px 8px',fontSize:11}},'← Back'),
-                        React.createElement('div',{style:{fontSize:11,color:'var(--t3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},navTrail.map(function(entry){return entry.label;}).join(' / '))
+                    (navTrail.length>1||repositoryGraph)&&React.createElement('div',{className:'panel-header',style:{margin:'0 -12px 0',padding:'8px 12px',display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid var(--bd)'}},
+                        navTrail.length>1&&React.createElement('button',{className:'top-btn',disabled:!navCanGoBack,onClick:goNavBack,style:{padding:'4px 8px',fontSize:11}},'← Back'),
+                        React.createElement('div',{style:{fontSize:11,color:'var(--t3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}},navTrail.map(function(entry){return entry.label;}).join(' / ')),
+                        // MOO-69 Commit 5: make the resolved revision visible
+                        // in the UI, not just carried invisibly in context.
+                        repositoryGraph&&React.createElement('div',{title:repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha,style:{fontSize:10,color:'var(--t3)',fontFamily:'JetBrains Mono',whiteSpace:'nowrap'}},repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha.slice(0,7))
                     ),
                     navPanel&&React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
                         React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' Drill down ('+navPanel.layer+')'),

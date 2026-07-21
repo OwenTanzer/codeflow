@@ -29,6 +29,11 @@ page.on('console', (msg) => consoleMessages.push(`[${msg.type()}] ${msg.text()}`
 page.on('pageerror', (err) => consoleMessages.push(`[pageerror] ${err.stack || err.message}`));
 
 await page.goto(url, { waitUntil: 'networkidle' });
+// The module-script bridge (index.html's <script type="module">, which sets
+// window.renderRepositoryGraph) can still be finishing its own bundled
+// module graph fractionally after `networkidle` fires -- wait for the
+// specific global this script depends on rather than assuming load order.
+await page.waitForFunction(() => typeof window.renderRepositoryGraph === 'function', { timeout: 10000 });
 
 const result = await page.evaluate(async (graph) => {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
