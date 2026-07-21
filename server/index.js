@@ -20,6 +20,7 @@ import { isAuthorized } from './lib/auth.js';
 import { RateLimiter } from './lib/rate-limit.js';
 import { createAnalyzeHandler } from './routes/analyze.js';
 import { createAnalyzeRepoHandler } from './routes/analyze-repo.js';
+import { createGraphRepositoryHandler } from './routes/graph-repository.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = join(__dirname, '..');
@@ -73,6 +74,7 @@ async function main() {
   const handleReadiness = createReadinessHandler({ config });
   const handleAnalyze = createAnalyzeHandler({ config, workspaceManager });
   const handleAnalyzeRepo = createAnalyzeRepoHandler({ config });
+  const handleGraphRepository = createGraphRepositoryHandler({ config });
 
   const server = createServer(async (req, res) => {
     const requestId = generateRequestId();
@@ -97,6 +99,8 @@ async function main() {
         await handleAnalyze(req, res, requestId);
       } else if (url.pathname === '/api/analyze-repo' && req.method === 'POST') {
         await handleAnalyzeRepo(req, res, requestId);
+      } else if (url.pathname === '/api/graph/repository' && req.method === 'POST') {
+        await handleGraphRepository(req, res, requestId);
       } else if (isApiRoute) {
         sendJson(res, 404, { error: 'Not found' });
       } else {

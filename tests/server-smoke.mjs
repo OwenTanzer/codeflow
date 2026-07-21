@@ -84,10 +84,17 @@ const child = spawn(process.execPath, [join(repoRoot, 'server', 'index.js')], {
     ALLOWED_OWNERS: 'octocat',
     // The rate limiter is keyed per client IP, shared across every request
     // this whole test makes (they all originate from localhost) -- high
-    // enough that the ~7 budget-consuming functional requests above don't
-    // trip it prematurely, low enough that the dedicated rate-limit test
-    // (which fires well past the remainder) still exceeds it quickly.
-    RATE_LIMIT_PER_MINUTE: '15',
+    // enough that the budget-consuming functional requests above (every
+    // authenticated request counts against the budget regardless of its
+    // eventual status code, including the /api/graph/repository steps MOO-69
+    // Commit 2 added) don't trip it prematurely, low enough that the
+    // dedicated rate-limit test (which fires well past the remainder) still
+    // exceeds it quickly. 14 authenticated requests happen before the
+    // dedicated rate-limit test (10 pre-existing + 4 for the MOO-69
+    // Commit 2 /api/graph/repository steps); a budget of 18 leaves that
+    // test comfortable margin to trip 429 partway through its own 12-request
+    // burst rather than right at the boundary.
+    RATE_LIMIT_PER_MINUTE: '18',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -257,7 +264,63 @@ try {
     assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
-  await step('rate limiting returns 429 once the per-minute budget (configured to 15) is exceeded', async () => {
+  await step('/api/graph/repository (real GitHub, allowlisted owner) returns a valid AdapterResult wrapping a repository GraphIR', async () => {
+    const res = await fetch(baseUrl + '/api/graph/repository', {
+      method: 'POST',
+      headers: authed({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ owner: 'octocat', repo: 'Hello-World' }),
+    });
+    const json = await res.json();
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(json)}`);
+    assert(json.graph.layer === 'repository', 'expected a repository-layer graph');
+    assert(json.graph.context.mode === 'repository', `expected context.mode "repository", got ${json.graph.context.mode}`);
+    assert(/^[0-9a-f]{7,40}$/i.test(json.graph.context.resolvedSha), 'expected context.resolvedSha to be a real commit SHA, not a branch name');
+    assert(json.graph.nodes.length >= 1, `expected at least 1 node, got ${json.graph.nodes.length}`);
+    assert(typeof json.cache.key === 'string' && json.cache.key.startsWith('graphir:v'), 'expected a graphir cache key');
+    assert(json.cache.hit === false, 'expected a cache miss (no durable cache store yet -- MOO-72)');
+  });
+
+  await step('/api/graph/repository respects an explicit ref, resolving it to a real commit SHA (not the branch name)', async () => {
+    const res = await fetch(baseUrl + '/api/graph/repository', {
+      method: 'POST',
+      headers: authed({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ owner: 'octocat', repo: 'Hello-World', ref: 'test' }),
+    });
+    const json = await res.json();
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(json)}`);
+    assert(json.graph.context.mode === 'branch', `expected context.mode "branch", got ${json.graph.context.mode}`);
+    assert(json.graph.context.ref === 'test', `expected context.ref "test", got ${json.graph.context.ref}`);
+    assert(json.graph.context.resolvedSha !== 'test', 'resolvedSha must be the resolved commit SHA, not the literal branch name');
+  });
+
+  await step("/api/graph/repository resolves a PR's context to its fork's source repository, not the base", async () => {
+    // Same PR referenced in the /api/analyze-repo fork-resolution check
+    // above (PR #10587, octocat/Hello-World, fork XiaoPangDaiMa/Hello-World).
+    const res = await fetch(baseUrl + '/api/graph/repository', {
+      method: 'POST',
+      headers: authed({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ owner: 'octocat', repo: 'Hello-World', pr: 10587 }),
+    });
+    const json = await res.json();
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(json)}`);
+    assert(json.graph.context.mode === 'pr', `expected context.mode "pr", got ${json.graph.context.mode}`);
+    assert(json.graph.context.owner === 'octocat', 'base owner should be preserved for provenance/allowlist identity');
+    assert(json.graph.context.sourceOwner === 'XiaoPangDaiMa', `expected sourceOwner to be the fork owner, got ${json.graph.context.sourceOwner}`);
+    assert(json.graph.context.resolvedSha === '736d73334223554b9a9501d7a004b9f770ee41ec', `expected the PR's head SHA, got ${json.graph.context.resolvedSha}`);
+  });
+
+  await step('/api/graph/repository rejects a repository not on the allowlist, before fetching it', async () => {
+    const res = await fetch(baseUrl + '/api/graph/repository', {
+      method: 'POST',
+      headers: authed({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ owner: 'torvalds', repo: 'linux' }),
+    });
+    const json = await res.json();
+    assert(res.status === 403, `expected 403, got ${res.status}`);
+    assert(Array.isArray(json.diagnostics) && json.diagnostics.length === 1, 'expected one sanitized diagnostic');
+  });
+
+  await step('rate limiting returns 429 once the per-minute budget (configured to 18) is exceeded', async () => {
     // 7 budget-consuming requests already happened above; fire well past
     // the remainder regardless of exact prior count.
     const results = [];

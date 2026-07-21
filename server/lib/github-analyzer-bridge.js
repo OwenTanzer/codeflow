@@ -80,6 +80,22 @@ async function resolveRef({ owner, repo, ref, pr }) {
 }
 
 /**
+ * Resolve any ref (branch name, tag, or already-a-SHA) to its canonical
+ * full commit SHA. GitHub's "get a commit" endpoint accepts all three forms
+ * interchangeably and returns the same shape either way, so this is one
+ * call regardless of which resolveRef() branch produced `ref` -- unlike
+ * resolveRef() itself, which already returns a real commit SHA for pr mode
+ * (prData.head.sha) and doesn't need this second call in that case (see
+ * analyzeGithubRepo below).
+ */
+async function resolveCommitSha(owner, repo, ref) {
+  const data = await apiRequest(`/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`, {
+    404: 'Ref not found (branch, tag, or commit does not exist)',
+  });
+  return data.sha;
+}
+
+/**
  * Pure selection logic over an already-fetched Git tree — no network
  * calls, so this is unit-testable directly (see
  * tests/server-github-bridge.test.mjs) instead of only reachable through
@@ -182,6 +198,13 @@ export async function analyzeGithubRepo(request, config) {
   GitHub.token = config.githubToken;
 
   const { owner, repo, ref: resolvedRef } = await resolveRef(request);
+  // pr mode already resolves to a real commit SHA (the PR's head.sha); any
+  // other mode's `ref` may still be a branch/tag name, so it needs this one
+  // extra call to pin down the actual commit GraphIR's AnalysisContext (see
+  // src/graph-ir/githubContext.js) requires -- resolvedSha must always be a
+  // resolved commit SHA, never a branch name. Harmless extra round trip for
+  // the existing /api/analyze-repo response, which doesn't consume it.
+  const resolvedSha = request.pr != null ? resolvedRef : await resolveCommitSha(owner, repo, resolvedRef);
   const { files, skippedOversizedFiles } = await fetchTree({
     owner,
     repo,
@@ -225,5 +248,16 @@ export async function analyzeGithubRepo(request, config) {
     yieldFn: async () => {},
   });
 
-  return { result, resolvedRef, fileCount: files.length, skippedOversizedFiles };
+  return {
+    result,
+    resolvedRef,
+    fileCount: files.length,
+    skippedOversizedFiles,
+    // Resolved source identity for GraphIR's AnalysisContext -- sourceOwner/
+    // sourceRepo differ from the request's owner/repo only for a forked PR
+    // (see resolveRef's own doc comment); every other mode has them equal.
+    sourceOwner: owner,
+    sourceRepo: repo,
+    resolvedSha,
+  };
 }
