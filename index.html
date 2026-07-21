@@ -1208,6 +1208,15 @@ function App(){
     // (useRepositorySelection's unrelated issue/pattern/security modal
     // state), not a rename of it.
     var _nav=useRepositoryDrillDownPanel(),navTrail=_nav.trail,navPanel=_nav.panel,navCanGoBack=_nav.canGoBack,openFileDrillDown=_nav.openDrillDown,goNavBack=_nav.goBack,resetNavHistory=_nav.resetHistory;
+    // MOO-69 PR review: guards against a slower, still-in-flight repository/
+    // PR analysis completing after a newer one has already started (or
+    // finished) and silently overwriting its data/repositoryGraph. Every
+    // repo-loading path captures the generation active when it begins, and
+    // only commits state if that generation is still current by the time
+    // it's ready to.
+    var analysisGenerationRef=useRef(0);
+    function beginNewAnalysisGeneration(){analysisGenerationRef.current+=1;return analysisGenerationRef.current;}
+    function isCurrentAnalysisGeneration(generation){return analysisGenerationRef.current===generation;}
     var _i=useState('folder'),colorMode=_i[0],setColorMode=_i[1];
     // MOO-67 Commit 4C: selected/blastRadius/rightTab/drillDown (the state
     // the repository view's selection + detail panel needs) now live in
@@ -1505,7 +1514,14 @@ function App(){
         var p=parseUrl(repoUrl);
         if(!p){setError('Invalid URL. Use format: owner/repo');return;}
         var currentExcludePatterns=activeExcludePatterns;
-        
+        var generation=beginNewAnalysisGeneration();
+        // MOO-69 PR review: resolved once, here, before any scan/fetch
+        // happens -- not after the fact. Every GitHub.scan/getFile call
+        // below is pinned to this exact commit, so the whole fetch pass
+        // observes one consistent revision instead of "whatever HEAD
+        // happens to be" at each independent request.
+        var resolvedSha=null,analysisContext=null;
+
         // Validate authentication inputs
         if(authMethod==='pat'&&!token){
             setError('Please enter a Personal Access Token');return;
@@ -1553,6 +1569,14 @@ function App(){
             setProgress('Loading language parsers...');
             return Parser.initTreeSitter().catch(function(){return null;});
         }).then(function(){
+            setProgress('Resolving repository revision...');
+            return GitHub.resolveRepositoryRevision(p.owner,p.repo);
+        }).then(function(revision){
+            if(!revision||!revision.resolvedSha){
+                throw new Error('Could not resolve the repository\'s current commit -- try again');
+            }
+            resolvedSha=revision.resolvedSha;
+            analysisContext=normalizeContext({owner:p.owner,repo:p.repo,mode:'branch',ref:revision.ref,resolvedSha:resolvedSha});
             setProgress('Checking rate limit...');
             return GitHub.getRateLimit();
         }).then(function(rl){
@@ -1581,12 +1605,12 @@ function App(){
                         return Promise.reject('cancelled');
                     }
                     setProgress('Scanning repository...');
-                    return GitHub.scan(p.owner,p.repo,setProgress,currentExcludePatterns);
+                    return GitHub.scan(p.owner,p.repo,setProgress,currentExcludePatterns,resolvedSha);
                 });
             }
 
             setProgress('Scanning repository...');
-            return GitHub.scan(p.owner,p.repo,setProgress,currentExcludePatterns);
+            return GitHub.scan(p.owner,p.repo,setProgress,currentExcludePatterns,resolvedSha);
         }).then(function(files){
             if(!files)return;// Cancelled
             if(!files.length)throw new Error(currentExcludePatterns.length?'No code files found after applying exclude patterns':'No code files found');
@@ -1606,7 +1630,7 @@ function App(){
                     var isCodeFile=f.isCode!==false&&Parser.isCode(f.name);
                     if(isCodeFile){
                         Promise.all([
-                            GitHub.getFile(p.owner,p.repo,f.path),
+                            GitHub.getFile(p.owner,p.repo,f.path,resolvedSha),
                             GitHub.getCommits(p.owner,p.repo,f.path,10).catch(function(){return[];})
                         ]).then(function(results){
                             var content=results[0];
@@ -1623,7 +1647,7 @@ function App(){
                             processFile(i+1);
                         }).catch(function(){processFile(i+1);});
                     }else{
-                        GitHub.getFile(p.owner,p.repo,f.path).then(function(content){
+                        GitHub.getFile(p.owner,p.repo,f.path,resolvedSha).then(function(content){
                             var layer=Parser.detectLayer(f.path);
                             var lines=content?content.split('\n').length:0;
                             analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content||'',functions:[],lines:lines,layer:layer,churn:0,isCode:false});
@@ -1636,6 +1660,7 @@ function App(){
                 }
 
                 async function finishAnalysis(){
+                    if(!isCurrentAnalysisGeneration(generation))return;
                     try{
                         var dataObj=await runAnalysisData({
                             analyzed:analyzed,
@@ -1644,27 +1669,23 @@ function App(){
                             progress:setProgress,
                             yieldFn:yieldToBrowser
                         });
+                        if(!isCurrentAnalysisGeneration(generation))return;
+                        // MOO-69 PR review: analysisContext was already
+                        // resolved *before* scanning began (see the top of
+                        // analyze()), and every scan/getFile call above was
+                        // pinned to that same resolvedSha -- so the graph is
+                        // built synchronously here, immediately alongside
+                        // dataObj, with no further async resolution step
+                        // that could race against a newer analysis.
+                        var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:analysisContext,analyzer:{name:'codeflow-repository-adapter',version:'1.0.0'}});
+                        if(!isCurrentAnalysisGeneration(generation))return;
                         setData(dataObj);
+                        setRepositoryGraph(graph);
                         setExpandedPaths(new Set(['']));
                         writeRepoRoute(p.owner+'/'+p.repo);
-                        // MOO-69 Commit 4: resolve the SHA -> build the
-                        // AnalysisContext -> produce the repository GraphIR,
-                        // in that order, once, right here -- never inside
-                        // the double-click handler (see
-                        // src/state/repositoryDrillDown.js's own comment on
-                        // this invariant). Best-effort: if revision
-                        // resolution fails (rate-limited, network error),
-                        // repositoryGraph stays null and drill-down simply
-                        // reports "not drillable" rather than blocking the
-                        // rest of the analysis.
-                        GitHub.resolveRepositoryRevision(p.owner,p.repo).then(function(revision){
-                            if(!revision||!revision.resolvedSha)return;
-                            var context=normalizeContext({owner:p.owner,repo:p.repo,mode:'branch',ref:revision.ref,resolvedSha:revision.resolvedSha});
-                            var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:context,analyzer:{name:'codeflow-repository-adapter',version:'1.0.0'}});
-                            setRepositoryGraph(graph);
-                        }).catch(function(){/* best-effort; repositoryGraph stays null */});
                         setLoading(false);
                     }catch(err){
+                        if(!isCurrentAnalysisGeneration(generation))return;
                         setError('Analysis failed: '+(err.message||err)+'. Try a smaller repository.');
                         setLoading(false);
                     }
@@ -1714,7 +1735,7 @@ function App(){
             }
 
             return beginRepoAnalysis();
-        }).catch(function(e){if(e!=='cancelled'){setError(e.message||e);setLoading(false);}});
+        }).catch(function(e){if(e!=='cancelled'&&isCurrentAnalysisGeneration(generation)){setError(e.message||e);setLoading(false);}});
     }
 
     function launchLocalFolderPicker(compiledPatterns){
@@ -3757,7 +3778,108 @@ function App(){
         var shareUrl=buildRepoUrl(repoInfo?repoInfo.owner+'/'+repoInfo.repo:repoUrl,true);
         navigator.clipboard.writeText(shareUrl).then(function(){showNotification('Link copied to clipboard!');}).catch(function(){showNotification('Failed to copy link','error');});
     }
-    function analyzePR(){if(!prUrl||!repoInfo)return;var m=prUrl.match(/\/pull\/(\d+)/);if(!m){showNotification('Invalid PR URL','error');return;}GitHub.getPR(repoInfo.owner,repoInfo.repo,m[1]).then(function(pr){if(pr)setPrData(pr);else showNotification('Could not load PR','error');});}
+    // MOO-69 PR review: a PR request must actually analyze the PR's head
+    // revision (fork-aware -- resolved.owner/resolved.repo name the fork
+    // when the PR is cross-repository, see GitHub.resolvePR), not just
+    // overlay PR metadata onto whatever the previously-loaded default-
+    // branch analysis happened to be. Deliberately does not offer the
+    // interactive soft/hard-limit confirmation dialogs analyze() does for
+    // a first repository load -- silently applies the same hard file-count
+    // cap with a notification instead, since this is triggered from an
+    // already-loaded-repository context, not a first-time analysis choice.
+    function analyzePRHead(owner,repo,resolvedSha,context,generation){
+        var excludePatterns=activeExcludePatterns;
+        return GitHub.scan(owner,repo,setProgress,excludePatterns,resolvedSha).then(function(files){
+            if(!isCurrentAnalysisGeneration(generation))return null;
+            if(!files||!files.length)throw new Error('No code files found in this pull request\'s head revision');
+            var HARD_LIMIT=ANALYSIS_LIMITS.repoMax;
+            if(files.length>HARD_LIMIT){
+                showNotification('Found '+files.length+' files. Using a '+HARD_LIMIT+'-file API sample.','warning');
+            }
+            var max=Math.min(files.length,HARD_LIMIT);
+            var analyzed=[];
+            var allFns=[];
+            return new Promise(function(resolveScan){
+                function processFile(i){
+                    if(!isCurrentAnalysisGeneration(generation)){resolveScan(null);return;}
+                    if(i>=max){resolveScan();return;}
+                    var f=files[i];
+                    setProgress('Analyzing PR '+(i+1)+'/'+max+': '+f.name);
+                    var isCodeFile=f.isCode!==false&&Parser.isCode(f.name);
+                    if(isCodeFile){
+                        Promise.all([
+                            GitHub.getFile(owner,repo,f.path,resolvedSha),
+                            GitHub.getCommits(owner,repo,f.path,10).catch(function(){return[];})
+                        ]).then(function(results){
+                            var content=results[0];
+                            var commits=results[1];
+                            if(content){
+                                var layer=Parser.detectLayer(f.path);
+                                var actualIsCode=!Parser.isScriptContainer(f.path)||Parser.hasEmbeddedCode(content,f.path);
+                                var fns=actualIsCode?Parser.extract(content,f.path):[];
+                                analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:Array.isArray(commits)?commits.length:0,isCode:actualIsCode});
+                                if(actualIsCode){fns.forEach(function(fn){allFns.push(Object.assign({},fn,{folder:f.folder,layer:layer}));});}
+                            }
+                            processFile(i+1);
+                        }).catch(function(){processFile(i+1);});
+                    }else{
+                        GitHub.getFile(owner,repo,f.path,resolvedSha).then(function(content){
+                            var layer=Parser.detectLayer(f.path);
+                            var lines=content?content.split('\n').length:0;
+                            analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content||'',functions:[],lines:lines,layer:layer,churn:0,isCode:false});
+                            processFile(i+1);
+                        }).catch(function(){
+                            analyzed.push({path:f.path,name:f.name,folder:f.folder,content:'',functions:[],lines:0,layer:Parser.detectLayer(f.path),churn:0,isCode:false});
+                            processFile(i+1);
+                        });
+                    }
+                }
+                processFile(0);
+            }).then(function(cancelled){
+                if(cancelled===null||!isCurrentAnalysisGeneration(generation))return null;
+                return runAnalysisData({analyzed:analyzed,allFns:allFns,excludePatterns:excludePatterns.map(function(x){return x.raw;}),progress:setProgress,yieldFn:yieldToBrowser});
+            });
+        }).then(function(dataObj){
+            if(!dataObj||!isCurrentAnalysisGeneration(generation))return null;
+            var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:context,analyzer:{name:'codeflow-repository-adapter',version:'1.0.0'}});
+            if(!isCurrentAnalysisGeneration(generation))return null;
+            setData(dataObj);
+            setRepositoryGraph(graph);
+            return{dataObj:dataObj,graph:graph};
+        });
+    }
+
+    function analyzePR(){
+        if(!prUrl||!repoInfo)return;
+        var m=prUrl.match(/\/pull\/(\d+)/);
+        if(!m){showNotification('Invalid PR URL','error');return;}
+        var prNumber=parseInt(m[1],10);
+        var generation=beginNewAnalysisGeneration();
+        setLoading(true);
+        setProgress('Loading pull request...');
+        GitHub.resolvePR(repoInfo.owner,repoInfo.repo,prNumber).then(function(resolved){
+            if(!isCurrentAnalysisGeneration(generation))return;
+            if(!resolved){showNotification('Could not load PR','error');setLoading(false);return;}
+            setPrData(resolved.pr);
+            setSelected(null);setBlastRadius(null);setOwnership(null);setFolderFilter(null);resetNavHistory();
+            var context=normalizeContext({
+                owner:repoInfo.owner,repo:repoInfo.repo,prNumber:prNumber,
+                resolvedSha:resolved.resolvedSha,baseSha:resolved.baseSha||undefined,
+                sourceOwner:resolved.owner,sourceRepo:resolved.repo
+            });
+            analyzePRHead(resolved.owner,resolved.repo,resolved.resolvedSha,context,generation).then(function(result){
+                if(!isCurrentAnalysisGeneration(generation))return;
+                if(!result){setLoading(false);return;}
+                setLoading(false);
+            }).catch(function(err){
+                if(!isCurrentAnalysisGeneration(generation))return;
+                setError('PR analysis failed: '+(err.message||err));
+                setLoading(false);
+            });
+        }).catch(function(){
+            if(isCurrentAnalysisGeneration(generation)){showNotification('Could not load PR','error');setLoading(false);}
+        });
+    }
     function resetAnalysis(){setData(null);setRepositoryGraph(null);resetNavHistory();setSelected(null);setBlastRadius(null);setOwnership(null);setRepoInfo(null);setRepoUrl('');setPrData(null);setFolderFilter(null);setLocalDirHandle(null);setLocalSourceKind(null);setArchitectureIncludeTests(false);setArchitectureIncludeBuildOutput(false);zipArchiveRef.current=null;zipFileRef.current=null;clearRoute();}
     function filterByFolder(path){setFolderFilter(function(prev){return prev===path?null:path;});}
     function getArchitectureViewStats(diagram,includeTests,includeBuildOutput){

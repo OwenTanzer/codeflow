@@ -2475,16 +2475,25 @@ var GitHub={
             return self.rateLimit;
         }).catch(function(){return self.rateLimit;});
     },
-    getFile:function(o,r,p){
-        return this.fetch(buildRepoApiUrl(o,r,['contents'].concat(splitRepoPath(p)))).then(function(d){return d.content?decodeBase64Utf8(d.content):null;}).catch(function(){return null;});
+    // `ref` (a resolved commit SHA, or omitted for "whatever HEAD currently
+    // is") is passed straight through to the Contents API's own `?ref=`
+    // parameter -- MOO-69 PR review: without this, every call independently
+    // fetched the live default-branch tip at the moment it happened to run,
+    // so two files (or a file and the resolved-SHA lookup) could observe
+    // different commits entirely if the branch advanced mid-scan.
+    getFile:function(o,r,p,ref){
+        return this.fetch(buildRepoApiUrl(o,r,['contents'].concat(splitRepoPath(p)),ref?{ref:ref}:undefined)).then(function(d){return d.content?decodeBase64Utf8(d.content):null;}).catch(function(){return null;});
     },
-    // MOO-69 Commit 4: scanTree/scan (above/below) fetch whatever the
-    // default branch's tip currently is, but never expose a resolved commit
-    // SHA to the caller -- GraphIR's AnalysisContext (src/graph-ir/
-    // githubContext.js) requires one always. Mirrors
-    // server/lib/github-analyzer-bridge.js's resolveCommitSha (same two-step
-    // default-branch-name -> commit-SHA resolution), just via the browser's
-    // own GitHub.fetch instead of the server's apiRequest.
+    // Resolves a branch name (or, if given explicitly, any ref) to a real
+    // commit SHA. MOO-69 PR review: this must run and its result must be
+    // used to pin every subsequent scan/getFile call -- resolving it
+    // *after* already scanning at an unpinned "whatever HEAD is right now"
+    // state produced exactly the cross-revision mismatch MOO-68 exists to
+    // prevent (scan could observe commit A, this could resolve to commit B
+    // if the branch advanced in between, and the GraphIR would then falsely
+    // claim A's content lives at B). Mirrors
+    // server/lib/github-analyzer-bridge.js's resolveCommitSha, via the
+    // browser's own GitHub.fetch instead of the server's apiRequest.
     resolveRepositoryRevision:function(o,r){
         var self=this;
         return this.fetch(buildRepoApiUrl(o,r)).then(function(repo){
@@ -2492,6 +2501,19 @@ var GitHub={
             return self.fetch(buildRepoApiUrl(o,r,['commits',branch])).then(function(commit){
                 return{ref:branch,resolvedSha:commit&&commit.sha};
             });
+        });
+    },
+    // Resolves a PR to the {owner,repo,resolvedSha,baseSha} it should
+    // actually be analyzed at -- mirrors server/lib/github-analyzer-bridge.js's
+    // resolveRef PR-branch handling: a PR's head commit usually lives in a
+    // fork (head.repo != the base owner/repo), so owner/repo here name the
+    // fork, not necessarily the repository the caller asked about.
+    resolvePR:function(o,r,prNum){
+        return this.getPR(o,r,prNum).then(function(pr){
+            if(!pr)return null;
+            var headRepo=pr.head&&pr.head.repo;
+            if(!headRepo)return null;// fork deleted/inaccessible
+            return{owner:headRepo.owner.login,repo:headRepo.name,resolvedSha:pr.head.sha,baseSha:pr.base&&pr.base.sha,pr:pr};
         });
     },
     getCommits:function(o,r,path,limit){
@@ -2514,15 +2536,19 @@ var GitHub={
         }).catch(function(){return null;});
     },
     // Fast scan using Git Trees API (single request for all files!)
-    scanTree:function(o,r,cb,compiledPatterns){
+    // `ref`, when supplied, must already be a resolved commit SHA (see
+    // resolveRepositoryRevision/resolvePR above) -- skips the "look up the
+    // default branch" round trip entirely and fetches the tree at exactly
+    // that commit, rather than re-deriving (and thus potentially observing
+    // a different, later commit than) the branch tip a second time.
+    scanTree:function(o,r,cb,compiledPatterns,ref){
         var self=this;
         if(cb)cb('Fetching repository tree...');
-        // First get repo info to find default branch
-        return this.fetch(buildRepoApiUrl(o,r)).then(function(repo){
-            var branch=repo.default_branch||'main';
-            if(cb)cb('Loading file tree ('+branch+')...');
+        var treeRefPromise=ref?Promise.resolve(ref):this.fetch(buildRepoApiUrl(o,r)).then(function(repo){return repo.default_branch||'main';});
+        return treeRefPromise.then(function(resolvedRef){
+            if(cb)cb('Loading file tree ('+resolvedRef+')...');
             // Get full tree in one request with recursive flag
-            return self.fetch(buildRepoApiUrl(o,r,['git','trees',branch],{recursive:1}));
+            return self.fetch(buildRepoApiUrl(o,r,['git','trees',resolvedRef],{recursive:1}));
         }).then(function(tree){
             if(!tree.tree)throw new Error('Invalid tree response');
             var f=[];
@@ -2543,11 +2569,14 @@ var GitHub={
             return f;
         });
     },
-    // Fallback: recursive scan using Contents API (many requests)
-    scanRecursive:function(o,r,cb,p,d,compiledPatterns){
+    // Fallback: recursive scan using Contents API (many requests). `ref`
+    // (a resolved commit SHA), when supplied, is passed through to every
+    // directory listing call so the whole recursive walk observes one
+    // consistent commit, not whatever HEAD happens to be at each request.
+    scanRecursive:function(o,r,cb,p,d,compiledPatterns,ref){
         var self=this;p=p||'';d=d||0;
         if(d>10)return Promise.resolve([]);
-        return this.fetch(buildRepoApiUrl(o,r,['contents'].concat(splitRepoPath(p)))).then(function(c){
+        return this.fetch(buildRepoApiUrl(o,r,['contents'].concat(splitRepoPath(p)),ref?{ref:ref}:undefined)).then(function(c){
             var f=[];
             var promises=[];
             c.forEach(function(i){
@@ -2555,7 +2584,7 @@ var GitHub={
                     f.push({path:i.path,name:i.name,folder:i.path.includes('/')?i.path.substring(0,i.path.lastIndexOf('/')):'root',size:i.size,isCode:Parser.isCode(i.name)});
                 }else if(i.type==='dir'&&!shouldIgnoreDirectory(i.path,i.name,compiledPatterns)){
                     if(cb)cb('/'+i.path);
-                    promises.push(self.scanRecursive(o,r,cb,i.path,d+1,compiledPatterns).catch(function(){return[];}));
+                    promises.push(self.scanRecursive(o,r,cb,i.path,d+1,compiledPatterns,ref).catch(function(){return[];}));
                 }
             });
             return Promise.all(promises).then(function(results){
@@ -2564,12 +2593,14 @@ var GitHub={
             });
         }).catch(function(e){if(d===0)throw e;return[];});
     },
-    // Smart scan: try tree API first (1 request), fallback to recursive
-    scan:function(o,r,cb,compiledPatterns){
+    // Smart scan: try tree API first (1 request), fallback to recursive.
+    // `ref` (a resolved commit SHA), when supplied, pins both paths to the
+    // same commit -- see scanTree/scanRecursive above.
+    scan:function(o,r,cb,compiledPatterns,ref){
         var self=this;
-        return this.scanTree(o,r,cb,compiledPatterns).catch(function(e){
+        return this.scanTree(o,r,cb,compiledPatterns,ref).catch(function(e){
             if(cb)cb('Tree API failed, using fallback...');
-            return self.scanRecursive(o,r,cb,'',0,compiledPatterns);
+            return self.scanRecursive(o,r,cb,'',0,compiledPatterns,ref);
         });
     }
 };
