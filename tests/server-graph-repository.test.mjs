@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-const { buildRequestContext } = await import('../server/routes/graph-repository.js');
+const { buildRequestContext, withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN } = await import('../server/routes/graph-repository.js');
 
 const SHA = 'a'.repeat(40);
 
@@ -42,4 +42,28 @@ test('a same-repository PR (no fork) still normalizes cleanly with sourceOwner/s
   const context = buildRequestContext(request, resolved);
   assert.equal(context.sourceOwner, 'octocat');
   assert.equal(context.sourceRepo, 'Hello-World');
+});
+
+test('withTimeout resolves normally when the wrapped promise finishes first', async () => {
+  const result = await withTimeout(Promise.resolve('done'), 1000, 'should not fire');
+  assert.equal(result, 'done');
+});
+
+test('withTimeout rejects with GraphAnalysisTimeoutError when the wrapped promise is too slow', async () => {
+  const neverResolves = new Promise(() => {});
+  await assert.rejects(() => withTimeout(neverResolves, 20, 'took too long'), (err) => {
+    assert.ok(err instanceof GraphAnalysisTimeoutError);
+    assert.equal(err.message, 'took too long');
+    return true;
+  });
+});
+
+test('withTimeout propagates the wrapped promise\'s own rejection (not a timeout) when it fails first', async () => {
+  await assert.rejects(() => withTimeout(Promise.reject(new Error('real failure')), 1000, 'should not fire'), /real failure/);
+});
+
+test('RATE_LIMIT_PATTERN matches GitHub\'s real rate-limit error text', () => {
+  assert.equal(RATE_LIMIT_PATTERN.test('API rate limit exceeded for 1.2.3.4.'), true);
+  assert.equal(RATE_LIMIT_PATTERN.test('Ref not found (branch, commit, or PR head does not exist)'), false);
+  assert.equal(RATE_LIMIT_PATTERN.test('Repository not found'), false);
 });

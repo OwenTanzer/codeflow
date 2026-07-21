@@ -84,6 +84,24 @@ test('loadConfig respects MAX_FILE_BYTES/MAX_REPO_BYTES overrides', async () => 
   });
 });
 
+test('loadConfig defaults graphAnalysisTimeoutMs and respects GRAPH_ANALYSIS_TIMEOUT_MS override', async () => {
+  await withBuiltRepo((repoRoot) => {
+    const defaultConfig = loadConfig({ repoRoot, env: VALID_ENV });
+    assert.equal(defaultConfig.graphAnalysisTimeoutMs, 60000);
+    const overridden = loadConfig({ repoRoot, env: { ...VALID_ENV, GRAPH_ANALYSIS_TIMEOUT_MS: '5000' } });
+    assert.equal(overridden.graphAnalysisTimeoutMs, 5000);
+  });
+});
+
+test('loadConfig rejects an invalid GRAPH_ANALYSIS_TIMEOUT_MS', async () => {
+  await withBuiltRepo((repoRoot) => {
+    assert.throws(
+      () => loadConfig({ repoRoot, env: { ...VALID_ENV, GRAPH_ANALYSIS_TIMEOUT_MS: '-5' } }),
+      /GRAPH_ANALYSIS_TIMEOUT_MS must be a positive integer/
+    );
+  });
+});
+
 test('loadConfig rejects an invalid PORT with an actionable error', async () => {
   await withBuiltRepo((repoRoot) => {
     assert.throws(

@@ -25,9 +25,27 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-function sendError(res, status, message, category, requestId) {
-  const diagnostic = sanitizeDiagnostic(new AdapterError(category, message));
+function sendError(res, status, message, category, requestId, options) {
+  const diagnostic = sanitizeDiagnostic(new AdapterError(category, message, options));
   sendJson(res, status, { error: message, diagnostics: [diagnostic], requestId });
+}
+
+// GitHub's own rate-limit responses (403, occasionally 429) surface through
+// GithubFetchError as plain text ("API rate limit exceeded for ...") --
+// there's no separate ErrorCategory for this in MOO-68's fixed set (rate
+// limiting is a kind of github_access failure, not a ninth category), but
+// callers still need to tell "this repository doesn't exist" apart from
+// "come back later" -- retryable:true plus a 429 status is that signal.
+export const RATE_LIMIT_PATTERN = /rate limit/i;
+
+export class GraphAnalysisTimeoutError extends Error {}
+
+export function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new GraphAnalysisTimeoutError(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -87,8 +105,42 @@ export function createGraphRepositoryHandler({ config }) {
     log.info('graph-repository request accepted', { owner: request.owner, repo: request.repo, ref: request.ref, pr: request.pr });
 
     const startedAt = new Date().toISOString();
+    const startedAtMs = Date.now();
+
+    // Phase 1: fetch + parse (GitHub API calls, Parser.extract on each
+    // file's content). Failures here are about the repository's own state
+    // or content -- github_access, timeout, or parser_failure -- not a bug
+    // in this endpoint's own glue code, so they're categorized and logged
+    // distinctly from phase 2's failures below.
+    let resolved;
     try {
-      const resolved = await analyzeGithubRepo(request, config);
+      resolved = await withTimeout(
+        analyzeGithubRepo(request, config),
+        config.graphAnalysisTimeoutMs,
+        `Repository analysis did not complete within ${config.graphAnalysisTimeoutMs}ms`
+      );
+    } catch (err) {
+      const durationMs = Date.now() - startedAtMs;
+      if (err instanceof GraphAnalysisTimeoutError) {
+        log.warn('graph-repository analysis timed out', { owner: request.owner, repo: request.repo, durationMs });
+        return sendError(res, 504, err.message, 'timeout', requestId);
+      }
+      if (err instanceof GithubFetchError) {
+        const rateLimited = RATE_LIMIT_PATTERN.test(err.message);
+        log.warn('github fetch failed', { message: err.message, rateLimited, durationMs });
+        return sendError(res, rateLimited ? 429 : 502, err.message, 'github_access', requestId, { retryable: rateLimited });
+      }
+      // Anything else escaping analyzeGithubRepo (Parser.extract,
+      // buildAnalysisData) is a failure to parse this repository's actual
+      // content, not an unsupported-input or internal-server condition.
+      log.error('repository parsing failed', { message: err && err.message, durationMs });
+      return sendError(res, 502, 'Repository analysis failed while parsing its content', 'parser_failure', requestId);
+    }
+
+    // Phase 2: build the GraphIR/AdapterResult from what phase 1 already
+    // fetched -- no more network calls, so failures here really are this
+    // endpoint's own contract/glue-code problems.
+    try {
       const context = buildRequestContext(request, resolved);
       const graph = adaptRepositoryAnalysis({ analysisData: resolved.result, context, analyzer: ANALYZER });
       const cacheKey = buildCacheKey({
@@ -97,36 +149,42 @@ export function createGraphRepositoryHandler({ config }) {
         analyzerVersion: ANALYZER.version,
         graphSchemaVersion: GRAPH_IR_SCHEMA_VERSION,
       });
+      const durationMs = Date.now() - startedAtMs;
       const adapterResult = buildAdapterResult({
         graph,
         warnings: graph.warnings,
         provenance: { analyzerName: ANALYZER.name, analyzerVersion: ANALYZER.version },
-        timing: { startedAt, durationMs: Date.now() - Date.parse(startedAt) },
+        timing: { startedAt, durationMs },
         // No durable cache store exists yet -- centralized caching is
         // MOO-72's job (see docs/graph-ir-contract.md's ownership rules).
         // This endpoint reports the key an eventual cache would use, always
         // as a miss.
         cache: { key: cacheKey, hit: false },
       });
+      // Sufficient to identify where an analysis run went, without ever
+      // logging source content or the GitHub token: request ID (via
+      // createRequestLogger), repository/revision identity, duration,
+      // node/edge counts, cache status, and warning count.
       log.info('graph-repository analysis complete', {
+        owner: request.owner,
+        repo: request.repo,
         sourceOwner: resolved.sourceOwner,
         sourceRepo: resolved.sourceRepo,
         resolvedSha: resolved.resolvedSha,
+        durationMs,
         nodeCount: graph.nodes.length,
         edgeCount: graph.edges.length,
         warningCount: graph.warnings.length,
+        cacheKey,
+        cacheHit: false,
       });
       sendJson(res, 200, adapterResult);
     } catch (err) {
-      if (err instanceof GithubFetchError) {
-        log.warn('github fetch failed', { message: err.message });
-        return sendError(res, 502, err.message, 'github_access', requestId);
-      }
       if (err instanceof AnalysisContextError || err instanceof AdapterResultError) {
         log.warn('graph-repository contract violation', { message: err.message });
         return sendError(res, 502, 'The analyzed repository state could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
       }
-      log.error('graph-repository analysis failed', { message: err && err.message });
+      log.error('graph-repository internal error', { message: err && err.message });
       sendError(res, 500, 'Analysis failed', 'internal_error', requestId);
     }
   };
