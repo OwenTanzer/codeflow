@@ -16,6 +16,7 @@
 // to stub those globals just to import analyzer.js safely).
 
 import { createRequire } from 'node:module';
+import { normalizePath } from '../../src/graph-ir/sourceCoordinate.js';
 
 const require = createRequire(import.meta.url);
 
@@ -94,43 +95,64 @@ function qualifiedNameFor(moduleId, scopeChain) {
 /**
  * Recursively walk a class/function/module body, appending one entry per
  * class/function/method definition found. `enclosingKind` is the kind of
- * the scope `bodyNode` belongs to ('module'|'class'|'function') — a def
- * directly inside a 'class' body is a 'method'; a def inside a 'function'
- * (or 'method') body is a nested 'function', never a 'method'.
+ * the scope `node`'s definitions belong to ('module'|'class'|'function') —
+ * a def directly inside a 'class' body is a 'method'; a def inside a
+ * 'function' (or 'method') body is a nested 'function', never a 'method'.
+ *
+ * Recurses into every child, not just direct children of a def's own body
+ * block: only `function_definition`/`class_definition` (Python's actual
+ * scope-introducing constructs) start a new scope. Every other construct —
+ * `if`/`elif`/`else`, `try`/`except`/`finally`, `for`/`while` (+ their
+ * `else`), `with`, `match`/`case` — is scope-transparent in real Python, so
+ * a `def` nested inside one of those must still be indexed at its
+ * enclosing scope, not skipped. A prior version only checked direct
+ * children of a body block and silently missed every conditionally/
+ * compound-statement-wrapped definition (found via code review against a
+ * real fixture using `if PY2: def x / else: def x` — exactly the pattern
+ * this ticket's own pyanSymbolJoin fix was written to handle, but which
+ * the indexer itself never actually surfaced as a symbol-index entry
+ * before this fix).
  */
-function walkBody(bodyNode, ctx, scopeChain, enclosingKind, entries) {
-  if (!bodyNode) return;
-  for (let i = 0; i < bodyNode.namedChildCount; i++) {
-    const child = bodyNode.namedChild(i);
+function walkNode(node, ctx, scopeChain, enclosingKind, entries) {
+  if (!node) return;
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
     let defNode = child;
     let decorators = [];
     if (child.type === 'decorated_definition') {
       decorators = collectDecorators(child);
       defNode = child.namedChildren[child.namedChildren.length - 1];
     }
-    if (!defNode || !DEF_TYPES.has(defNode.type)) continue;
 
-    const nameNode = defNode.childForFieldName('name');
-    const shortName = nameNode ? nameNode.text : '<anonymous>';
-    const newScopeChain = [...scopeChain, shortName];
-    const isClass = defNode.type === 'class_definition';
-    const symbolKind = isClass ? 'class' : enclosingKind === 'class' ? 'method' : 'function';
+    if (defNode && DEF_TYPES.has(defNode.type)) {
+      const nameNode = defNode.childForFieldName('name');
+      const shortName = nameNode ? nameNode.text : '<anonymous>';
+      const newScopeChain = [...scopeChain, shortName];
+      const isClass = defNode.type === 'class_definition';
+      const symbolKind = isClass ? 'class' : enclosingKind === 'class' ? 'method' : 'function';
 
-    entries.push({
-      path: ctx.path,
-      moduleId: ctx.moduleId,
-      qualifiedName: qualifiedNameFor(ctx.moduleId, newScopeChain),
-      shortName,
-      symbolKind,
-      symbolPath: newScopeChain,
-      parentScope: scopeChain.length === 0 ? ctx.moduleId : qualifiedNameFor(ctx.moduleId, scopeChain),
-      ...rangeOf(defNode),
-      decorators,
-      isAsync: isAsyncDef(defNode),
-    });
+      entries.push({
+        path: ctx.path,
+        moduleId: ctx.moduleId,
+        qualifiedName: qualifiedNameFor(ctx.moduleId, newScopeChain),
+        shortName,
+        symbolKind,
+        symbolPath: newScopeChain,
+        parentScope: scopeChain.length === 0 ? ctx.moduleId : qualifiedNameFor(ctx.moduleId, scopeChain),
+        ...rangeOf(defNode),
+        decorators,
+        isAsync: isAsyncDef(defNode),
+      });
 
-    const childBody = defNode.childForFieldName('body');
-    walkBody(childBody, ctx, newScopeChain, isClass ? 'class' : 'function', entries);
+      const childBody = defNode.childForFieldName('body');
+      walkNode(childBody, ctx, newScopeChain, isClass ? 'class' : 'function', entries);
+      continue;
+    }
+
+    // Not a definition itself -- descend with the *same* scope in case a
+    // definition is nested inside a compound statement (if/try/for/while/
+    // with/match) at this same lexical scope.
+    walkNode(child, ctx, scopeChain, enclosingKind, entries);
   }
 }
 
@@ -144,12 +166,20 @@ function walkBody(bodyNode, ctx, scopeChain, enclosingKind, entries) {
 export async function indexPythonSymbols({ path, content }) {
   const parser = await getParser();
   const tree = parser.parse(content);
-  const moduleId = moduleIdFromPath(path);
-  const ctx = { path, moduleId };
+  // Normalized once, at the source, so every entry's `path` is consistently
+  // POSIX-form regardless of the caller's own path-separator convention
+  // (e.g. Node's `path.join` on Windows produces backslashes) -- found via
+  // PR review: pyanSymbolJoin.js's path filter compared this raw path
+  // directly against pyan3's own (already-normalized) path and silently
+  // never matched on Windows, since a hard filter surfaced what a
+  // soft warning previously masked.
+  const normalizedPath = normalizePath(path);
+  const moduleId = moduleIdFromPath(normalizedPath);
+  const ctx = { path: normalizedPath, moduleId };
 
   const entries = [
     {
-      path,
+      path: normalizedPath,
       moduleId,
       qualifiedName: moduleId,
       shortName: moduleId.split('.').filter(Boolean).pop() || moduleId,
@@ -165,10 +195,10 @@ export async function indexPythonSymbols({ path, content }) {
     },
   ];
 
-  walkBody(tree.rootNode, ctx, [], 'module', entries);
+  walkNode(tree.rootNode, ctx, [], 'module', entries);
 
   return {
-    path,
+    path: normalizedPath,
     moduleId,
     parseErrors: tree.rootNode.hasError(),
     entries,

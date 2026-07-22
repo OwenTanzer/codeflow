@@ -191,6 +191,93 @@ test('synthetic: same-name redefinitions at different lines (typing.overload/@pr
   assert.equal(matched.symbol.startLine, 18, 'the last-defined stub wins, matching Python\'s actual name-shadowing semantics');
 });
 
+test('synthetic: a genuine path mismatch is unresolved, not matched-with-a-warning', () => {
+  // PR review finding: a prior version matched purely on qualifiedName and
+  // only warned on a path/kind disagreement, still returning matchState:
+  // 'matched' with that candidate's exact (wrong) coordinate. A real path
+  // mismatch must now correctly fail to match at all.
+  const joined = joinPyanToSymbols({
+    pyanNodes: [{ id: 'mod__thing', label: 'thing', qualifiedName: 'mod.thing', path: '/workspace/mod.py', line: 3, kind: 'function', parentScope: 'mod' }],
+    pyanEdges: [],
+    symbolEntries: [
+      {
+        path: 'different_file.py', // disagrees with pyan3's reported path
+        moduleId: 'mod',
+        qualifiedName: 'mod.thing',
+        shortName: 'thing',
+        symbolKind: 'function',
+        symbolPath: ['thing'],
+        parentScope: 'mod',
+        startLine: 3,
+        startColumn: 0,
+        endLine: 4,
+        endColumn: 0,
+        decorators: [],
+        isAsync: false,
+      },
+    ],
+    workspaceDir: '/workspace',
+  });
+  assert.equal(joined.stats.matchedCount, 0);
+  assert.equal(joined.stats.unresolvedCount, 1);
+  assert.equal(joined.resolved[0].matchState, 'unresolved');
+  assert.equal(joined.resolved[0].symbol, null, 'no coordinate is attached when the only candidate disagreed with pyan3');
+});
+
+test('synthetic: a genuine kind mismatch (incompatible kind, not staticmethod/classmethod) is unresolved, not matched-with-a-warning', () => {
+  const joined = joinPyanToSymbols({
+    pyanNodes: [{ id: 'mod__Thing', label: 'Thing', qualifiedName: 'mod.Thing', path: '/workspace/mod.py', line: 1, kind: 'class', parentScope: null }],
+    pyanEdges: [],
+    symbolEntries: [
+      {
+        path: 'mod.py',
+        moduleId: 'mod',
+        qualifiedName: 'mod.Thing',
+        shortName: 'Thing',
+        symbolKind: 'function', // pyan3 says class, tree-sitter says function -- a real mismatch
+        symbolPath: ['Thing'],
+        parentScope: 'mod',
+        startLine: 1,
+        startColumn: 0,
+        endLine: 2,
+        endColumn: 0,
+        decorators: [],
+        isAsync: false,
+      },
+    ],
+    workspaceDir: '/workspace',
+  });
+  assert.equal(joined.stats.matchedCount, 0);
+  assert.equal(joined.stats.unresolvedCount, 1);
+});
+
+test('synthetic: staticmethod/classmethod are compatible with our canonical "method" kind, not treated as a mismatch', () => {
+  const joined = joinPyanToSymbols({
+    pyanNodes: [{ id: 'mod__Thing__build', label: 'build', qualifiedName: 'mod.Thing.build', path: '/workspace/mod.py', line: 2, kind: 'staticmethod', parentScope: 'mod.Thing' }],
+    pyanEdges: [],
+    symbolEntries: [
+      {
+        path: 'mod.py',
+        moduleId: 'mod',
+        qualifiedName: 'mod.Thing.build',
+        shortName: 'build',
+        symbolKind: 'method',
+        symbolPath: ['Thing', 'build'],
+        parentScope: 'mod.Thing',
+        startLine: 2,
+        startColumn: 4,
+        endLine: 3,
+        endColumn: 0,
+        decorators: ['@staticmethod'],
+        isAsync: false,
+      },
+    ],
+    workspaceDir: '/workspace',
+  });
+  assert.equal(joined.stats.matchedCount, 1);
+  assert.equal(joined.resolved[0].matchState, 'matched');
+});
+
 test('symbolOnly: tree-sitter succeeds on syntax_error.py while pyan3 produces nothing for it', async () => {
   const content = readFileSync(join(FIXTURES, 'syntax_error.py'), 'utf8');
   const indexed = await indexPythonSymbols({ path: 'syntax_error.py', content });

@@ -152,6 +152,34 @@ test('syntax_error.py: broken syntax yields a partial index with parseErrors:tru
   assert.equal(solo.symbolKind, 'function');
 });
 
+test('conditional_defs.py: definitions nested inside if/else, try/except, for, and with are still indexed', async () => {
+  // PR review finding: walkNode previously only checked direct children of
+  // a body block, silently skipping any def nested inside a compound
+  // statement -- exactly the `if PY2: def x / else: def x` pattern this
+  // ticket's own pyanSymbolJoin fix (0f9a771) was written to handle, but
+  // which the indexer itself never actually surfaced before this fix.
+  const content = readFileSync(join(FIXTURES, 'conditional_defs.py'), 'utf8');
+  const result = await indexPythonSymbols({ path: 'conditional_defs.py', content });
+
+  const greetEntries = result.entries.filter((e) => e.qualifiedName === 'conditional_defs.greet');
+  assert.equal(greetEntries.length, 2, 'both if/else branches of the module-level def are indexed');
+  assert.deepEqual(greetEntries.map((e) => e.symbolKind), ['function', 'function']);
+  assert.deepEqual(greetEntries.map((e) => e.startLine).sort((a, b) => a - b), [4, 7]);
+
+  const buildEntries = result.entries.filter((e) => e.qualifiedName === 'conditional_defs.Widget.build');
+  assert.equal(buildEntries.length, 2, 'both try/except branches of the method are indexed');
+  assert.deepEqual(buildEntries.map((e) => e.symbolKind), ['method', 'method'], 'still classified as a method, not a bare function, despite the try/except wrapper');
+  assert.deepEqual(buildEntries.map((e) => e.parentScope), ['conditional_defs.Widget', 'conditional_defs.Widget']);
+
+  const loopDefined = result.entries.find((e) => e.qualifiedName === 'conditional_defs.Widget.loop_defined');
+  assert.ok(loopDefined, 'a def nested inside a for-loop body is indexed');
+  assert.equal(loopDefined.symbolKind, 'method');
+
+  const withDefined = result.entries.find((e) => e.qualifiedName === 'conditional_defs.Widget.with_defined');
+  assert.ok(withDefined, 'a def nested inside a with-block body is indexed');
+  assert.equal(withDefined.symbolKind, 'method');
+});
+
 test('determinism: parsing the same source twice yields identical qualifiedNames', async () => {
   const content = loadFixture('nested.py');
   const first = await indexPythonSymbols({ path: 'nested.py', content });

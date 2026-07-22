@@ -19,7 +19,7 @@ import { isRepoAllowed } from '../lib/allowlist.js';
 import { createRequestLogger } from '../lib/logger.js';
 import { validateFileRequest } from '../lib/validate-file-request.js';
 import { ValidationError } from '../lib/validate-repo-request.js';
-import { resolveRef, resolveCommitSha, fetchTree, fetchAllContents, GithubFetchError } from '../lib/github-analyzer-bridge.js';
+import { resolveRef, resolveCommitSha, fetchRawTree, fetchAllContents, GithubFetchError } from '../lib/github-analyzer-bridge.js';
 import { buildRequestContext, withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN } from './graph-repository.js';
 import { stagePythonFiles, runPyan3 } from '../lib/pyan3Adapter.js';
 import { parseDotGraph, extractPyanNodes, extractPyanEdges } from '../lib/dotGraph.js';
@@ -80,6 +80,49 @@ export async function runPyan3ForFile({ pythonBin, workspace, absolutePaths, tim
       failedCategory: category,
     };
   }
+}
+
+/**
+ * Apply file-count/byte-size budgets to an already-selected target file
+ * set (one file, or the members of one requested package) — never to the
+ * whole repository tree. PR review finding: routing the file layer
+ * through fetchTree() applied MAX_REPO_FILES/MAX_REPO_BYTES to *every*
+ * analyzable file in the repository before the requested file/package was
+ * even selected, so a tiny file in a large monorepo could be rejected for
+ * reasons entirely unrelated to what was actually requested. Mirrors
+ * `selectAnalyzableFiles`'s own skip-oversized-individually /
+ * fail-on-aggregate-or-count semantics, scoped to just this request's
+ * target set, and deliberately does not apply
+ * shouldIgnoreDirectory/shouldExcludeFile — those are repository-wide
+ * *view* policy (hiding vendor/build directories from the overall graph),
+ * not a reason to refuse a file the caller explicitly asked to see.
+ * @param {{path: string, size?: number}[]} targetFiles
+ * @param {{maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number}} limits
+ * @returns {{path: string, size?: number}[]}
+ * @throws {ValidationError}
+ */
+export function enforceFileRequestLimits(targetFiles, { maxRepoFiles, maxFileBytes, maxRepoBytes }) {
+  const files = [];
+  let totalBytes = 0;
+  for (const file of targetFiles) {
+    const size = typeof file.size === 'number' ? file.size : 0;
+    if (size > maxFileBytes) continue; // skipped, same as selectAnalyzableFiles' per-file behavior
+    totalBytes += size;
+    if (totalBytes > maxRepoBytes) {
+      throw new ValidationError(
+        `The requested file/package exceeds the configured aggregate size limit of ${maxRepoBytes} bytes ` +
+          `(reached ${totalBytes} bytes and counting). Raise MAX_REPO_BYTES if this is expected.`
+      );
+    }
+    files.push(file);
+  }
+  if (files.length > maxRepoFiles) {
+    throw new ValidationError(
+      `The requested package has ${files.length} analyzable files, over the configured limit of ${maxRepoFiles}. ` +
+        'Raise MAX_REPO_FILES if this is expected.'
+    );
+  }
+  return files;
 }
 
 /**
@@ -168,22 +211,27 @@ export function createGraphFileHandler({ config, workspaceManager }) {
           (async () => {
             const { owner, repo, ref: resolvedRef } = await resolveRef(request);
             const resolvedSha = request.pr != null ? resolvedRef : await resolveCommitSha(owner, repo, resolvedRef);
-            const { files: treeFiles } = await fetchTree({
-              owner,
-              repo,
-              resolvedRef,
+            // fetchRawTree (not fetchTree): no whole-repository size/count
+            // limits here -- those are applied below, after selecting the
+            // requested file/package, not against the entire tree.
+            const rawTree = await fetchRawTree({ owner, repo, resolvedRef });
+            const blobEntries = rawTree.filter((entry) => entry.type === 'blob');
+            const target = resolveFileTarget({ treeFiles: blobEntries, requestedPath: request.path });
+            const limitedFiles = enforceFileRequestLimits(target.targetFiles, {
               maxRepoFiles: config.maxRepoFiles,
               maxFileBytes: config.maxFileBytes,
               maxRepoBytes: config.maxRepoBytes,
             });
-            const target = resolveFileTarget({ treeFiles, requestedPath: request.path });
-            const contents = await fetchAllContents(owner, repo, target.targetFiles);
+            if (limitedFiles.length === 0) {
+              throw new ValidationError(`"${request.path}" has no files remaining after applying size limits`);
+            }
+            const contents = await fetchAllContents(owner, repo, limitedFiles);
             return {
               sourceOwner: owner,
               sourceRepo: repo,
               resolvedSha,
               mode: target.mode,
-              files: target.targetFiles.map((f, i) => ({ path: f.path, content: contents[i] || '' })),
+              files: limitedFiles.map((f, i) => ({ path: f.path, content: contents[i] || '' })),
             };
           })(),
           config.graphAnalysisTimeoutMs,

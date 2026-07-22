@@ -1196,13 +1196,25 @@ function HealthRing(props){
 // (src/state/repositoryDrillDown.js) -- id-keyed, not path-keyed, since
 // many function/method nodes share one file's coordinate.path.
 function FileLayerPanel(props){
-    var navPanel=props.navPanel,repositoryGraph=props.repositoryGraph,serverAuthToken=props.serverAuthToken,
-        setServerAuthToken=props.setServerAuthToken,theme=props.theme,openFileDrillDown=props.openFileDrillDown,
+    var navPanel=props.navPanel,repositoryGraph=props.repositoryGraph,
+        theme=props.theme,openFileDrillDown=props.openFileDrillDown,
         showNotification=props.showNotification,onHover=props.onHover;
+
+    // MOO-70 Commit 9 PR review fix: the token input previously wrote
+    // straight into the same state that gated "show the input" -- as soon
+    // as one character was typed, that state became truthy, the input
+    // (and its own onChange handler) disappeared, and a request fired
+    // with a one-character token. Separate draft (what's being typed) from
+    // committed (what's actually sent) state, with an explicit submit
+    // action, exactly as requested. Owned locally here rather than in
+    // App() -- nothing else reads/writes this token.
+    var _draft=useState(''),tokenDraft=_draft[0],setTokenDraft=_draft[1];
+    var _committed=useState(''),committedToken=_committed[0],setCommittedToken=_committed[1];
 
     var _fg=useState(null),fileGraph=_fg[0],setFileGraph=_fg[1];
     var _fgl=useState(false),fileGraphLoading=_fgl[0],setFileGraphLoading=_fgl[1];
     var _fge=useState(null),fileGraphError=_fge[0],setFileGraphError=_fge[1];
+    var _fgeStatus=useState(null),fileGraphErrorStatus=_fgeStatus[0],setFileGraphErrorStatus=_fgeStatus[1];
     var svgRef=useRef(null);
     var zoomRef=useRef(null),simRef=useRef(null);
     var selectSymbolRef=useRef(null);
@@ -1213,17 +1225,18 @@ function FileLayerPanel(props){
     var _retry=useState(0),retryCount=_retry[0],setRetryCount=_retry[1];
 
     useEffect(function(){
-        if(!path||!repositoryGraph||!serverAuthToken)return;
+        if(!path||!repositoryGraph||!committedToken)return;
         var cancelled=false;
         setFileGraphLoading(true);
         setFileGraphError(null);
+        setFileGraphErrorStatus(null);
         setFileGraph(null);
         fetchFileGraph({
             owner:repositoryGraph.context.sourceOwner,
             repo:repositoryGraph.context.sourceRepo,
             resolvedSha:repositoryGraph.context.resolvedSha,
             path:path,
-            serverAuthToken:serverAuthToken,
+            serverAuthToken:committedToken,
         }).then(function(result){
             if(cancelled)return;
             setFileGraph(result.graph);
@@ -1231,10 +1244,11 @@ function FileLayerPanel(props){
         }).catch(function(err){
             if(cancelled)return;
             setFileGraphError((err instanceof GraphFileClientError?err.message:'Failed to load file graph')||'Failed to load file graph');
+            setFileGraphErrorStatus(err instanceof GraphFileClientError?err.status:null);
             setFileGraphLoading(false);
         });
         return function(){cancelled=true;};
-    },[path,repositoryGraph,serverAuthToken,retryCount]);
+    },[path,repositoryGraph,committedToken,retryCount]);
 
     selectSymbolRef.current=function(){}; // MOO-70 Commit 8: selection highlighting deferred, matching this pass's minimal scope
     activateSymbolRef.current=function(nodeId){
@@ -1256,11 +1270,19 @@ function FileLayerPanel(props){
         });
     },[fileGraph,theme]);
 
-    if(!serverAuthToken){
+    function submitToken(){
+        if(!tokenDraft)return;
+        setCommittedToken(tokenDraft);
+    }
+
+    if(!committedToken){
         return React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
             React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' ',path||'File view'),
             React.createElement('div',{style:{fontSize:12,color:'var(--t2)',marginBottom:8}},'Enter the CodeFlow server token to load the file-layer view.'),
-            React.createElement('input',{className:'repo-input',type:'password','aria-label':'Server Auth Token',placeholder:'Server Auth Token',value:serverAuthToken,onChange:function(e){setServerAuthToken(e.target.value);}})
+            React.createElement('div',{style:{display:'flex',gap:8}},
+                React.createElement('input',{className:'repo-input',type:'password','aria-label':'Server Auth Token',placeholder:'Server Auth Token',value:tokenDraft,onChange:function(e){setTokenDraft(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')submitToken();}}),
+                React.createElement('button',{className:'top-btn primary',disabled:!tokenDraft,onClick:submitToken},'Load')
+            )
         );
     }
 
@@ -1268,8 +1290,19 @@ function FileLayerPanel(props){
         React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' ',path),
         fileGraphLoading&&React.createElement('div',{style:{fontSize:12,color:'var(--t2)'}},'Loading file graph…'),
         fileGraphError&&React.createElement('div',{style:{fontSize:12,color:'#f87171',marginBottom:8}},
-            React.createElement('div',{style:{marginBottom:6}},fileGraphError),
-            React.createElement('button',{className:'top-btn',onClick:function(){setRetryCount(function(c){return c+1;});}},iconLabel('refresh','Retry'))
+            React.createElement('div',{style:{marginBottom:6}},
+                fileGraphError,
+                fileGraphErrorStatus===401&&' — the server token was rejected.'
+            ),
+            React.createElement('div',{style:{display:'flex',gap:8}},
+                React.createElement('button',{className:'top-btn',onClick:function(){setRetryCount(function(c){return c+1;});}},iconLabel('refresh','Retry')),
+                // MOO-70 Commit 9 PR review: "offer a way to replace the
+                // stored token rather than only retrying the same invalid
+                // one" -- always available, not just on a detected 401,
+                // since any error while a token is committed could
+                // plausibly be that token being wrong.
+                React.createElement('button',{className:'top-btn',onClick:function(){setCommittedToken('');setTokenDraft('');}},'Change token')
+            )
         ),
         fileGraph&&React.createElement('svg',{ref:svgRef,style:{width:'100%',height:320,background:'var(--bg2)',borderRadius:8}}),
         fileGraph&&fileGraph.warnings&&fileGraph.warnings.length>0&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',marginTop:6}},fileGraph.warnings.length+' analysis warning(s) -- confidence '+Math.round(fileGraph.confidence*100)+'%'),
@@ -1285,15 +1318,10 @@ function App(){
     var _a=useState(window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'),theme=_a[0],setTheme=_a[1];
     var _b=useState(''),repoUrl=_b[0],setRepoUrl=_b[1];
     var _c=useState(''),token=_c[0],setToken=_c[1];
-    // MOO-70 Commit 8: the private CodeFlow server's own AUTH_TOKEN,
-    // distinct from `token` above (the user's GitHub PAT) -- needed only
-    // to call POST /api/graph/file, the first client integration with
-    // that auth-gated API (every other analysis path runs entirely
-    // client-side against GitHub directly). Not persisted (matches
-    // `token`'s own un-persisted useState('') pattern) -- prompted for
-    // inline in FileLayerPanel only once a file drill-down is actually
-    // opened, not in the main toolbar, since it's only relevant then.
-    var _sat=useState(''),serverAuthToken=_sat[0],setServerAuthToken=_sat[1];
+    // The private CodeFlow server's own AUTH_TOKEN (distinct from `token`
+    // above, the user's GitHub PAT) is owned locally by FileLayerPanel
+    // itself (MOO-70 Commit 9 PR review fix) -- nothing else in App()
+    // reads or writes it, so it doesn't need to live here.
     var _authMethod=useState('none'),authMethod=_authMethod[0],setAuthMethod=_authMethod[1];// 'none', 'pat', 'github_app'
     var _appId=useState(''),appId=_appId[0],setAppId=_appId[1];
     var _privateKey=useState(''),privateKey=_privateKey[0],setPrivateKey=_privateKey[1];
@@ -4434,8 +4462,8 @@ function App(){
                     // any other layer keeps the original generic fallback
                     // (defensive -- not expected to occur).
                     navPanel&&(navPanel.layer==='file'?React.createElement(FileLayerPanel,{
-                        navPanel:navPanel,repositoryGraph:repositoryGraph,serverAuthToken:serverAuthToken,
-                        setServerAuthToken:setServerAuthToken,theme:theme,openFileDrillDown:openFileDrillDown,
+                        navPanel:navPanel,repositoryGraph:repositoryGraph,
+                        theme:theme,openFileDrillDown:openFileDrillDown,
                         showNotification:showNotification,onHover:setTooltip,
                     }):navPanel.layer==='function'?React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
                         React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' Drill down (function)'),

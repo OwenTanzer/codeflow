@@ -30,9 +30,70 @@
 // ambiguous for any qualified name already containing a literal double
 // underscore (Python dunders — __init__, __str__), so guessing from it
 // could silently produce a wrong match. qualifiedName from the tooltip
-// (already dotted, unambiguous) is the only join key used.
+// (already dotted, unambiguous) is the join's *first* filter, not its only
+// one — see the path/kind/scope filters below.
+//
+// PR review finding: an earlier version matched purely on qualifiedName
+// and applied the same-scope-redefinition tie-break (see below)
+// unconditionally, meaning a pyan3 node whose reported path or kind
+// genuinely disagreed with the one candidate sharing its qualifiedName
+// still got `matchState: 'matched'` and that candidate's exact
+// coordinate — merely logging a warning. That defeats the dual-analyzer
+// design's whole point (never attach a high-confidence identity pyan3
+// didn't actually corroborate). Fixed: path and kind/scope compatibility
+// are now hard filters applied *before* any tie-break; a mismatch now
+// correctly falls through to `unresolved` rather than `matched`.
 import { relative } from 'node:path';
 import { normalizePath } from '../../src/graph-ir/sourceCoordinate.js';
+
+// pyan3's tooltip reports "method" for a class method, but "staticmethod"/
+// "classmethod" for those specific decorator forms (confirmed against
+// real output — psf/requests' models.py) — all three still name our
+// canonical 'method' symbolKind, not a mismatch. 'unknown' means the
+// tooltip's kind suffix didn't parse (see dotGraph.js's parseTooltip) and
+// is treated as a wildcard rather than a forced mismatch, since we have
+// no real signal either way.
+const KIND_COMPATIBILITY = {
+  module: new Set(['module']),
+  class: new Set(['class']),
+  function: new Set(['function']),
+  method: new Set(['method', 'staticmethod', 'classmethod']),
+};
+
+function isKindCompatible(symbolKind, pyanKind) {
+  if (!pyanKind || pyanKind === 'unknown') return true;
+  const compatible = KIND_COMPATIBILITY[symbolKind];
+  return compatible ? compatible.has(pyanKind) : symbolKind === pyanKind;
+}
+
+// Real Python routinely defines multiple same-name symbols in one scope
+// that collapse to a single runtime name: typing.overload stubs followed
+// by the real implementation, @property getter/setter/deleter triples, or
+// conditional `if PY2: def x / else: def x`. pyan3 itself only ever
+// reports one node for these (matching Python's actual
+// last-definition-wins name-shadowing semantics). `candidates` here have
+// already passed the path/kind/scope filters, so they are known-compatible
+// redefinitions of literally the same symbol, not unrelated matches —
+// tie-breaking among them (rather than calling every such case ambiguous)
+// is safe. Prefers the candidate whose line pyan3 itself reported (the
+// strongest available signal for which specific definition pyan3
+// resolved to); falls back to the textually-last definition when pyan3
+// didn't report a line or its line doesn't exactly match any candidate.
+// Confirmed necessary against a real fixture (psf/requests' models.py,
+// which uses exactly this typing.overload pattern for
+// _encode_params/iter_content/iter_lines). Only a genuine tie in source
+// position (which shouldn't occur for distinct definitions) is still
+// reported ambiguous.
+function selectAmongCandidates(candidates, pyanNode) {
+  if (candidates.length === 1) return candidates;
+  if (pyanNode.line != null) {
+    const lineMatches = candidates.filter((c) => c.startLine === pyanNode.line);
+    if (lineMatches.length === 1) return lineMatches;
+    if (lineMatches.length > 1) candidates = lineMatches;
+  }
+  const maxLine = Math.max(...candidates.map((c) => (c.startLine == null ? -Infinity : c.startLine)));
+  return candidates.filter((c) => (c.startLine == null ? -Infinity : c.startLine) === maxLine);
+}
 
 /**
  * @param {object} input
@@ -60,28 +121,35 @@ export function joinPyanToSymbols({ pyanNodes, pyanEdges, symbolEntries, workspa
   for (const pyanNode of pyanNodes) {
     const normalizedPath =
       pyanNode.path && workspaceDir ? normalizePath(relative(workspaceDir, pyanNode.path)) : null;
-    const candidates = pyanNode.qualifiedName ? byQualifiedName.get(pyanNode.qualifiedName) : undefined;
+    const nameCandidates = pyanNode.qualifiedName ? byQualifiedName.get(pyanNode.qualifiedName) : undefined;
 
-    if (!candidates || candidates.length === 0) {
+    if (!nameCandidates || nameCandidates.length === 0) {
       unresolvedCount++;
       resolved.push({ pyanNode, matchState: 'unresolved', symbol: null });
       continue;
     }
 
-    // Real Python routinely defines multiple same-name symbols in one
-    // scope that collapse to a single runtime name: typing.overload
-    // stubs followed by the real implementation, @property
-    // getter/setter/deleter triples, or conditional `if PY2: def x /
-    // else: def x`. pyan3 itself only ever reports one node for these
-    // (matching Python's actual last-definition-wins name-shadowing
-    // semantics), so tie-break the same way rather than calling every
-    // such case ambiguous -- confirmed necessary against a real fixture
-    // (psf/requests' models.py, which uses exactly this typing.overload
-    // pattern for _encode_params/iter_content/iter_lines). Only a
-    // genuine tie in source position (which shouldn't occur for
-    // distinct definitions) is still reported ambiguous.
-    const maxLine = Math.max(...candidates.map((c) => (c.startLine == null ? -Infinity : c.startLine)));
-    const winners = candidates.filter((c) => (c.startLine == null ? -Infinity : c.startLine) === maxLine);
+    // Hard filters — a candidate that disagrees with what pyan3 itself
+    // reported is not a match, full stop; it must never surface as
+    // `matched` with a mismatch merely noted in a warning.
+    let candidates = nameCandidates;
+    if (normalizedPath !== null) {
+      candidates = candidates.filter((c) => c.path === normalizedPath);
+    }
+    if (pyanNode.kind) {
+      candidates = candidates.filter((c) => isKindCompatible(c.symbolKind, pyanNode.kind));
+    }
+    if (pyanNode.parentScope != null) {
+      candidates = candidates.filter((c) => c.parentScope === pyanNode.parentScope);
+    }
+
+    if (candidates.length === 0) {
+      unresolvedCount++;
+      resolved.push({ pyanNode, matchState: 'unresolved', symbol: null });
+      continue;
+    }
+
+    const winners = selectAmongCandidates(candidates, pyanNode);
     if (winners.length > 1) {
       ambiguousCount++;
       resolved.push({ pyanNode, matchState: 'ambiguous', symbol: null });
@@ -89,16 +157,6 @@ export function joinPyanToSymbols({ pyanNodes, pyanEdges, symbolEntries, workspa
     }
 
     const symbol = winners[0];
-    if (normalizedPath !== null && symbol.path !== normalizedPath) {
-      warnings.push(
-        `path mismatch for ${pyanNode.qualifiedName}: pyan3 reported "${normalizedPath}", symbol index has "${symbol.path}"`
-      );
-    }
-    if (pyanNode.kind !== 'unknown' && symbol.symbolKind !== pyanNode.kind) {
-      warnings.push(
-        `kind mismatch for ${pyanNode.qualifiedName}: pyan3 reported "${pyanNode.kind}", symbol index has "${symbol.symbolKind}"`
-      );
-    }
     matchedCount++;
     claimed.add(symbol.qualifiedName);
     resolved.push({ pyanNode, matchState: 'matched', symbol });

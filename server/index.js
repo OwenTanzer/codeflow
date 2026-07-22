@@ -67,17 +67,28 @@ async function main() {
     process.exit(1);
   }
 
-  // MOO-70 Commit 7: the file layer's /api/graph/file route depends on
-  // pyan3 -- fail fast here (once, cached) rather than on the first real
-  // request. Deferred to this point (not Commit 2, when the wrapper was
-  // first written) specifically because no route depended on it until now
-  // -- wiring it in earlier would have broken server boot in any
-  // environment lacking pyan3, for a feature that wasn't shipped yet.
+  // MOO-70 Commit 7/9: check pyan3 availability once at startup so it's
+  // visible in the logs immediately, rather than only discovered on the
+  // first /api/graph/file request. PR review finding: this previously
+  // called process.exit(1) on failure, which took down the *entire*
+  // server -- including the repository layer and the static app, which
+  // have no dependency on pyan3 at all -- directly contradicting this
+  // ticket's own "keep the repository layer operational when pyan3
+  // fails" requirement. Never fatal now: a missing/broken pyan3 install
+  // is logged as a warning and the server continues. Each individual
+  // /api/graph/file request already degrades gracefully when pyan3 is
+  // unavailable (server/routes/graph-file.js's runPyan3ForFile returns a
+  // tree-sitter-only graph rather than throwing) -- that same per-request
+  // resilience is exactly what covers a totally-missing pyan3 install
+  // too, so no separate "capability flag" plumbing is needed here.
+  let pyan3Available = true;
   try {
     await verifyPyan3Available({ pythonBin: config.pythonBin });
   } catch (err) {
-    process.stderr.write('[codeflow-server] ' + err.message + '\n');
-    process.exit(1);
+    pyan3Available = false;
+    log('warn', 'pyan3 unavailable at startup -- /api/graph/file will run in tree-sitter-only (degraded) mode until this is fixed', {
+      message: err.message,
+    });
   }
 
   const rateLimiter = new RateLimiter(config.rateLimitPerMinute);
@@ -86,7 +97,7 @@ async function main() {
 
   const handleStatic = createStaticHandler(config.distDir);
   const handleHealth = createHealthHandler({ config });
-  const handleReadiness = createReadinessHandler({ config });
+  const handleReadiness = createReadinessHandler({ config, getPyan3Available: () => pyan3Available });
   const handleAnalyze = createAnalyzeHandler({ config, workspaceManager });
   const handleAnalyzeRepo = createAnalyzeRepoHandler({ config });
   const handleGraphRepository = createGraphRepositoryHandler({ config });
@@ -149,6 +160,7 @@ async function main() {
       allowedRepos: config.allowedRepos.length,
       allowedOwners: config.allowedOwners.length,
       rateLimitPerMinute: config.rateLimitPerMinute,
+      pyan3Available,
     });
   });
 }

@@ -50,6 +50,33 @@ issue chose to leave unfixed.
   to do that, the same caveat `repository-layer-density.md` gives its own
   300-node threshold.
 
+## Production Python dependency (PR review follow-up)
+
+CI (`.github/workflows/test.yml`) has installed the pinned `pyan3==2.6.2`
+via `actions/setup-python` + pip since Commit 2, but nothing declared this
+dependency for an actual deployment until this note: `requirements.txt`
+(repo root) is the pinned manifest, and `package.json`'s `postinstall`
+script (`scripts/install-pyan3.mjs`) attempts to `pip install` it
+right after `npm install`/`npm ci` — piggybacking on the Node install step
+Railpack already runs for this repo (detected as a Node-primary app via
+`package.json`), rather than depending on Railpack-specific multi-language
+config syntax.
+
+**Explicitly not verified**: whether Railway's Railpack build image has
+Python/pip available by default for a Node-detected service, or whether
+additional Railway service configuration (e.g. `RAILPACK_BUILD_APT_PACKAGES`
+to ensure `python3`/`pip` exist in the build image — see
+[Railway's build configuration docs](https://docs.railway.com/builds/build-configuration))
+is required on top of this. This repository has no live Railway deployment
+this work could exercise, so this is flagged rather than asserted as
+already working. If `python3`/`pip` are absent from the build image, the
+postinstall script's `spawnSync` calls simply fail (same as a missing
+binary today) and it logs a warning without failing the build — the
+runtime already handles this by serving `/api/graph/file` in degraded
+tree-sitter-only mode (see below) rather than crashing, so a missing
+production pyan3 install degrades functionality, it does not break the
+deployment.
+
 ## Cross-layer resilience (Commit 9's own checklist item)
 
 A pyan3 failure for one `/api/graph/file` request is isolated to that
@@ -62,11 +89,18 @@ handler (each is an independent closure over the same read-only `config`
 object) and the client's repository-graph rendering
 (`src/render/repositoryGraph.js`) is an entirely separate code path from
 the file layer's (`src/render/fileGraph.js`) — a file-layer failure
-cannot reach either. `server/index.js`'s one exception it cannot recover
-from is pyan3 being entirely unavailable (wrong/missing binary) at
-**startup** (`verifyPyan3Available`, wired in Commit 7) — a deliberate
-fail-fast choice distinct from a per-request crash, so a broken deploy is
-caught immediately rather than surfacing as confusing per-request 500s.
+cannot reach either. `server/index.js` checks pyan3 availability once at
+startup (`verifyPyan3Available`, wired in Commit 7) purely for early
+visibility in the logs — **revised after PR review**: this originally
+called `process.exit(1)` on failure, which took the *entire* server down
+(repository layer and static app included) over a capability only the
+file layer needs, directly contradicting this same "keep the repository
+layer operational when pyan3 fails" requirement. It's now non-fatal: a
+missing/broken pyan3 install is logged as a warning
+(`pyan3Available: false` in the startup log, and surfaced non-gating in
+`/readyz`'s `checks.pyan3`), and the server continues — every
+`/api/graph/file` request then hits the same already-tested per-request
+degradation path described above.
 
 ## Garrison Step handoff notes
 

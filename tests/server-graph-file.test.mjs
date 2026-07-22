@@ -11,7 +11,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { resolveFileTarget, runPyan3ForFile } from '../server/routes/graph-file.js';
+import { resolveFileTarget, runPyan3ForFile, enforceFileRequestLimits } from '../server/routes/graph-file.js';
 import { validateFileRequest } from '../server/lib/validate-file-request.js';
 import { ValidationError } from '../server/lib/validate-repo-request.js';
 import { WorkspaceManager } from '../server/lib/workspace.js';
@@ -151,4 +151,47 @@ test('runPyan3ForFile: a clean file returns real nodes/edges with no failure cat
     assert.equal(outcome.warnings.length, 0);
     assert.ok(outcome.pyanNodes.length > 0);
   });
+});
+
+// MOO-70 Commit 9 PR review: file count/byte budgets must apply to the
+// already-selected target file/package, never to the whole repository --
+// a tiny file in a huge monorepo must not be rejected for reasons
+// unrelated to what was actually requested.
+test('enforceFileRequestLimits: a small target set well under budget passes through unchanged', () => {
+  const files = [{ path: 'a.py', size: 100 }, { path: 'b.py', size: 200 }];
+  const result = enforceFileRequestLimits(files, { maxRepoFiles: 500, maxFileBytes: 1_000_000, maxRepoBytes: 25_000_000 });
+  assert.deepEqual(result, files);
+});
+
+test('enforceFileRequestLimits: an individually oversized file is skipped, not a hard failure', () => {
+  const files = [{ path: 'a.py', size: 100 }, { path: 'huge.py', size: 10_000 }];
+  const result = enforceFileRequestLimits(files, { maxRepoFiles: 500, maxFileBytes: 1_000, maxRepoBytes: 25_000_000 });
+  assert.deepEqual(result, [{ path: 'a.py', size: 100 }]);
+});
+
+test('enforceFileRequestLimits: throws when the target set\'s aggregate size exceeds the budget', () => {
+  const files = [{ path: 'a.py', size: 600 }, { path: 'b.py', size: 600 }];
+  assert.throws(
+    () => enforceFileRequestLimits(files, { maxRepoFiles: 500, maxFileBytes: 1_000_000, maxRepoBytes: 1_000 }),
+    /exceeds the configured aggregate size limit/
+  );
+});
+
+test('enforceFileRequestLimits: throws when the target set has more files than the configured count limit', () => {
+  const files = Array.from({ length: 5 }, (_, i) => ({ path: `f${i}.py`, size: 10 }));
+  assert.throws(
+    () => enforceFileRequestLimits(files, { maxRepoFiles: 3, maxFileBytes: 1_000_000, maxRepoBytes: 25_000_000 }),
+    /over the configured limit of 3/
+  );
+});
+
+test('enforceFileRequestLimits: a huge unrelated repository does not affect a tiny requested file (the actual bug reported)', () => {
+  // Simulates the reported scenario directly: selectAnalyzableFiles-style
+  // whole-repo limits would have rejected this repository outright before
+  // ever looking at the one requested file. enforceFileRequestLimits only
+  // ever sees the already-selected target set (resolveFileTarget's job),
+  // so a repository with thousands of unrelated files never enters into it.
+  const target = [{ path: 'tiny.py', size: 42 }];
+  const result = enforceFileRequestLimits(target, { maxRepoFiles: 500, maxFileBytes: 1_000_000, maxRepoBytes: 25_000_000 });
+  assert.deepEqual(result, target);
 });

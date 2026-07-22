@@ -160,12 +160,34 @@ export function selectAnalyzableFiles(treeEntries, { maxRepoFiles, maxFileBytes,
  * @returns {Promise<{files: Array, skippedOversizedFiles: number}>}
  */
 export async function fetchTree({ owner, repo, resolvedRef, maxRepoFiles, maxFileBytes, maxRepoBytes }) {
+  const tree = await fetchRawTree({ owner, repo, resolvedRef });
+  return selectAnalyzableFiles(tree, { maxRepoFiles, maxFileBytes, maxRepoBytes });
+}
+
+/**
+ * Fetch a Git tree's raw entries with no filtering or size/count limits
+ * applied. PR review finding: server/routes/graph-file.js only ever needs
+ * a tiny subset (one file, or one package) of a tree that can belong to a
+ * much larger repository — routing it through fetchTree()/
+ * selectAnalyzableFiles() applied whole-repository MAX_REPO_FILES/
+ * MAX_REPO_BYTES limits *before* the requested file/package was even
+ * selected, so a tiny file in a large monorepo could be rejected for
+ * reasons entirely unrelated to what was actually requested. Callers that
+ * need repository-wide policy (the repository layer, via fetchTree above)
+ * keep using selectAnalyzableFiles directly; callers that only need a
+ * specific subset (the file layer) should select first, then apply
+ * limits scoped to that subset (see graph-file.js's
+ * `enforceFileRequestLimits`).
+ * @param {{owner: string, repo: string, resolvedRef: string}} options
+ * @returns {Promise<Array<{type: string, path: string, sha: string, size?: number}>>}
+ */
+export async function fetchRawTree({ owner, repo, resolvedRef }) {
   const data = await apiRequest(
     `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`,
     { 404: 'Ref not found (branch, commit, or PR head does not exist)' }
   );
   if (!data.tree) throw new GithubFetchError('Invalid tree response from GitHub');
-  return selectAnalyzableFiles(data.tree, { maxRepoFiles, maxFileBytes, maxRepoBytes });
+  return data.tree;
 }
 
 async function fetchBlobContent(owner, repo, sha) {
