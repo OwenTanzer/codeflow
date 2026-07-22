@@ -29,12 +29,13 @@ export function createHealthHandler({ config }) {
 }
 
 /**
- * @param {{config: object, getPyan3Available?: () => boolean}} deps
- * `getPyan3Available` is a getter (not a plain value) so a later re-check
- * could update it without needing to recreate this handler; optional
- * since not every deployment of this handler needs to report it.
+ * @param {{config: object, getPyan3Available?: () => boolean, getCodeVisualizerAvailable?: () => boolean}} deps
+ * `getPyan3Available`/`getCodeVisualizerAvailable` are getters (not
+ * plain values) so a later re-check could update them without needing to
+ * recreate this handler; optional since not every deployment of this
+ * handler needs to report them.
  */
-export function createReadinessHandler({ config, getPyan3Available }) {
+export function createReadinessHandler({ config, getPyan3Available, getCodeVisualizerAvailable }) {
   return async function handleReadiness(req, res) {
     const checks = {};
 
@@ -55,6 +56,14 @@ export function createReadinessHandler({ config, getPyan3Available }) {
     // unrelated functionality out of rotation for no reason.
     if (typeof getPyan3Available === 'function') {
       checks.pyan3 = { ok: getPyan3Available(), gatesReadiness: false };
+    }
+
+    // MOO-71 Commit 5: same non-gating rationale as pyan3 above -- the
+    // repository/file layers have no dependency on @codevisualizer/core,
+    // so a function-layer-only capability shouldn't take unrelated,
+    // healthy functionality out of rotation.
+    if (typeof getCodeVisualizerAvailable === 'function') {
+      checks.codeVisualizer = { ok: getCodeVisualizerAvailable(), gatesReadiness: false };
     }
 
     const ready = ['buildOutput', 'workspaceRoot'].every((key) => checks[key].ok);
