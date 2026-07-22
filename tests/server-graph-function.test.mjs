@@ -14,7 +14,7 @@ import { resolveFunctionSymbol } from '../server/routes/graph-function.js';
 import { validateFunctionRequest } from '../server/lib/validate-function-request.js';
 import { ValidationError } from '../server/lib/validate-repo-request.js';
 import { indexPythonSymbols } from '../server/lib/pythonSymbolIndex.js';
-import { lineColumnToByteOffset } from '../server/lib/byteOffset.js';
+import { lineColumnToCodeUnitOffset } from '../src/graph-ir/codeUnitOffset.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(__dirname, 'fixtures/python-symbols');
@@ -103,7 +103,7 @@ test('validateFunctionRequest: accepts and normalizes expectedResolvedSha/expect
   assert.equal(request.expectedSourceOwner, 'forker');
 });
 
-// --- lineColumnToByteOffset: real cross-parser verification ---
+// --- lineColumnToCodeUnitOffset: real cross-parser verification ---
 //
 // Formalizes the spike run before writing this commit: independently
 // parse the same fixture with @codevisualizer/core's own tree-sitter
@@ -112,13 +112,13 @@ test('validateFunctionRequest: accepts and normalizes expectedResolvedSha/expect
 // PyAstParser, so this reaches in the same way
 // CodeVisualizer-fork's own scripts/snapshot-flowcharts.mjs does) and
 // confirm the symbol index's line/column range, converted via
-// lineColumnToByteOffset, produces the exact same byte range
+// lineColumnToCodeUnitOffset, produces the exact same byte range
 // @codevisualizer/core's own parse reports for that function.
-test('lineColumnToByteOffset matches @codevisualizer/core’s own tree-sitter parse (ASCII fixture)', async () => {
+test('lineColumnToCodeUnitOffset matches @codevisualizer/core’s own tree-sitter parse (ASCII fixture)', async () => {
   await verifyAgainstRealParse('nested.py');
 });
 
-test('lineColumnToByteOffset matches @codevisualizer/core’s own tree-sitter parse (multi-byte UTF-8 fixture)', async () => {
+test('lineColumnToCodeUnitOffset matches @codevisualizer/core’s own tree-sitter parse (multi-byte UTF-8 fixture)', async () => {
   await verifyAgainstRealParse('unicode_docstring.py');
 });
 
@@ -136,8 +136,8 @@ async function verifyAgainstRealParse(fixtureName) {
   const realDefs = tree.rootNode.descendantsOfType('function_definition');
 
   for (const entry of functionEntries) {
-    const computedStart = lineColumnToByteOffset(content, entry.startLine, entry.startColumn);
-    const computedEnd = lineColumnToByteOffset(content, entry.endLine, entry.endColumn);
+    const computedStart = lineColumnToCodeUnitOffset(content, entry.startLine, entry.startColumn);
+    const computedEnd = lineColumnToCodeUnitOffset(content, entry.endLine, entry.endColumn);
     const realNode = realDefs.find((f) => f.startIndex === computedStart && f.endIndex === computedEnd);
     assert.ok(
       realNode,

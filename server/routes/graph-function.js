@@ -1,4 +1,4 @@
-// POST /api/graph/function — MOO-71 Commit 5.
+// POST /api/graph/function — MOO-71 Commits 5-6.
 //
 // The function-layer counterpart to server/routes/graph-file.js: same
 // two-phase (network / pure glue) structure and the exact same
@@ -7,13 +7,13 @@
 // requested file's content -- a function always lives in exactly one
 // file, so there's no file/package mode distinction here.
 //
-// Deliberate scope note (from the ticket itself): this endpoint returns
-// FlowchartIR plus provenance/timing/warnings/diagnostics -- NOT
-// GraphIR. Converting FlowchartIR into GraphIR is MOO-71 Commit 6's own
-// separate job; building both in one pass here would blur two
-// independently-verifiable steps, mirroring MOO-70's own precedent of
-// keeping "join" and "GraphIR conversion" as separate commits despite
-// being planned together.
+// MOO-71 Commit 6 update: now converts FlowchartIR into a real GraphIR
+// (src/adapters/functionGraphAdapter.js) and returns it via
+// buildAdapterResult, same as graph-file.js -- Commit 5 deliberately
+// left this endpoint on a bespoke {flowchartIR, ...} envelope since
+// converting to GraphIR was explicitly this ticket's own separate next
+// commit; Commit 7 (rendering) needs a real GraphIR to consume, so this
+// endpoint is where that conversion actually gets wired in.
 //
 // No pyan3-style degraded/partial mode: unlike the file layer (which can
 // fall back to a tree-sitter-only graph when pyan3 fails), there is no
@@ -33,12 +33,15 @@ import {
   fetchAllContents,
   GithubFetchError,
 } from '../lib/github-analyzer-bridge.js';
-import { withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN } from './graph-repository.js';
+import { buildRequestContext, withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN } from './graph-repository.js';
 import { assertRevisionStillExpected } from './graph-file.js';
 import { indexPythonSymbols } from '../lib/pythonSymbolIndex.js';
-import { lineColumnToByteOffset } from '../lib/byteOffset.js';
+import { lineColumnToCodeUnitOffset } from '../../src/graph-ir/codeUnitOffset.js';
 import { analyzePythonFunction } from '@codevisualizer/core';
-import { AdapterError, sanitizeDiagnostic } from '../../src/graph-ir/adapterResult.js';
+import { adaptFunctionAnalysis } from '../../src/adapters/functionGraphAdapter.js';
+import { buildCacheKey } from '../../src/graph-ir/cacheKey.js';
+import { GRAPH_IR_SCHEMA_VERSION } from '../../src/graph-ir/graphIR.js';
+import { AdapterError, buildAdapterResult, AdapterResultError, sanitizeDiagnostic } from '../../src/graph-ir/adapterResult.js';
 import { AnalysisContextError } from '../../src/graph-ir/githubContext.js';
 
 const ANALYZER = { name: 'codeflow-codevisualizer-adapter', version: '1.0.0' };
@@ -220,8 +223,8 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable 
       // above).
       let flowchartIR;
       try {
-        const startByte = lineColumnToByteOffset(resolved.content, entry.startLine, entry.startColumn);
-        const endByte = lineColumnToByteOffset(resolved.content, entry.endLine, entry.endColumn);
+        const startByte = lineColumnToCodeUnitOffset(resolved.content, entry.startLine, entry.startColumn);
+        const endByte = lineColumnToCodeUnitOffset(resolved.content, entry.endLine, entry.endColumn);
         flowchartIR = await analyzePythonFunction(resolved.content, { startByte, endByte });
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
@@ -250,14 +253,42 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable 
         return sendError(res, 500, 'Analysis failed while generating the function flowchart', 'internal_error', requestId);
       }
 
+      // Phase 2: pure glue, no more network/subprocess calls -- convert
+      // FlowchartIR into GraphIR (MOO-71 Commit 6), mirroring
+      // graph-file.js's own phase 2 error handling exactly.
+      let graph;
+      let context;
+      try {
+        context = buildRequestContext(request, resolved);
+        graph = adaptFunctionAnalysis({ context, entrySymbol: entry, source: resolved.content, flowchartIR, analyzer: ANALYZER });
+      } catch (err) {
+        if (err instanceof AnalysisContextError) {
+          log.warn('graph-function contract violation during graph construction', { message: err.message });
+          return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
+        }
+        const durationMs = Date.now() - startedAtMs;
+        log.error('graph construction failed (GraphIR conversion)', { message: err && err.message, durationMs });
+        return sendError(res, 500, 'Analysis failed while building the function graph', 'internal_error', requestId);
+      }
+
+      const cacheKey = buildCacheKey({
+        context,
+        analyzerName: ANALYZER.name,
+        analyzerVersion: ANALYZER.version,
+        graphSchemaVersion: GRAPH_IR_SCHEMA_VERSION,
+        coordinate: graph.rootCoordinate,
+      });
+
       const durationMs = Date.now() - startedAtMs;
-      const responseBody = {
-        flowchartIR,
-        provenance: { analyzerName: ANALYZER.name, analyzerVersion: ANALYZER.version, fetchedAt: startedAt },
+      const adapterResult = buildAdapterResult({
+        graph,
+        warnings: graph.warnings,
+        provenance: { analyzerName: ANALYZER.name, analyzerVersion: ANALYZER.version },
         timing: { startedAt, durationMs },
-        warnings: [],
-        diagnostics: [],
-      };
+        // No durable cache store exists yet (same note as graph-file.js) --
+        // centralized caching is MOO-72's job.
+        cache: { key: cacheKey, hit: false },
+      });
 
       log.info('graph-function analysis complete', {
         owner: request.owner,
@@ -270,11 +301,18 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable 
         analyzerName: ANALYZER.name,
         analyzerVersion: ANALYZER.version,
         durationMs,
-        nodeCount: flowchartIR.nodes.length,
-        edgeCount: flowchartIR.edges.length,
+        nodeCount: graph.nodes.length,
+        edgeCount: graph.edges.length,
+        warningCount: graph.warnings.length,
+        cacheKey,
+        cacheHit: false,
       });
-      sendJson(res, 200, responseBody);
+      sendJson(res, 200, adapterResult);
     } catch (err) {
+      if (err instanceof AnalysisContextError || err instanceof AdapterResultError) {
+        log.warn('graph-function contract violation', { message: err.message });
+        return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
+      }
       log.error('graph-function internal error', { message: err && err.message });
       sendError(res, 500, 'Analysis failed', 'internal_error', requestId);
     }
