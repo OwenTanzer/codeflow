@@ -75,6 +75,18 @@ if (finalCommit !== lock.commit) {
   );
 }
 
+// PR review: HEAD matching the pinned commit proves commit *identity*,
+// not that the working tree still matches it -- a modified tracked file
+// or an untracked file under packages/core/src would otherwise get
+// compiled and deployed while HEAD still equals the pin. Reset and clean
+// unconditionally (cheap relative to the npm ci + build that already run
+// every time below) rather than only on the fresh-clone path, so the
+// "already at pin, skip re-clone" fast path can't silently build a
+// modified working tree.
+console.log('[setup-codevisualizer-core] Resetting working tree to the pinned commit...');
+execFileSync('git', ['-C', vendorDir, 'reset', '--hard', lock.commit], { stdio: 'inherit' });
+execFileSync('git', ['-C', vendorDir, 'clean', '-fdx'], { stdio: 'inherit' });
+
 console.log('[setup-codevisualizer-core] Installing vendored repo dependencies (npm ci)...');
 execFileSync('npm', ['ci'], { cwd: vendorDir, stdio: 'inherit', shell: true });
 
