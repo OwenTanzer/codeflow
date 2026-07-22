@@ -22,7 +22,9 @@ import { createAnalyzeHandler } from './routes/analyze.js';
 import { createAnalyzeRepoHandler } from './routes/analyze-repo.js';
 import { createGraphRepositoryHandler } from './routes/graph-repository.js';
 import { createGraphFileHandler } from './routes/graph-file.js';
+import { createGraphFunctionHandler } from './routes/graph-function.js';
 import { verifyPyan3Available } from './lib/pyan3Adapter.js';
+import { initPythonLanguageService } from '@codevisualizer/core';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = join(__dirname, '..');
@@ -91,17 +93,37 @@ async function main() {
     });
   }
 
+  // MOO-71 Commit 5: mirrors the pyan3 startup-check pattern above
+  // exactly. Unlike pyan3, there's no per-request degraded fallback for
+  // the function layer (no fallback analyzer exists) -- graph-function.js
+  // uses this flag to fail clearly before even attempting a GitHub
+  // fetch, rather than pretending to proceed.
+  let codeVisualizerAvailable = true;
+  try {
+    await initPythonLanguageService();
+  } catch (err) {
+    codeVisualizerAvailable = false;
+    log('warn', 'CodeVisualizer core unavailable at startup -- /api/graph/function will be unavailable until this is fixed', {
+      message: err.message,
+    });
+  }
+
   const rateLimiter = new RateLimiter(config.rateLimitPerMinute);
   const rateLimitSweep = setInterval(() => rateLimiter.sweep(), 60_000);
   rateLimitSweep.unref();
 
   const handleStatic = createStaticHandler(config.distDir);
   const handleHealth = createHealthHandler({ config });
-  const handleReadiness = createReadinessHandler({ config, getPyan3Available: () => pyan3Available });
+  const handleReadiness = createReadinessHandler({
+    config,
+    getPyan3Available: () => pyan3Available,
+    getCodeVisualizerAvailable: () => codeVisualizerAvailable,
+  });
   const handleAnalyze = createAnalyzeHandler({ config, workspaceManager });
   const handleAnalyzeRepo = createAnalyzeRepoHandler({ config });
   const handleGraphRepository = createGraphRepositoryHandler({ config });
   const handleGraphFile = createGraphFileHandler({ config, workspaceManager });
+  const handleGraphFunction = createGraphFunctionHandler({ config, getCodeVisualizerAvailable: () => codeVisualizerAvailable });
 
   const server = createServer(async (req, res) => {
     const requestId = generateRequestId();
@@ -130,6 +152,8 @@ async function main() {
         await handleGraphRepository(req, res, requestId);
       } else if (url.pathname === '/api/graph/file' && req.method === 'POST') {
         await handleGraphFile(req, res, requestId);
+      } else if (url.pathname === '/api/graph/function' && req.method === 'POST') {
+        await handleGraphFunction(req, res, requestId);
       } else if (isApiRoute) {
         sendJson(res, 404, { error: 'Not found' });
       } else {
@@ -161,6 +185,7 @@ async function main() {
       allowedOwners: config.allowedOwners.length,
       rateLimitPerMinute: config.rateLimitPerMinute,
       pyan3Available,
+      codeVisualizerAvailable,
     });
   });
 }
