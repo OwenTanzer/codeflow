@@ -1,0 +1,9 @@
+# Pinned Python dependency for the MOO-70 file layer's pyan3 subprocess
+# adapter (server/lib/pyan3Adapter.js). CI (.github/workflows/test.yml)
+# already installs this exact pin via actions/setup-python + pip; this
+# file is the production/deployment-side declaration PR review flagged as
+# missing -- Railway/Railpack (or any other Python-aware build tool) can
+# auto-detect this file's presence to provision Python and install it.
+# See package.json's "postinstall" script for how this gets installed
+# during a Node-primary build (Railpack detects package.json first).
+pyan3==2.6.2

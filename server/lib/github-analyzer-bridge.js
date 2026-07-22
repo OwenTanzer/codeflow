@@ -31,6 +31,24 @@ export class GithubFetchError extends Error {
   }
 }
 
+/**
+ * Set the shared GitHub client's server-held token explicitly. PR review
+ * finding: analyzeGithubRepo() (the repository layer's entry point) sets
+ * `GitHub.token` as its own first line, but server/routes/graph-file.js
+ * calls resolveRef/resolveCommitSha/fetchRawTree/fetchAllContents
+ * directly and never called anything that set it — meaning the file
+ * layer's GitHub calls ran unauthenticated (GitHub's much lower
+ * unauthenticated rate limit, and private repos failing outright) unless
+ * some unrelated /api/graph/repository request happened to run first and
+ * set the shared module-level token as a side effect. Every caller of
+ * these exported helpers must call this explicitly rather than relying on
+ * that ordering accident.
+ * @param {{token: string}} input
+ */
+export function configureGithubClient({ token }) {
+  GitHub.token = token;
+}
+
 async function apiRequest(path, errorMap) {
   // GitHub.request() (shared with the browser) throws a plain Error using
   // errorMap's messages, not GithubFetchError — wrap it so every failure
@@ -61,7 +79,7 @@ async function apiRequest(path, errorMap) {
  * *of* that allowlisted repo, and GitHub's own PR data is what tells us
  * which fork/SHA that resolves to.
  */
-async function resolveRef({ owner, repo, ref, pr }) {
+export async function resolveRef({ owner, repo, ref, pr }) {
   if (pr != null) {
     const prData = await apiRequest(`/repos/${owner}/${repo}/pulls/${pr}`, {
       404: 'Pull request not found',
@@ -88,7 +106,7 @@ async function resolveRef({ owner, repo, ref, pr }) {
  * (prData.head.sha) and doesn't need this second call in that case (see
  * analyzeGithubRepo below).
  */
-async function resolveCommitSha(owner, repo, ref) {
+export async function resolveCommitSha(owner, repo, ref) {
   const data = await apiRequest(`/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`, {
     404: 'Ref not found (branch, tag, or commit does not exist)',
   });
@@ -159,13 +177,90 @@ export function selectAnalyzableFiles(treeEntries, { maxRepoFiles, maxFileBytes,
  * @param {{owner: string, repo: string, resolvedRef: string, maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number}} options
  * @returns {Promise<{files: Array, skippedOversizedFiles: number}>}
  */
-async function fetchTree({ owner, repo, resolvedRef, maxRepoFiles, maxFileBytes, maxRepoBytes }) {
+export async function fetchTree({ owner, repo, resolvedRef, maxRepoFiles, maxFileBytes, maxRepoBytes }) {
   const data = await apiRequest(
     `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`,
     { 404: 'Ref not found (branch, commit, or PR head does not exist)' }
   );
   if (!data.tree) throw new GithubFetchError('Invalid tree response from GitHub');
+  // GitHub caps a recursive tree response at 100,000 entries / 7MB and
+  // sets `truncated: true` rather than erroring — silently proceeding
+  // would mean the repository layer analyzes an incomplete subset of a
+  // very large repository without any indication that happened.
+  if (data.truncated) {
+    throw new GithubFetchError(
+      `Repository tree was truncated by GitHub (too many entries to list recursively in one request) -- ` +
+        'the repository is too large to analyze as a whole. Point at a narrower ref/folder if this is expected.'
+    );
+  }
   return selectAnalyzableFiles(data.tree, { maxRepoFiles, maxFileBytes, maxRepoBytes });
+}
+
+/**
+ * Resolve a repo-relative path to its own Git tree/blob entry by walking
+ * the tree non-recursively, one path segment at a time, rather than ever
+ * fetching a (possibly-truncated, for a huge monorepo) full recursive
+ * tree just to check whether one small path exists. PR review finding:
+ * server/routes/graph-file.js previously fetched the *entire* repository
+ * tree recursively (fetchRawTree) just to find one requested file/
+ * package — for a repository large enough that GitHub truncates that
+ * recursive response (100,000 entries / 7MB), a legitimately-existing
+ * small file could be missing from the truncated list and falsely
+ * reported "not found", even after the whole-repo size/count limits from
+ * the prior review round were fixed to no longer reject it outright.
+ * @param {{owner: string, repo: string, resolvedRef: string, path: string}} options
+ * @returns {Promise<{type: 'blob'|'tree', sha: string, path: string, size?: number}|null>} null when any path segment does not exist
+ */
+export async function resolvePathEntry({ owner, repo, resolvedRef, path }) {
+  const segments = path.split('/').filter(Boolean);
+  let currentSha = resolvedRef;
+  let currentPath = '';
+  let entry = { type: 'tree', sha: resolvedRef, path: '' };
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    const data = await apiRequest(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(currentSha)}`, {
+      404: 'Ref not found (branch, commit, or PR head does not exist)',
+    });
+    if (data.truncated) {
+      throw new GithubFetchError(
+        `Directory listing for "${currentPath || '/'}" was truncated by GitHub's tree API (too many entries) -- ` +
+          `cannot reliably resolve "${path}". Point at a narrower path.`
+      );
+    }
+    const found = (data.tree || []).find((e) => e.path === segment);
+    if (!found) return null;
+    // A non-directory segment appeared before the end of the requested
+    // path (e.g. requesting "a/b.py/c" where b.py is a file, not a
+    // directory) -- there is nothing further to descend into.
+    if (found.type !== 'tree' && i < segments.length - 1) return null;
+    currentSha = found.sha;
+    currentPath = currentPath ? currentPath + '/' + segment : segment;
+    entry = { type: found.type, sha: found.sha, path: currentPath, size: found.size };
+  }
+  return entry;
+}
+
+/**
+ * Recursively list every blob under one specific subtree (never the whole
+ * repository) — used for a package/directory request. Scoped to that
+ * directory's own Git subtree sha, which for any reasonably-sized package
+ * is far below GitHub's 100,000-entry/7MB recursive-tree truncation limit
+ * even when the repository as a whole is not.
+ * @param {{owner: string, repo: string, sha: string, pathPrefix: string}} options
+ * @returns {Promise<Array<{type: string, path: string, sha: string, size?: number}>>}
+ */
+export async function fetchSubtreeFiles({ owner, repo, sha, pathPrefix }) {
+  const data = await apiRequest(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(sha)}?recursive=1`, {
+    404: 'Ref not found (branch, commit, or PR head does not exist)',
+  });
+  if (!data.tree) throw new GithubFetchError('Invalid tree response from GitHub');
+  if (data.truncated) {
+    throw new GithubFetchError(
+      `The requested package "${pathPrefix}" has too many entries for GitHub's recursive tree API (truncated). ` +
+        'Point at a narrower path.'
+    );
+  }
+  return data.tree.map((entry) => ({ ...entry, path: pathPrefix + '/' + entry.path }));
 }
 
 async function fetchBlobContent(owner, repo, sha) {
@@ -177,7 +272,7 @@ async function fetchBlobContent(owner, repo, sha) {
 }
 
 /** Fetch blob contents with limited concurrency — avoid firing hundreds of requests at once. */
-async function fetchAllContents(owner, repo, files, concurrency = 8) {
+export async function fetchAllContents(owner, repo, files, concurrency = 8) {
   const results = new Array(files.length);
   let next = 0;
   async function worker() {
@@ -195,7 +290,7 @@ async function fetchAllContents(owner, repo, files, concurrency = 8) {
  * @param {{githubToken: string, maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number}} config
  */
 export async function analyzeGithubRepo(request, config) {
-  GitHub.token = config.githubToken;
+  configureGithubClient({ token: config.githubToken });
 
   const { owner, repo, ref: resolvedRef } = await resolveRef(request);
   // pr mode already resolves to a real commit SHA (the PR's head.sha); any

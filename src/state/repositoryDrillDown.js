@@ -29,6 +29,16 @@ export function findNodeByPath(graph, path) {
 }
 
 /**
+ * @param {import('../graph-ir/graphIR.js').GraphIR|null} graph
+ * @param {string} nodeId - a GraphNode.id, unique within any single graph
+ * @returns {import('../graph-ir/graphIR.js').GraphNode|null}
+ */
+export function findNodeById(graph, nodeId) {
+  if (!graph || !Array.isArray(graph.nodes)) return null;
+  return graph.nodes.find((n) => n.id === nodeId) || null;
+}
+
+/**
  * @typedef {Object} DrillDownAttempt
  * @property {boolean} eligible
  * @property {string} [reason] - human-readable, only present when !eligible
@@ -66,6 +76,38 @@ export function tryCreateDrillDown(graph, path) {
 }
 
 /**
+ * Same as tryCreateDrillDown, keyed by node id rather than coordinate.path.
+ * MOO-70 Commit 8: `path` uniquely identifies a node at the repository
+ * layer (one node per file), but does not at the file layer — many
+ * functions/methods share one file's `coordinate.path`. Node `id` is
+ * unique within any single graph regardless of layer, so this is the
+ * correct lookup key for a file-layer (or any non-repository-layer)
+ * drill-down, rather than reusing the path-keyed helper against data it
+ * was never built to disambiguate.
+ * @param {import('../graph-ir/graphIR.js').GraphIR|null} graph
+ * @param {string} nodeId
+ * @returns {DrillDownAttempt}
+ */
+export function tryCreateDrillDownById(graph, nodeId) {
+  if (!graph) {
+    return { eligible: false, reason: 'No graph is available to drill down from.', node: null };
+  }
+  const node = findNodeById(graph, nodeId);
+  if (!node) {
+    return { eligible: false, reason: 'This node has no resolved coordinate.', node: null };
+  }
+  try {
+    const event = createDrillDownEvent(node, graph.layer);
+    return { eligible: true, event, node };
+  } catch (err) {
+    if (err instanceof NavigationError) {
+      return { eligible: false, reason: err.message, node };
+    }
+    throw err;
+  }
+}
+
+/**
  * @param {import('../graph-ir/graphIR.js').GraphIR|null} graph
  * @param {string} path
  * @returns {import('../graph-ir/navigation.js').SelectionEvent}
@@ -73,6 +115,16 @@ export function tryCreateDrillDown(graph, path) {
 export function createSelectionEventForPath(graph, path) {
   const node = findNodeByPath(graph, path);
   return createSelectionEvent(path, node ? node.coordinate : null);
+}
+
+/**
+ * @param {import('../graph-ir/graphIR.js').GraphIR|null} graph
+ * @param {string} nodeId
+ * @returns {import('../graph-ir/navigation.js').SelectionEvent}
+ */
+export function createSelectionEventForId(graph, nodeId) {
+  const node = findNodeById(graph, nodeId);
+  return createSelectionEvent(nodeId, node ? node.coordinate : null);
 }
 
 /**
@@ -93,6 +145,17 @@ export function githubBlobUrl(coordinate) {
  */
 export function tryCreateOpenSourceEvent(graph, path) {
   const node = findNodeByPath(graph, path);
+  if (!node || !node.coordinate) return null;
+  return createOpenSourceEvent(node.coordinate);
+}
+
+/**
+ * @param {import('../graph-ir/graphIR.js').GraphIR|null} graph
+ * @param {string} nodeId
+ * @returns {import('../graph-ir/navigation.js').OpenSourceEvent|null}
+ */
+export function tryCreateOpenSourceEventById(graph, nodeId) {
+  const node = findNodeById(graph, nodeId);
   if (!node || !node.coordinate) return null;
   return createOpenSourceEvent(node.coordinate);
 }

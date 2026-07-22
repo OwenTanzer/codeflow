@@ -1,0 +1,468 @@
+// POST /api/graph/file — MOO-70 Commit 7.
+//
+// The file-layer counterpart to server/routes/graph-repository.js: same
+// phase1 (network/subprocess, categorized failures) / phase2 (pure glue,
+// AdapterResult) structure, reusing that file's buildRequestContext/
+// withTimeout/GraphAnalysisTimeoutError/RATE_LIMIT_PATTERN directly rather
+// than duplicating them. Fetches only the requested file/package's blobs
+// (never the whole repository, unlike analyzeGithubRepo) via
+// github-analyzer-bridge.js's resolveRef/resolveCommitSha/
+// resolvePathEntry/fetchSubtreeFiles/fetchAllContents -- resolvePathEntry
+// walks non-recursively to the requested path itself rather than ever
+// fetching a (possibly GitHub-truncated, for a huge monorepo) full
+// recursive repository tree.
+//
+// Revision-pinning convention: a drill-down client should pass the parent
+// graph's exact resolvedSha as `ref`, not a branch name — validateRepoRequest's
+// REF_PATTERN already accepts either form, and resolveCommitSha already
+// resolves a SHA-shaped ref back to itself idempotently, so this pins the
+// revision through the existing field with no new request shape.
+import { readJsonBody, BodyTooLargeError } from '../lib/http-body.js';
+import { isRepoAllowed } from '../lib/allowlist.js';
+import { createRequestLogger } from '../lib/logger.js';
+import { validateFileRequest } from '../lib/validate-file-request.js';
+import { ValidationError } from '../lib/validate-repo-request.js';
+import {
+  configureGithubClient,
+  resolveRef,
+  resolveCommitSha,
+  resolvePathEntry,
+  fetchSubtreeFiles,
+  fetchAllContents,
+  GithubFetchError,
+} from '../lib/github-analyzer-bridge.js';
+import { buildRequestContext, withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN } from './graph-repository.js';
+import { stagePythonFiles, runPyan3 } from '../lib/pyan3Adapter.js';
+import { parseDotGraph, extractPyanNodes, extractPyanEdges } from '../lib/dotGraph.js';
+import { indexPythonSymbols } from '../lib/pythonSymbolIndex.js';
+import { joinPyanToSymbols } from '../lib/pyanSymbolJoin.js';
+import { adaptFileAnalysis } from '../../src/adapters/fileGraphAdapter.js';
+import { chooseDepthMode } from '../../src/graph-ir/depthPolicy.js';
+import { buildCacheKey } from '../../src/graph-ir/cacheKey.js';
+import { GRAPH_IR_SCHEMA_VERSION } from '../../src/graph-ir/graphIR.js';
+import { AdapterError, buildAdapterResult, AdapterResultError, sanitizeDiagnostic } from '../../src/graph-ir/adapterResult.js';
+import { AnalysisContextError, assertContextPropagation } from '../../src/graph-ir/githubContext.js';
+
+const ANALYZER = { name: 'codeflow-pyan3-adapter', version: '1.0.0' };
+
+function sendJson(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(body));
+}
+
+function sendError(res, status, message, category, requestId, options) {
+  const diagnostic = sanitizeDiagnostic(new AdapterError(category, message, options));
+  sendJson(res, status, { error: message, diagnostics: [diagnostic], requestId });
+}
+
+/**
+ * Run pyan3 for a staged request and never throw — MOO-70 Commit 9
+ * resilience requirement ("keep [analysis] operational when pyan3
+ * fails"). A pyan3 crash (any category: subprocess_failure,
+ * parser_failure, timeout) degrades to an empty relationship set (the
+ * request still completes with a tree-sitter-only, lower-confidence
+ * graph — Commit 5's `symbolOnly` path) rather than failing the whole
+ * request. Extracted from the handler and exported specifically so this
+ * behavior is unit-testable without a real GitHub fetch — running pyan3
+ * itself needs no network, only already-staged local files.
+ * @param {object} input
+ * @param {string} input.pythonBin
+ * @param {{dir: string}} input.workspace
+ * @param {string[]} input.absolutePaths
+ * @param {number} input.timeoutMs
+ * @returns {Promise<{pyanNodes: object[], pyanEdges: object[], warnings: string[], failedCategory: string|null}>}
+ */
+export async function runPyan3ForFile({ pythonBin, workspace, absolutePaths, timeoutMs }) {
+  try {
+    const pyanResult = await runPyan3({ pythonBin, workspace, absolutePaths, timeoutMs });
+    const digraph = parseDotGraph(pyanResult.dot);
+    return {
+      pyanNodes: extractPyanNodes(digraph),
+      pyanEdges: extractPyanEdges(digraph),
+      warnings: [],
+      failedCategory: null,
+    };
+  } catch (err) {
+    const category = err instanceof AdapterError ? err.category : 'subprocess_failure';
+    return {
+      pyanNodes: [],
+      pyanEdges: [],
+      warnings: [`pyan3 analysis failed (${category}): ${err.message}`],
+      failedCategory: category,
+    };
+  }
+}
+
+/**
+ * Apply file-count/byte-size budgets to an already-selected target file
+ * set (one file, or the members of one requested package) — never to the
+ * whole repository tree. PR review finding: routing the file layer
+ * through fetchTree() applied MAX_REPO_FILES/MAX_REPO_BYTES to *every*
+ * analyzable file in the repository before the requested file/package was
+ * even selected, so a tiny file in a large monorepo could be rejected for
+ * reasons entirely unrelated to what was actually requested. Mirrors
+ * `selectAnalyzableFiles`'s own skip-oversized-individually /
+ * fail-on-aggregate-or-count semantics, scoped to just this request's
+ * target set, and deliberately does not apply
+ * shouldIgnoreDirectory/shouldExcludeFile — those are repository-wide
+ * *view* policy (hiding vendor/build directories from the overall graph),
+ * not a reason to refuse a file the caller explicitly asked to see.
+ * @param {{path: string, size?: number}[]} targetFiles
+ * @param {{maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number}} limits
+ * @returns {{path: string, size?: number}[]}
+ * @throws {ValidationError}
+ */
+export function enforceFileRequestLimits(targetFiles, { maxRepoFiles, maxFileBytes, maxRepoBytes }) {
+  const files = [];
+  let totalBytes = 0;
+  for (const file of targetFiles) {
+    const size = typeof file.size === 'number' ? file.size : 0;
+    if (size > maxFileBytes) continue; // skipped, same as selectAnalyzableFiles' per-file behavior
+    totalBytes += size;
+    if (totalBytes > maxRepoBytes) {
+      throw new ValidationError(
+        `The requested file/package exceeds the configured aggregate size limit of ${maxRepoBytes} bytes ` +
+          `(reached ${totalBytes} bytes and counting). Raise MAX_REPO_BYTES if this is expected.`
+      );
+    }
+    files.push(file);
+  }
+  if (files.length > maxRepoFiles) {
+    throw new ValidationError(
+      `The requested package has ${files.length} analyzable files, over the configured limit of ${maxRepoFiles}. ` +
+        'Raise MAX_REPO_FILES if this is expected.'
+    );
+  }
+  return files;
+}
+
+/**
+ * If the client declared what revision it expected (from its own
+ * already-loaded parent graph's AnalysisContext), verify the freshly
+ * resolved revision still matches before doing any real work. PR review
+ * finding: a PR-mode request always re-resolves the PR's *current* head
+ * (resolveRef ignores any `ref` once `pr` is set) — without this check, a
+ * PR receiving a new commit between the repository graph loading and a
+ * file drill-down would silently analyze a different revision than the
+ * one the user is looking at, exactly what MOO-70's revision-pinning
+ * requirement exists to prevent. Reuses
+ * src/graph-ir/githubContext.js's assertContextPropagation (the same
+ * mechanism MOO-68 built for this exact class of check) rather than a
+ * new ad hoc comparison.
+ * @param {object} request - the validated file request (validateFileRequest's output)
+ * @param {{sourceOwner: string, sourceRepo: string, resolvedSha: string}} resolved - what was actually just resolved
+ * @throws {AnalysisContextError}
+ */
+export function assertRevisionStillExpected(request, resolved) {
+  if (!request.expectedResolvedSha) return;
+  const expected = {
+    owner: request.owner,
+    repo: request.repo,
+    sourceOwner: request.expectedSourceOwner || request.owner,
+    sourceRepo: request.expectedSourceRepo || request.repo,
+    resolvedSha: request.expectedResolvedSha,
+  };
+  const actual = {
+    owner: request.owner,
+    repo: request.repo,
+    sourceOwner: resolved.sourceOwner,
+    sourceRepo: resolved.sourceRepo,
+    resolvedSha: resolved.resolvedSha,
+  };
+  assertContextPropagation(expected, actual);
+}
+
+/**
+ * Classify a requested path against the already-fetched tree: an exact
+ * Python-file blob match is a 'file' request; one or more Python files
+ * under `${path}/` is a 'package' request. Self-describing from the tree
+ * rather than a client-supplied mode flag, so the client and server can
+ * never disagree about what `path` actually is.
+ * @param {object} input
+ * @param {{path: string}[]} input.treeFiles
+ * @param {string} input.requestedPath
+ * @returns {{mode: 'file'|'package', targetFiles: object[]}}
+ * @throws {ValidationError}
+ */
+export function resolveFileTarget({ treeFiles, requestedPath }) {
+  const exact = treeFiles.find((f) => f.path === requestedPath);
+  if (exact) {
+    if (!exact.path.endsWith('.py')) {
+      throw new ValidationError(`"${requestedPath}" is not a Python file — the file layer only supports .py files`);
+    }
+    return { mode: 'file', targetFiles: [exact] };
+  }
+
+  const prefix = requestedPath + '/';
+  const packageFiles = treeFiles.filter((f) => f.path.startsWith(prefix) && f.path.endsWith('.py'));
+  if (packageFiles.length > 0) {
+    return { mode: 'package', targetFiles: packageFiles };
+  }
+
+  const anyUnderPrefix = treeFiles.some((f) => f.path.startsWith(prefix));
+  if (anyUnderPrefix) {
+    throw new ValidationError(`"${requestedPath}" contains no Python (.py) files — the file layer only supports Python`);
+  }
+  throw new ValidationError(`"${requestedPath}" was not found in this revision`);
+}
+
+/** @param {{config: object, workspaceManager: import('../lib/workspace.js').WorkspaceManager}} deps */
+export function createGraphFileHandler({ config, workspaceManager }) {
+  return async function handleGraphFile(req, res, requestId) {
+    const log = createRequestLogger(requestId);
+
+    let body;
+    try {
+      body = await readJsonBody(req, config.maxRequestBodyBytes);
+    } catch (err) {
+      if (err instanceof BodyTooLargeError) {
+        return sendJson(res, 413, { error: 'Request body too large' });
+      }
+      return sendJson(res, 400, { error: 'Request body must be valid JSON' });
+    }
+
+    let request;
+    try {
+      request = validateFileRequest(body);
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        log.warn('rejected graph-file request: invalid input', { message: err.message });
+        return sendError(res, 400, err.message, 'unsupported_input', requestId);
+      }
+      throw err;
+    }
+
+    if (!isRepoAllowed(request.owner, request.repo, config)) {
+      log.warn('rejected graph-file request: repository not allowlisted', { owner: request.owner, repo: request.repo });
+      return sendError(res, 403, 'This repository is not on the allowlist', 'unsupported_input', requestId);
+    }
+
+    log.info('graph-file request accepted', {
+      owner: request.owner,
+      repo: request.repo,
+      ref: request.ref,
+      pr: request.pr,
+      path: request.path,
+    });
+
+    const startedAt = new Date().toISOString();
+    const startedAtMs = Date.now();
+    let workspace = null;
+
+    try {
+      // Phase 1: fetch (GitHub API calls, scoped to just the requested
+      // file/package's blobs -- never the whole repository).
+      let resolved;
+      try {
+        resolved = await withTimeout(
+          (async () => {
+            // PR review finding: resolveRef/resolveCommitSha/etc. use the
+            // shared GitHub client, whose token is otherwise only ever set
+            // by analyzeGithubRepo() (the repository layer's entry point,
+            // never called here) -- without this, every GitHub call this
+            // route makes would run unauthenticated regardless of
+            // config.githubToken, unless some unrelated request happened
+            // to set it first as a side effect.
+            configureGithubClient({ token: config.githubToken });
+
+            const { owner, repo, ref: resolvedRef } = await resolveRef(request);
+            const resolvedSha = request.pr != null ? resolvedRef : await resolveCommitSha(owner, repo, resolvedRef);
+
+            // Fail fast if a PR moved since the parent graph was loaded,
+            // before doing any of the real (wasted, if stale) work below.
+            assertRevisionStillExpected(request, { sourceOwner: owner, sourceRepo: repo, resolvedSha });
+
+            // Walk to the requested path's own entry non-recursively
+            // (never the whole repository tree, which can be truncated by
+            // GitHub for a large enough monorepo) to determine file vs.
+            // package mode, then fetch only that scope's contents.
+            const entry = await resolvePathEntry({ owner, repo, resolvedRef, path: request.path });
+            if (!entry) {
+              throw new ValidationError(`"${request.path}" was not found in this revision`);
+            }
+            let treeFiles;
+            if (entry.type === 'blob') {
+              treeFiles = [entry];
+            } else if (entry.type === 'tree') {
+              const subtreeEntries = await fetchSubtreeFiles({ owner, repo, sha: entry.sha, pathPrefix: entry.path });
+              treeFiles = subtreeEntries.filter((e) => e.type === 'blob');
+            } else {
+              throw new ValidationError(`"${request.path}" is not a file or directory`);
+            }
+
+            const target = resolveFileTarget({ treeFiles, requestedPath: request.path });
+            const limitedFiles = enforceFileRequestLimits(target.targetFiles, {
+              maxRepoFiles: config.maxRepoFiles,
+              maxFileBytes: config.maxFileBytes,
+              maxRepoBytes: config.maxRepoBytes,
+            });
+            if (limitedFiles.length === 0) {
+              throw new ValidationError(`"${request.path}" has no files remaining after applying size limits`);
+            }
+            const contents = await fetchAllContents(owner, repo, limitedFiles);
+            return {
+              sourceOwner: owner,
+              sourceRepo: repo,
+              resolvedSha,
+              mode: target.mode,
+              files: limitedFiles.map((f, i) => ({ path: f.path, content: contents[i] || '' })),
+            };
+          })(),
+          config.graphAnalysisTimeoutMs,
+          `File analysis did not complete within ${config.graphAnalysisTimeoutMs}ms`
+        );
+      } catch (err) {
+        const durationMs = Date.now() - startedAtMs;
+        if (err instanceof GraphAnalysisTimeoutError) {
+          log.warn('graph-file analysis timed out', { path: request.path, durationMs });
+          return sendError(res, 504, err.message, 'timeout', requestId);
+        }
+        if (err instanceof ValidationError) {
+          log.warn('rejected graph-file request: path resolution failed', { message: err.message });
+          return sendError(res, 400, err.message, 'unsupported_input', requestId);
+        }
+        if (err instanceof AnalysisContextError) {
+          log.warn('rejected graph-file request: PR revision changed since the parent graph was loaded', { message: err.message });
+          return sendError(
+            res,
+            409,
+            'The pull request has changed since the repository graph was loaded. Refresh the repository graph and try again.',
+            'unsupported_input',
+            requestId
+          );
+        }
+        if (err instanceof GithubFetchError) {
+          const rateLimited = RATE_LIMIT_PATTERN.test(err.message);
+          log.warn('github fetch failed', { message: err.message, rateLimited, durationMs });
+          return sendError(res, rateLimited ? 429 : 502, err.message, 'github_access', requestId, { retryable: rateLimited });
+        }
+        log.error('file source retrieval failed', { message: err && err.message, durationMs });
+        return sendError(res, 502, 'File analysis failed while retrieving its source', 'github_access', requestId);
+      }
+
+      // Stage into a fresh request workspace -- always cleaned up below,
+      // regardless of what happens next. Diagnosed as its own stage
+      // ("workspace preparation") rather than falling into the generic
+      // catch-all, per the Commit 9 diagnostics requirement.
+      let absolutePaths;
+      try {
+        workspace = await workspaceManager.createRequestWorkspace(requestId);
+        absolutePaths = await stagePythonFiles(workspace, resolved.files);
+      } catch (err) {
+        const durationMs = Date.now() - startedAtMs;
+        log.error('workspace preparation failed', { message: err && err.message, durationMs });
+        return sendError(res, 500, 'Failed to prepare the analysis workspace', 'internal_error', requestId);
+      }
+
+      // pyan3 failing does not fail the request -- degrade to a
+      // tree-sitter-only graph (Commit 5's symbolOnly path) rather than a
+      // 5xx, matching the resilience Commit 2's plan flagged needing. This
+      // failure is isolated to this one request/response: it shares no
+      // mutable state with server/routes/graph-repository.js's handler
+      // (a separate closure over the same read-only `config`), so it
+      // cannot affect the repository layer's own operation.
+      const pyanOutcome = await runPyan3ForFile({
+        pythonBin: config.pythonBin,
+        workspace,
+        absolutePaths,
+        timeoutMs: config.pyan3TimeoutMs,
+      });
+      if (pyanOutcome.failedCategory) {
+        log.warn('pyan3 analysis failed; degrading to tree-sitter-only graph', {
+          category: pyanOutcome.failedCategory,
+          path: request.path,
+        });
+      }
+
+      // Phase 2: pure glue, no more network/subprocess calls. Diagnosed as
+      // its own stage ("graph construction") -- covers symbol indexing,
+      // joining, GraphIR conversion, and depth selection -- distinct from
+      // source retrieval/workspace prep/pyan3 above.
+      let chosen;
+      let context;
+      let joined;
+      try {
+        const symbolEntries = [];
+        for (const file of resolved.files) {
+          const indexed = await indexPythonSymbols({ path: file.path, content: file.content });
+          symbolEntries.push(...indexed.entries);
+        }
+
+        context = buildRequestContext(request, resolved);
+        joined = joinPyanToSymbols({ pyanNodes: pyanOutcome.pyanNodes, pyanEdges: pyanOutcome.pyanEdges, symbolEntries, workspaceDir: workspace.dir });
+        joined.stats.warnings.push(...pyanOutcome.warnings);
+        const fullGraph = adaptFileAnalysis({ context, requestPath: request.path, joined, analyzer: ANALYZER });
+
+        chosen = chooseDepthMode({
+          graph: fullGraph,
+          requestKind: resolved.mode,
+          totalSymbolCount: symbolEntries.length,
+          override: request.depth || undefined,
+        });
+      } catch (err) {
+        if (err instanceof AnalysisContextError) {
+          log.warn('graph-file contract violation during graph construction', { message: err.message });
+          return sendError(res, 502, 'The analyzed file state could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
+        }
+        const durationMs = Date.now() - startedAtMs;
+        log.error('graph construction failed (symbol indexing, join, or GraphIR conversion)', { message: err && err.message, durationMs });
+        return sendError(res, 500, 'Analysis failed while building the file graph', 'internal_error', requestId);
+      }
+
+      const cacheKey = buildCacheKey({
+        context,
+        analyzerName: ANALYZER.name,
+        analyzerVersion: ANALYZER.version,
+        graphSchemaVersion: GRAPH_IR_SCHEMA_VERSION,
+        coordinate: chosen.graph.rootCoordinate,
+        depth: chosen.mode,
+      });
+
+      const durationMs = Date.now() - startedAtMs;
+      const adapterResult = buildAdapterResult({
+        graph: chosen.graph,
+        warnings: chosen.graph.warnings,
+        provenance: { analyzerName: ANALYZER.name, analyzerVersion: ANALYZER.version },
+        timing: { startedAt, durationMs },
+        // No durable cache store exists yet -- centralized caching is
+        // MOO-72's job. This endpoint reports the key an eventual cache
+        // would use, always as a miss.
+        cache: { key: cacheKey, hit: false },
+      });
+
+      log.info('graph-file analysis complete', {
+        owner: request.owner,
+        repo: request.repo,
+        path: request.path,
+        sourceOwner: resolved.sourceOwner,
+        sourceRepo: resolved.sourceRepo,
+        resolvedSha: resolved.resolvedSha,
+        mode: resolved.mode,
+        analyzerName: ANALYZER.name,
+        analyzerVersion: ANALYZER.version,
+        depth: chosen.mode,
+        durationMs,
+        nodeCount: chosen.graph.nodes.length,
+        edgeCount: chosen.graph.edges.length,
+        warningCount: chosen.graph.warnings.length,
+        matchedCount: joined.stats.matchedCount,
+        unresolvedCount: joined.stats.unresolvedCount,
+        ambiguousCount: joined.stats.ambiguousCount,
+        symbolOnlyCount: joined.stats.symbolOnlyCount,
+        pyanFailedCategory: pyanOutcome.failedCategory,
+        cacheKey,
+        cacheHit: false,
+      });
+      sendJson(res, 200, adapterResult);
+    } catch (err) {
+      if (err instanceof AnalysisContextError || err instanceof AdapterResultError) {
+        log.warn('graph-file contract violation', { message: err.message });
+        return sendError(res, 502, 'The analyzed file state could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
+      }
+      log.error('graph-file internal error', { message: err && err.message });
+      sendError(res, 500, 'Analysis failed', 'internal_error', requestId);
+    } finally {
+      if (workspace) await workspace.cleanup();
+    }
+  };
+}

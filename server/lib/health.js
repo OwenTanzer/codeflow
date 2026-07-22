@@ -28,8 +28,13 @@ export function createHealthHandler({ config }) {
   };
 }
 
-/** @param {{config: object}} deps */
-export function createReadinessHandler({ config }) {
+/**
+ * @param {{config: object, getPyan3Available?: () => boolean}} deps
+ * `getPyan3Available` is a getter (not a plain value) so a later re-check
+ * could update it without needing to recreate this handler; optional
+ * since not every deployment of this handler needs to report it.
+ */
+export function createReadinessHandler({ config, getPyan3Available }) {
   return async function handleReadiness(req, res) {
     const checks = {};
 
@@ -41,7 +46,18 @@ export function createReadinessHandler({ config }) {
       .then(() => ({ ok: true }))
       .catch((err) => ({ ok: false, error: err.code || err.message }));
 
-    const ready = Object.values(checks).every((c) => c.ok);
+    // MOO-70 Commit 9 (PR review): pyan3 unavailability is surfaced here
+    // for visibility, but deliberately does NOT gate readiness -- the
+    // repository layer and static app have no dependency on pyan3, and
+    // /api/graph/file itself already degrades gracefully (tree-sitter-only
+    // mode) rather than failing outright. Marking the whole server
+    // "not ready" over a file-layer-only capability would take healthy,
+    // unrelated functionality out of rotation for no reason.
+    if (typeof getPyan3Available === 'function') {
+      checks.pyan3 = { ok: getPyan3Available(), gatesReadiness: false };
+    }
+
+    const ready = ['buildOutput', 'workspaceRoot'].every((key) => checks[key].ok);
     sendJson(res, ready ? 200 : 503, { status: ready ? 'ready' : 'not_ready', checks });
   };
 }

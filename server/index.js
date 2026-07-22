@@ -21,6 +21,8 @@ import { RateLimiter } from './lib/rate-limit.js';
 import { createAnalyzeHandler } from './routes/analyze.js';
 import { createAnalyzeRepoHandler } from './routes/analyze-repo.js';
 import { createGraphRepositoryHandler } from './routes/graph-repository.js';
+import { createGraphFileHandler } from './routes/graph-file.js';
+import { verifyPyan3Available } from './lib/pyan3Adapter.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = join(__dirname, '..');
@@ -65,16 +67,41 @@ async function main() {
     process.exit(1);
   }
 
+  // MOO-70 Commit 7/9: check pyan3 availability once at startup so it's
+  // visible in the logs immediately, rather than only discovered on the
+  // first /api/graph/file request. PR review finding: this previously
+  // called process.exit(1) on failure, which took down the *entire*
+  // server -- including the repository layer and the static app, which
+  // have no dependency on pyan3 at all -- directly contradicting this
+  // ticket's own "keep the repository layer operational when pyan3
+  // fails" requirement. Never fatal now: a missing/broken pyan3 install
+  // is logged as a warning and the server continues. Each individual
+  // /api/graph/file request already degrades gracefully when pyan3 is
+  // unavailable (server/routes/graph-file.js's runPyan3ForFile returns a
+  // tree-sitter-only graph rather than throwing) -- that same per-request
+  // resilience is exactly what covers a totally-missing pyan3 install
+  // too, so no separate "capability flag" plumbing is needed here.
+  let pyan3Available = true;
+  try {
+    await verifyPyan3Available({ pythonBin: config.pythonBin });
+  } catch (err) {
+    pyan3Available = false;
+    log('warn', 'pyan3 unavailable at startup -- /api/graph/file will run in tree-sitter-only (degraded) mode until this is fixed', {
+      message: err.message,
+    });
+  }
+
   const rateLimiter = new RateLimiter(config.rateLimitPerMinute);
   const rateLimitSweep = setInterval(() => rateLimiter.sweep(), 60_000);
   rateLimitSweep.unref();
 
   const handleStatic = createStaticHandler(config.distDir);
   const handleHealth = createHealthHandler({ config });
-  const handleReadiness = createReadinessHandler({ config });
+  const handleReadiness = createReadinessHandler({ config, getPyan3Available: () => pyan3Available });
   const handleAnalyze = createAnalyzeHandler({ config, workspaceManager });
   const handleAnalyzeRepo = createAnalyzeRepoHandler({ config });
   const handleGraphRepository = createGraphRepositoryHandler({ config });
+  const handleGraphFile = createGraphFileHandler({ config, workspaceManager });
 
   const server = createServer(async (req, res) => {
     const requestId = generateRequestId();
@@ -101,6 +128,8 @@ async function main() {
         await handleAnalyzeRepo(req, res, requestId);
       } else if (url.pathname === '/api/graph/repository' && req.method === 'POST') {
         await handleGraphRepository(req, res, requestId);
+      } else if (url.pathname === '/api/graph/file' && req.method === 'POST') {
+        await handleGraphFile(req, res, requestId);
       } else if (isApiRoute) {
         sendJson(res, 404, { error: 'Not found' });
       } else {
@@ -131,6 +160,7 @@ async function main() {
       allowedRepos: config.allowedRepos.length,
       allowedOwners: config.allowedOwners.length,
       rateLimitPerMinute: config.rateLimitPerMinute,
+      pyan3Available,
     });
   });
 }
