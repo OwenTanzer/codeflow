@@ -4,10 +4,14 @@ import test from 'node:test';
 
 const {
   findNodeByPath,
+  findNodeById,
   tryCreateDrillDown,
+  tryCreateDrillDownById,
   createSelectionEventForPath,
+  createSelectionEventForId,
   githubBlobUrl,
   tryCreateOpenSourceEvent,
+  tryCreateOpenSourceEventById,
 } = await import('../src/state/repositoryDrillDown.js');
 const { makeGraphIR } = await import('../src/graph-ir/graphIR.js');
 const { makeCoordinate } = await import('../src/graph-ir/sourceCoordinate.js');
@@ -113,4 +117,71 @@ test('tryCreateOpenSourceEvent returns a real event when a coordinate exists', (
   const evt = tryCreateOpenSourceEvent(graph, 'src/app.py');
   assert.equal(evt.type, 'openSource');
   assert.equal(evt.coordinate.path, 'src/app.py');
+});
+
+// MOO-70 Commit 8: id-keyed counterparts, needed because `path` is only a
+// unique node key at the repository layer -- a file-layer graph has many
+// nodes (functions/methods) sharing one file's coordinate.path.
+function fileGraphWithTwoMethodsSamePath() {
+  const path = 'src/service.py';
+  return makeGraphIR({
+    layer: 'file',
+    context: CONTEXT,
+    analyzer: { name: 'test', version: '1.0.0' },
+    confidence: 1,
+    nodes: [
+      {
+        id: 'mod__Service__run',
+        layer: 'file',
+        kind: 'method',
+        label: 'run',
+        coordinate: makeCoordinate({ repository: REPOSITORY, revision: SHA, path, symbolPath: ['Service', 'run'], symbolKind: 'method' }),
+        groupId: null,
+      },
+      {
+        id: 'mod__Service__stop',
+        layer: 'file',
+        kind: 'method',
+        label: 'stop',
+        coordinate: makeCoordinate({ repository: REPOSITORY, revision: SHA, path, symbolPath: ['Service', 'stop'], symbolKind: 'method' }),
+        groupId: null,
+      },
+    ],
+    edges: [],
+  });
+}
+
+test('findNodeById distinguishes two nodes that share the same coordinate.path (file-layer scenario)', () => {
+  const graph = fileGraphWithTwoMethodsSamePath();
+  const run = findNodeById(graph, 'mod__Service__run');
+  const stop = findNodeById(graph, 'mod__Service__stop');
+  assert.equal(run.label, 'run');
+  assert.equal(stop.label, 'stop');
+  assert.equal(run.coordinate.path, stop.coordinate.path, 'both share one file path -- path alone could not have disambiguated them');
+});
+
+test('tryCreateDrillDownById drills a file-layer method node into the function layer', () => {
+  const graph = fileGraphWithTwoMethodsSamePath();
+  const result = tryCreateDrillDownById(graph, 'mod__Service__run');
+  assert.equal(result.eligible, true);
+  assert.equal(result.event.targetLayer, 'function');
+  assert.equal(result.node.label, 'run');
+});
+
+test('tryCreateDrillDownById reports ineligible with a clear reason when graph is null', () => {
+  const result = tryCreateDrillDownById(null, 'mod__Service__run');
+  assert.equal(result.eligible, false);
+  assert.match(result.reason, /No graph is available/);
+});
+
+test('createSelectionEventForId attaches the real coordinate for the correct same-path node', () => {
+  const graph = fileGraphWithTwoMethodsSamePath();
+  const evt = createSelectionEventForId(graph, 'mod__Service__stop');
+  assert.equal(evt.coordinate.symbolPath.join('.'), 'Service.stop');
+});
+
+test('tryCreateOpenSourceEventById returns a real event for the correct same-path node', () => {
+  const graph = fileGraphWithTwoMethodsSamePath();
+  const evt = tryCreateOpenSourceEventById(graph, 'mod__Service__run');
+  assert.equal(evt.coordinate.symbolPath.join('.'), 'Service.run');
 });

@@ -642,22 +642,27 @@ body{height:100dvh;min-height:100dvh}
 <script type="module">
 import * as analyzer from './src/analyzer.js';
 import { renderRepositoryGraph } from './src/render/repositoryGraph.js';
+import { renderFileGraph } from './src/render/fileGraph.js';
 import { useRepositorySelection } from './src/state/selection.js';
 import { buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute } from './src/state/route.js';
 import { adaptRepositoryAnalysis } from './src/adapters/repositoryGraphAdapter.js';
 import { normalizeContext } from './src/graph-ir/githubContext.js';
 import {
   tryCreateDrillDown,
+  tryCreateDrillDownById,
   createSelectionEventForPath,
   tryCreateOpenSourceEvent,
+  tryCreateOpenSourceEventById,
   githubBlobUrl,
 } from './src/state/repositoryDrillDown.js';
 import { useRepositoryDrillDownPanel } from './src/state/repositoryDrillDownPanel.js';
+import { fetchFileGraph, GraphFileClientError } from './src/state/graphFileClient.js';
 Object.assign(window, analyzer, {
-  renderRepositoryGraph, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute,
+  renderRepositoryGraph, renderFileGraph, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute,
   adaptRepositoryAnalysis, normalizeContext,
-  tryCreateDrillDown, createSelectionEventForPath, tryCreateOpenSourceEvent, githubBlobUrl,
+  tryCreateDrillDown, tryCreateDrillDownById, createSelectionEventForPath, tryCreateOpenSourceEvent, tryCreateOpenSourceEventById, githubBlobUrl,
   useRepositoryDrillDownPanel,
+  fetchFileGraph, GraphFileClientError,
 });
 </script>
 <script type="text/babel">
@@ -1179,6 +1184,93 @@ function HealthRing(props){
     );
 }
 
+// MOO-70 Commit 8: the file-layer view. A separate component (not inlined
+// into App()) since it owns its own fetch/render lifecycle (hooks can't be
+// called conditionally inline in the parent for a panel that only exists
+// once navPanel.layer==='file'). Fetches via fetchFileGraph
+// (src/state/graphFileClient.js) -- the first client call to the private
+// server's auth-gated API, gated behind an inline serverAuthToken prompt
+// rather than the main toolbar, since it's only relevant once a file
+// drill-down is actually opened. Renders via renderFileGraph
+// (src/render/fileGraph.js); double-click uses tryCreateDrillDownById
+// (src/state/repositoryDrillDown.js) -- id-keyed, not path-keyed, since
+// many function/method nodes share one file's coordinate.path.
+function FileLayerPanel(props){
+    var navPanel=props.navPanel,repositoryGraph=props.repositoryGraph,serverAuthToken=props.serverAuthToken,
+        setServerAuthToken=props.setServerAuthToken,theme=props.theme,openFileDrillDown=props.openFileDrillDown,
+        showNotification=props.showNotification,onHover=props.onHover;
+
+    var _fg=useState(null),fileGraph=_fg[0],setFileGraph=_fg[1];
+    var _fgl=useState(false),fileGraphLoading=_fgl[0],setFileGraphLoading=_fgl[1];
+    var _fge=useState(null),fileGraphError=_fge[0],setFileGraphError=_fge[1];
+    var svgRef=useRef(null);
+    var zoomRef=useRef(null),simRef=useRef(null);
+    var selectSymbolRef=useRef(null);
+    var activateSymbolRef=useRef(null);
+    var path=navPanel.coordinate?navPanel.coordinate.path:null;
+
+    useEffect(function(){
+        if(!path||!repositoryGraph||!serverAuthToken)return;
+        var cancelled=false;
+        setFileGraphLoading(true);
+        setFileGraphError(null);
+        setFileGraph(null);
+        fetchFileGraph({
+            owner:repositoryGraph.context.sourceOwner,
+            repo:repositoryGraph.context.sourceRepo,
+            resolvedSha:repositoryGraph.context.resolvedSha,
+            path:path,
+            serverAuthToken:serverAuthToken,
+        }).then(function(result){
+            if(cancelled)return;
+            setFileGraph(result.graph);
+            setFileGraphLoading(false);
+        }).catch(function(err){
+            if(cancelled)return;
+            setFileGraphError((err instanceof GraphFileClientError?err.message:'Failed to load file graph')||'Failed to load file graph');
+            setFileGraphLoading(false);
+        });
+        return function(){cancelled=true;};
+    },[path,repositoryGraph,serverAuthToken]);
+
+    selectSymbolRef.current=function(){}; // MOO-70 Commit 8: selection highlighting deferred, matching this pass's minimal scope
+    activateSymbolRef.current=function(nodeId){
+        var result=tryCreateDrillDownById(fileGraph,nodeId);
+        if(result.eligible){
+            openFileDrillDown(result.event);
+        }else{
+            showNotification(result.reason||'This symbol cannot be drilled into.','warning');
+        }
+    };
+
+    useEffect(function(){
+        if(!fileGraph||!svgRef.current)return;
+        return renderFileGraph({
+            svgEl:svgRef.current,graph:fileGraph,theme:theme,
+            zoomRef:zoomRef,simRef:simRef,
+            selectSymbolRef:selectSymbolRef,activateSymbolRef:activateSymbolRef,
+            onHover:onHover,onBackgroundClick:function(){},
+        });
+    },[fileGraph,theme]);
+
+    if(!serverAuthToken){
+        return React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
+            React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' ',path||'File view'),
+            React.createElement('div',{style:{fontSize:12,color:'var(--t2)',marginBottom:8}},'Enter the CodeFlow server token to load the file-layer view.'),
+            React.createElement('input',{className:'repo-input',type:'password','aria-label':'Server Auth Token',placeholder:'Server Auth Token',value:serverAuthToken,onChange:function(e){setServerAuthToken(e.target.value);}})
+        );
+    }
+
+    return React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
+        React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' ',path),
+        fileGraphLoading&&React.createElement('div',{style:{fontSize:12,color:'var(--t2)'}},'Loading file graph…'),
+        fileGraphError&&React.createElement('div',{style:{fontSize:12,color:'#f87171'}},fileGraphError),
+        fileGraph&&React.createElement('svg',{ref:svgRef,style:{width:'100%',height:320,background:'var(--bg2)',borderRadius:8}}),
+        fileGraph&&fileGraph.warnings&&fileGraph.warnings.length>0&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',marginTop:6}},fileGraph.warnings.length+' analysis warning(s) -- confidence '+Math.round(fileGraph.confidence*100)+'%'),
+        navPanel.coordinate&&React.createElement('button',{className:'top-btn',style:{marginTop:8},onClick:function(){window.open(githubBlobUrl(navPanel.coordinate),'_blank','noopener');}},iconLabel('eye','View on GitHub'))
+    );
+}
+
 // ---------------------------------------------------------------------------
 // React Application
 // ---------------------------------------------------------------------------
@@ -1187,6 +1279,15 @@ function App(){
     var _a=useState(window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'),theme=_a[0],setTheme=_a[1];
     var _b=useState(''),repoUrl=_b[0],setRepoUrl=_b[1];
     var _c=useState(''),token=_c[0],setToken=_c[1];
+    // MOO-70 Commit 8: the private CodeFlow server's own AUTH_TOKEN,
+    // distinct from `token` above (the user's GitHub PAT) -- needed only
+    // to call POST /api/graph/file, the first client integration with
+    // that auth-gated API (every other analysis path runs entirely
+    // client-side against GitHub directly). Not persisted (matches
+    // `token`'s own un-persisted useState('') pattern) -- prompted for
+    // inline in FileLayerPanel only once a file drill-down is actually
+    // opened, not in the main toolbar, since it's only relevant then.
+    var _sat=useState(''),serverAuthToken=_sat[0],setServerAuthToken=_sat[1];
     var _authMethod=useState('none'),authMethod=_authMethod[0],setAuthMethod=_authMethod[1];// 'none', 'pat', 'github_app'
     var _appId=useState(''),appId=_appId[0],setAppId=_appId[1];
     var _privateKey=useState(''),privateKey=_privateKey[0],setPrivateKey=_privateKey[1];
@@ -4320,12 +4421,27 @@ function App(){
                         // in the UI, not just carried invisibly in context.
                         repositoryGraph&&React.createElement('div',{title:repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha,style:{fontSize:10,color:'var(--t3)',fontFamily:'JetBrains Mono',whiteSpace:'nowrap'}},repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha.slice(0,7))
                     ),
-                    navPanel&&React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
+                    // MOO-70 Commit 8: navPanel.layer==='file' gets the real
+                    // view (FileLayerPanel, above); 'function' gets an
+                    // explicit pending state (MOO-71 not built yet) rather
+                    // than reusing the old MOO-70-specific placeholder text;
+                    // any other layer keeps the original generic fallback
+                    // (defensive -- not expected to occur).
+                    navPanel&&(navPanel.layer==='file'?React.createElement(FileLayerPanel,{
+                        navPanel:navPanel,repositoryGraph:repositoryGraph,serverAuthToken:serverAuthToken,
+                        setServerAuthToken:setServerAuthToken,theme:theme,openFileDrillDown:openFileDrillDown,
+                        showNotification:showNotification,onHover:setTooltip,
+                    }):navPanel.layer==='function'?React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
+                        React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' Drill down (function)'),
+                        React.createElement('div',{className:'panel-subtitle',style:{marginBottom:8}},navPanel.coordinate?navPanel.coordinate.path:''),
+                        React.createElement('div',{style:{fontSize:12,color:'var(--t2)',marginBottom:navPanel.coordinate?8:0}},'Function-layer analysis not yet available (MOO-71). This proves the navigation contract (coordinate, breadcrumb, back/forward history) end-to-end ahead of the real view.'),
+                        navPanel.coordinate&&React.createElement('button',{className:'top-btn',onClick:function(){window.open(githubBlobUrl(navPanel.coordinate),'_blank','noopener');}},iconLabel('eye','View on GitHub'))
+                    ):React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
                         React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' Drill down ('+navPanel.layer+')'),
                         React.createElement('div',{className:'panel-subtitle',style:{marginBottom:8}},navPanel.coordinate?navPanel.coordinate.path:''),
-                        React.createElement('div',{style:{fontSize:12,color:'var(--t2)',marginBottom:navPanel.coordinate?8:0}},'File-layer view not yet implemented (MOO-70). This proves the navigation contract (coordinate, breadcrumb, back/forward history) end-to-end ahead of the real view.'),
+                        React.createElement('div',{style:{fontSize:12,color:'var(--t2)',marginBottom:navPanel.coordinate?8:0}},'View not yet implemented for this layer.'),
                         navPanel.coordinate&&React.createElement('button',{className:'top-btn',onClick:function(){window.open(githubBlobUrl(navPanel.coordinate),'_blank','noopener');}},iconLabel('eye','View on GitHub'))
-                    ),
+                    )),
                     React.createElement('div',{className:'panel-tabs'},
                         React.createElement('button',{className:'panel-tab'+(rightTab==='details'?' active':''),onClick:function(){setRightTab('details');setDrillDown(null);}},selected?iconLabel('file','FILE'):(graphConfig.vizType==='architecture'?iconLabel('layers','ARCH'):iconLabel('search','ISSUES'))),
                         React.createElement('button',{className:'panel-tab'+(rightTab==='patterns'?' active':''),onClick:function(){setRightTab('patterns');setDrillDown(null);}},iconLabel('puzzle','PATTERNS'),' ',React.createElement('span',{className:'badge badge-default'},data.patterns.length)),
