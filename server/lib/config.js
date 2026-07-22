@@ -110,6 +110,20 @@ export function loadConfig({ repoRoot, env = process.env }) {
     errors.push(`GRAPH_ANALYSIS_TIMEOUT_MS must be a positive integer, got: ${JSON.stringify(env.GRAPH_ANALYSIS_TIMEOUT_MS)}`);
   }
 
+  // MOO-70 Commit 2: the pyan3 subprocess is invoked as `${pythonBin} -m
+  // pyan ...`. Railway/CI (Linux) ship `python3`; some local dev machines
+  // only have `python` on PATH — hence an env override rather than a
+  // hardcoded platform check.
+  const pythonBin = env.PYTHON_BIN || 'python3';
+  if (!pythonBin) {
+    errors.push('PYTHON_BIN must not be empty when set.');
+  }
+
+  const pyan3TimeoutMs = env.PYAN3_TIMEOUT_MS ? Number(env.PYAN3_TIMEOUT_MS) : 30 * 1000;
+  if (!Number.isInteger(pyan3TimeoutMs) || pyan3TimeoutMs <= 0) {
+    errors.push(`PYAN3_TIMEOUT_MS must be a positive integer, got: ${JSON.stringify(env.PYAN3_TIMEOUT_MS)}`);
+  }
+
   if (errors.length > 0) {
     throw new ConfigError(errors);
   }
@@ -130,5 +144,7 @@ export function loadConfig({ repoRoot, env = process.env }) {
     maxFileBytes,
     maxRepoBytes,
     graphAnalysisTimeoutMs,
+    pythonBin,
+    pyan3TimeoutMs,
   };
 }

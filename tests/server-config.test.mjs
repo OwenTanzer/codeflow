@@ -102,6 +102,33 @@ test('loadConfig rejects an invalid GRAPH_ANALYSIS_TIMEOUT_MS', async () => {
   });
 });
 
+test('loadConfig defaults pythonBin to python3 and respects PYTHON_BIN override', async () => {
+  await withBuiltRepo((repoRoot) => {
+    const defaultConfig = loadConfig({ repoRoot, env: VALID_ENV });
+    assert.equal(defaultConfig.pythonBin, 'python3');
+    const overridden = loadConfig({ repoRoot, env: { ...VALID_ENV, PYTHON_BIN: 'python' } });
+    assert.equal(overridden.pythonBin, 'python');
+  });
+});
+
+test('loadConfig defaults pyan3TimeoutMs and respects PYAN3_TIMEOUT_MS override', async () => {
+  await withBuiltRepo((repoRoot) => {
+    const defaultConfig = loadConfig({ repoRoot, env: VALID_ENV });
+    assert.equal(defaultConfig.pyan3TimeoutMs, 30000);
+    const overridden = loadConfig({ repoRoot, env: { ...VALID_ENV, PYAN3_TIMEOUT_MS: '5000' } });
+    assert.equal(overridden.pyan3TimeoutMs, 5000);
+  });
+});
+
+test('loadConfig rejects an invalid PYAN3_TIMEOUT_MS', async () => {
+  await withBuiltRepo((repoRoot) => {
+    assert.throws(
+      () => loadConfig({ repoRoot, env: { ...VALID_ENV, PYAN3_TIMEOUT_MS: '-5' } }),
+      /PYAN3_TIMEOUT_MS must be a positive integer/
+    );
+  });
+});
+
 test('loadConfig rejects an invalid PORT with an actionable error', async () => {
   await withBuiltRepo((repoRoot) => {
     assert.throws(
