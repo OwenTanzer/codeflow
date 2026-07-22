@@ -866,6 +866,98 @@ suite: 207/207 (132 pre-existing + 75 new). No UI wiring in this issue by
 design — `src/render/repositoryGraph.js`'s `activateFileRef` stays a no-op
 until MOO-69 wires a real `createDrillDownEvent` dispatch into it.
 
+## MOO-69 — adapt the repository layer to GraphIR and unified navigation
+
+MOO-69 (all 7 commits) adapts CodeFlow's existing repository analysis into
+MOO-68's GraphIR contract and wires the real navigation/selection events
+into the live app. See `docs/graph-ir-contract.md` for the contract
+reference and `docs/repository-layer-density.md` for Commit 7's density
+documentation/Garrison-Step handoff. Summary:
+
+1. `src/adapters/repositoryGraphAdapter.js` — normalizes
+   `buildAnalysisData()`'s output into a repository-layer `GraphIR`: one
+   node per file, one group per folder, one edge per connection (not
+   pre-aggregated), repository-wide summaries (issues/patterns/security/
+   architecture diagram/stats) carried under an open graph-level
+   `metadata` field.
+2. `server/routes/graph-repository.js` — `POST /api/graph/repository`,
+   the GraphIR-returning counterpart to MOO-67's `/api/analyze-repo`.
+   `github-analyzer-bridge.js`'s `analyzeGithubRepo` now also resolves and
+   returns `sourceOwner`/`sourceRepo`/`resolvedSha` (added one extra
+   "get a commit" API call for non-PR refs, which previously stayed
+   unresolved branch names).
+3. `src/render/repositoryRenderModel.js` — pure translation from either the
+   legacy analysis object or a GraphIR into the flat `{nodes,links}` shape
+   `src/render/repositoryGraph.js`'s D3 code already built; the renderer
+   itself stays unaware of GraphIR entirely.
+4. Real selection/drill-down wiring: `GitHub.resolveRepositoryRevision`
+   (client-side SHA resolution, mirroring the server's own), a
+   `repositoryGraph` state built once right after analysis completes, and
+   `activateFileRef` (MOO-67 Commit 4E's no-op seam) now dispatches a real
+   `createDrillDownEvent` into a placeholder panel (MOO-70's file-layer
+   view doesn't exist yet) with breadcrumbs/back-forward
+   (`NavigationHistory`) and a "View on GitHub" open-source action.
+   Local-folder/zip analysis has no GitHub revision identity and stays on
+   the legacy render/selection path entirely (a deliberate scope
+   boundary, confirmed with the operator).
+5. Changed-area rendering hints (from the existing PR-impact-overlay
+   feature's `prData.files`, not a new data model) and a visible
+   ref@shortSha revision badge. **Correction from PR review:** initially
+   scoped out real PR-head-revision analysis as a separate feature (see
+   the now-superseded Linear comment on MOO-69), but MOO-69's own Commit 5
+   checks explicitly require it ("a PR drill-down opens the file from the
+   analyzed head revision"; "base/head identity is preserved..."). Fixed:
+   `analyzePR()` now re-scans and re-parses the PR's actual head revision
+   (fork-aware, via `GitHub.resolvePR`) and replaces `data`/`repositoryGraph`
+   with it, rather than only overlaying PR metadata on the base-branch
+   analysis.
+5a. **PR review found two more real bugs, both fixed:** (1) the browser's
+   GitHub-repo flow scanned the repository first and resolved a commit SHA
+   *afterward*, as two independent requests — if the branch advanced in
+   between, the resulting GraphIR could mislabel whatever was actually
+   fetched with the wrong revision, exactly the mismatch MOO-68 exists to
+   prevent. Fixed by resolving the SHA first and threading it through every
+   subsequent `GitHub.scan`/`getFile` call as an explicit `ref` parameter
+   (`?ref=<sha>` on the Contents API, the tree SHA directly in the Trees API
+   URL) so the whole fetch pass observes one consistent commit. (2) the
+   asynchronous SHA-resolution/graph-building step had no generation guard,
+   so a slower, still-in-flight analysis could complete after a newer one
+   and silently overwrite its state — fixed with an
+   `analysisGenerationRef`/`isCurrentAnalysisGeneration` guard checked
+   before every `setData`/`setRepositoryGraph` call, shared by both the
+   plain-repository and PR-head analysis paths.
+6. Split fetch/parse-phase vs. graph-build-phase error handling in the new
+   endpoint, with GitHub rate-limit detection (429, `retryable:true`), a
+   request timeout (`GRAPH_ANALYSIS_TIMEOUT_MS`, closing a gap Commit 2's
+   own checklist called for but initially missed), and richer success
+   logging (revision identity, duration, node/edge counts, cache
+   key/status, warning count).
+7. `docs/repository-layer-density.md` — current node/edge counts for all
+   four committed fixtures (largest: 19 nodes), confirms existing
+   reduction/filtering behavior (`ANALYSIS_LIMITS`, `folderFilter`, the
+   large-graph adaptive rendering threshold) was left untouched, and
+   defers clustering/neighborhood-isolation/changed-files-only-mode/
+   blast-radius-reduction/node-budgets to the Garrison Step (MOO-44).
+
+**Checks:** ~40 new tests across
+`tests/repository-graph-adapter.test.mjs`,
+`tests/server-graph-repository.test.mjs`,
+`tests/repository-render-model.test.mjs`,
+`tests/repository-drill-down.test.mjs`,
+`tests/github-client-ref-pinning.test.mjs` (mocked-fetch coverage of the
+PR-review-fixed ref-pinning behavior — `getFile`/`scanTree`/`scanRecursive`
+correctly include/omit `?ref=`, and `resolvePR`'s fork extraction), and
+expansions to `tests/github-context.test.mjs`/`tests/server-config.test.mjs`.
+Full
+suite: 279/279 (after the PR review fixes above). Clean build. `tests/ui-smoke.mjs` re-verified against a
+production build at multiple points (still 6/6) to confirm the legacy
+local-folder path stayed unaffected; `scripts/verify-repository-graph-ir-render.mjs`
+(Commit 3) confirms the renderer accepts a real GraphIR fixture directly.
+The full GitHub-backed round trip (real scan → resolved SHA → real
+placeholder panel; the new endpoint's timeout/rate-limit paths) needs a
+live GitHub credential to exercise end-to-end, same manual-precondition
+category as `tests/server-smoke.mjs`'s other GitHub-requiring steps.
+
 ## What this baseline does not cover
 
 - Browser-only behavior (D3 rendering, drag/zoom/click interactions, local

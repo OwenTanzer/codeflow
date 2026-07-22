@@ -644,7 +644,21 @@ import * as analyzer from './src/analyzer.js';
 import { renderRepositoryGraph } from './src/render/repositoryGraph.js';
 import { useRepositorySelection } from './src/state/selection.js';
 import { buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute } from './src/state/route.js';
-Object.assign(window, analyzer, { renderRepositoryGraph, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute });
+import { adaptRepositoryAnalysis } from './src/adapters/repositoryGraphAdapter.js';
+import { normalizeContext } from './src/graph-ir/githubContext.js';
+import {
+  tryCreateDrillDown,
+  createSelectionEventForPath,
+  tryCreateOpenSourceEvent,
+  githubBlobUrl,
+} from './src/state/repositoryDrillDown.js';
+import { useRepositoryDrillDownPanel } from './src/state/repositoryDrillDownPanel.js';
+Object.assign(window, analyzer, {
+  renderRepositoryGraph, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute,
+  adaptRepositoryAnalysis, normalizeContext,
+  tryCreateDrillDown, createSelectionEventForPath, tryCreateOpenSourceEvent, githubBlobUrl,
+  useRepositoryDrillDownPanel,
+});
 </script>
 <script type="text/babel">
 /*
@@ -1182,6 +1196,27 @@ function App(){
     var _f=useState(null),error=_f[0],setError=_f[1];
     var _g=useState(null),data=_g[0],setData=_g[1];
     var _h=useState(null),repoInfo=_h[0],setRepoInfo=_h[1];
+    // MOO-69 Commit 4: the repository-layer GraphIR for the current
+    // analysis, built once (see finishAnalysis' GitHub-backed branch) from
+    // a resolved commit SHA -- null for local-folder/zip analysis, which
+    // has no GitHub revision identity to build an AnalysisContext from (see
+    // src/render/repositoryRenderModel.js's comment on the same boundary).
+    var _rg=useState(null),repositoryGraph=_rg[0],setRepositoryGraph=_rg[1];
+    // Real navigation contract (src/graph-ir/navigation.js), wired to a
+    // placeholder panel until MOO-70's real file-layer view exists -- named
+    // distinctly from the pre-existing `drillDown`/`setDrillDown` below
+    // (useRepositorySelection's unrelated issue/pattern/security modal
+    // state), not a rename of it.
+    var _nav=useRepositoryDrillDownPanel(),navTrail=_nav.trail,navPanel=_nav.panel,navCanGoBack=_nav.canGoBack,openFileDrillDown=_nav.openDrillDown,goNavBack=_nav.goBack,resetNavHistory=_nav.resetHistory;
+    // MOO-69 PR review: guards against a slower, still-in-flight repository/
+    // PR analysis completing after a newer one has already started (or
+    // finished) and silently overwriting its data/repositoryGraph. Every
+    // repo-loading path captures the generation active when it begins, and
+    // only commits state if that generation is still current by the time
+    // it's ready to.
+    var analysisGenerationRef=useRef(0);
+    function beginNewAnalysisGeneration(){analysisGenerationRef.current+=1;return analysisGenerationRef.current;}
+    function isCurrentAnalysisGeneration(generation){return analysisGenerationRef.current===generation;}
     var _i=useState('folder'),colorMode=_i[0],setColorMode=_i[1];
     // MOO-67 Commit 4C: selected/blastRadius/rightTab/drillDown (the state
     // the repository view's selection + detail panel needs) now live in
@@ -1419,6 +1454,8 @@ function App(){
     function resetAnalysisState(){
         setError(null);
         setData(null);
+        setRepositoryGraph(null);
+        resetNavHistory();
         setSelected(null);
         setBlastRadius(null);
         setOwnership(null);
@@ -1477,7 +1514,14 @@ function App(){
         var p=parseUrl(repoUrl);
         if(!p){setError('Invalid URL. Use format: owner/repo');return;}
         var currentExcludePatterns=activeExcludePatterns;
-        
+        var generation=beginNewAnalysisGeneration();
+        // MOO-69 PR review: resolved once, here, before any scan/fetch
+        // happens -- not after the fact. Every GitHub.scan/getFile call
+        // below is pinned to this exact commit, so the whole fetch pass
+        // observes one consistent revision instead of "whatever HEAD
+        // happens to be" at each independent request.
+        var resolvedSha=null,analysisContext=null;
+
         // Validate authentication inputs
         if(authMethod==='pat'&&!token){
             setError('Please enter a Personal Access Token');return;
@@ -1525,6 +1569,14 @@ function App(){
             setProgress('Loading language parsers...');
             return Parser.initTreeSitter().catch(function(){return null;});
         }).then(function(){
+            setProgress('Resolving repository revision...');
+            return GitHub.resolveRepositoryRevision(p.owner,p.repo);
+        }).then(function(revision){
+            if(!revision||!revision.resolvedSha){
+                throw new Error('Could not resolve the repository\'s current commit -- try again');
+            }
+            resolvedSha=revision.resolvedSha;
+            analysisContext=normalizeContext({owner:p.owner,repo:p.repo,mode:'branch',ref:revision.ref,resolvedSha:resolvedSha});
             setProgress('Checking rate limit...');
             return GitHub.getRateLimit();
         }).then(function(rl){
@@ -1553,12 +1605,12 @@ function App(){
                         return Promise.reject('cancelled');
                     }
                     setProgress('Scanning repository...');
-                    return GitHub.scan(p.owner,p.repo,setProgress,currentExcludePatterns);
+                    return GitHub.scan(p.owner,p.repo,setProgress,currentExcludePatterns,resolvedSha);
                 });
             }
 
             setProgress('Scanning repository...');
-            return GitHub.scan(p.owner,p.repo,setProgress,currentExcludePatterns);
+            return GitHub.scan(p.owner,p.repo,setProgress,currentExcludePatterns,resolvedSha);
         }).then(function(files){
             if(!files)return;// Cancelled
             if(!files.length)throw new Error(currentExcludePatterns.length?'No code files found after applying exclude patterns':'No code files found');
@@ -1578,7 +1630,7 @@ function App(){
                     var isCodeFile=f.isCode!==false&&Parser.isCode(f.name);
                     if(isCodeFile){
                         Promise.all([
-                            GitHub.getFile(p.owner,p.repo,f.path),
+                            GitHub.getFile(p.owner,p.repo,f.path,resolvedSha),
                             GitHub.getCommits(p.owner,p.repo,f.path,10).catch(function(){return[];})
                         ]).then(function(results){
                             var content=results[0];
@@ -1595,7 +1647,7 @@ function App(){
                             processFile(i+1);
                         }).catch(function(){processFile(i+1);});
                     }else{
-                        GitHub.getFile(p.owner,p.repo,f.path).then(function(content){
+                        GitHub.getFile(p.owner,p.repo,f.path,resolvedSha).then(function(content){
                             var layer=Parser.detectLayer(f.path);
                             var lines=content?content.split('\n').length:0;
                             analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content||'',functions:[],lines:lines,layer:layer,churn:0,isCode:false});
@@ -1608,6 +1660,7 @@ function App(){
                 }
 
                 async function finishAnalysis(){
+                    if(!isCurrentAnalysisGeneration(generation))return;
                     try{
                         var dataObj=await runAnalysisData({
                             analyzed:analyzed,
@@ -1616,11 +1669,23 @@ function App(){
                             progress:setProgress,
                             yieldFn:yieldToBrowser
                         });
+                        if(!isCurrentAnalysisGeneration(generation))return;
+                        // MOO-69 PR review: analysisContext was already
+                        // resolved *before* scanning began (see the top of
+                        // analyze()), and every scan/getFile call above was
+                        // pinned to that same resolvedSha -- so the graph is
+                        // built synchronously here, immediately alongside
+                        // dataObj, with no further async resolution step
+                        // that could race against a newer analysis.
+                        var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:analysisContext,analyzer:{name:'codeflow-repository-adapter',version:'1.0.0'}});
+                        if(!isCurrentAnalysisGeneration(generation))return;
                         setData(dataObj);
+                        setRepositoryGraph(graph);
                         setExpandedPaths(new Set(['']));
                         writeRepoRoute(p.owner+'/'+p.repo);
                         setLoading(false);
                     }catch(err){
+                        if(!isCurrentAnalysisGeneration(generation))return;
                         setError('Analysis failed: '+(err.message||err)+'. Try a smaller repository.');
                         setLoading(false);
                     }
@@ -1670,7 +1735,7 @@ function App(){
             }
 
             return beginRepoAnalysis();
-        }).catch(function(e){if(e!=='cancelled'){setError(e.message||e);setLoading(false);}});
+        }).catch(function(e){if(e!=='cancelled'&&isCurrentAnalysisGeneration(generation)){setError(e.message||e);setLoading(false);}});
     }
 
     function launchLocalFolderPicker(compiledPatterns){
@@ -2106,6 +2171,23 @@ function App(){
     },[data,repoInfo,localSourceKind,isMobile]);
     selectFileRef.current=selectFile;
 
+    // MOO-69 Commit 4: double-click drill-down. Reads only the already-built
+    // repositoryGraph (see finishAnalysis' GitHub-backed branch) -- never
+    // resolves a SHA itself, per src/state/repositoryDrillDown.js's own
+    // documented invariant. When there's no GraphIR context at all
+    // (local-folder/zip analysis) or the coordinate isn't eligible
+    // (ambiguous, unresolved), this surfaces a clear notification instead of
+    // silently doing nothing.
+    var activateFile=useCallback(function(path){
+        var result=tryCreateDrillDown(repositoryGraph,path);
+        if(result.eligible){
+            openFileDrillDown(result.event);
+        }else{
+            showNotification(result.reason||'This file cannot be drilled into.','warning');
+        }
+    },[repositoryGraph,openFileDrillDown]);
+    activateFileRef.current=activateFile;
+
     function updateGraphHighlight(path,blast){
         if(!nodesRef.current||!linksRef.current)return;
         var affectedSet=new Set(blast?blast.affected:[]);
@@ -2260,16 +2342,31 @@ function App(){
     // selectFileRef are the same ref objects other parts of App() (zoom
     // controls, blast-radius highlighting, PDF export, "Back to Issues")
     // already read directly, so nothing else needed to change.
+    //
+    // MOO-69 Commit 5: changed-area markers as a rendering hint (a distinct
+    // ring around changed nodes), not a separate graph/model -- derived
+    // directly from the existing PR-impact-overlay feature's prData.files,
+    // no new data source. null (no highlight) outside an active PR context.
+    var changedPaths=useMemo(function(){
+        if(!prData||!prData.files)return null;
+        return new Set(prData.files.map(function(f){return f.filename;}));
+    },[prData]);
     useEffect(function(){
         if(!data||!svgRef.current)return;
+        // MOO-69 Commit 3/4: prefer the repository-layer GraphIR once it's
+        // resolved (GitHub-backed analysis) -- renderRepositoryGraph/
+        // buildRepositoryRenderModel accept either shape identically (see
+        // src/render/repositoryRenderModel.js). Falls back to the legacy
+        // `data` object for local-folder/zip analysis, which never gets a
+        // repositoryGraph at all.
         return renderRepositoryGraph({
-            svgEl:svgRef.current,data,colorMap,colorMode,theme,folderFilter,graphConfig,
-            COLORS,LAYER_COLORS,
+            svgEl:svgRef.current,data:repositoryGraph||data,colorMap,colorMode,theme,folderFilter,graphConfig,
+            COLORS,LAYER_COLORS,changedPaths,
             zoomRef,simRef,linksRef,nodesRef,selectFileRef,activateFileRef,
             onHover:setTooltip,
             onBackgroundClick:function(){setSelected(null);setBlastRadius(null);}
         });
-    },[data,colorMap,colorMode,theme,folderFilter,graphConfig]);
+    },[data,repositoryGraph,colorMap,colorMode,theme,folderFilter,graphConfig,changedPaths]);
 
     // 3D Force Graph Hook
     useEffect(function(){
@@ -3681,8 +3778,109 @@ function App(){
         var shareUrl=buildRepoUrl(repoInfo?repoInfo.owner+'/'+repoInfo.repo:repoUrl,true);
         navigator.clipboard.writeText(shareUrl).then(function(){showNotification('Link copied to clipboard!');}).catch(function(){showNotification('Failed to copy link','error');});
     }
-    function analyzePR(){if(!prUrl||!repoInfo)return;var m=prUrl.match(/\/pull\/(\d+)/);if(!m){showNotification('Invalid PR URL','error');return;}GitHub.getPR(repoInfo.owner,repoInfo.repo,m[1]).then(function(pr){if(pr)setPrData(pr);else showNotification('Could not load PR','error');});}
-    function resetAnalysis(){setData(null);setSelected(null);setBlastRadius(null);setOwnership(null);setRepoInfo(null);setRepoUrl('');setPrData(null);setFolderFilter(null);setLocalDirHandle(null);setLocalSourceKind(null);setArchitectureIncludeTests(false);setArchitectureIncludeBuildOutput(false);zipArchiveRef.current=null;zipFileRef.current=null;clearRoute();}
+    // MOO-69 PR review: a PR request must actually analyze the PR's head
+    // revision (fork-aware -- resolved.owner/resolved.repo name the fork
+    // when the PR is cross-repository, see GitHub.resolvePR), not just
+    // overlay PR metadata onto whatever the previously-loaded default-
+    // branch analysis happened to be. Deliberately does not offer the
+    // interactive soft/hard-limit confirmation dialogs analyze() does for
+    // a first repository load -- silently applies the same hard file-count
+    // cap with a notification instead, since this is triggered from an
+    // already-loaded-repository context, not a first-time analysis choice.
+    function analyzePRHead(owner,repo,resolvedSha,context,generation){
+        var excludePatterns=activeExcludePatterns;
+        return GitHub.scan(owner,repo,setProgress,excludePatterns,resolvedSha).then(function(files){
+            if(!isCurrentAnalysisGeneration(generation))return null;
+            if(!files||!files.length)throw new Error('No code files found in this pull request\'s head revision');
+            var HARD_LIMIT=ANALYSIS_LIMITS.repoMax;
+            if(files.length>HARD_LIMIT){
+                showNotification('Found '+files.length+' files. Using a '+HARD_LIMIT+'-file API sample.','warning');
+            }
+            var max=Math.min(files.length,HARD_LIMIT);
+            var analyzed=[];
+            var allFns=[];
+            return new Promise(function(resolveScan){
+                function processFile(i){
+                    if(!isCurrentAnalysisGeneration(generation)){resolveScan(null);return;}
+                    if(i>=max){resolveScan();return;}
+                    var f=files[i];
+                    setProgress('Analyzing PR '+(i+1)+'/'+max+': '+f.name);
+                    var isCodeFile=f.isCode!==false&&Parser.isCode(f.name);
+                    if(isCodeFile){
+                        Promise.all([
+                            GitHub.getFile(owner,repo,f.path,resolvedSha),
+                            GitHub.getCommits(owner,repo,f.path,10).catch(function(){return[];})
+                        ]).then(function(results){
+                            var content=results[0];
+                            var commits=results[1];
+                            if(content){
+                                var layer=Parser.detectLayer(f.path);
+                                var actualIsCode=!Parser.isScriptContainer(f.path)||Parser.hasEmbeddedCode(content,f.path);
+                                var fns=actualIsCode?Parser.extract(content,f.path):[];
+                                analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:Array.isArray(commits)?commits.length:0,isCode:actualIsCode});
+                                if(actualIsCode){fns.forEach(function(fn){allFns.push(Object.assign({},fn,{folder:f.folder,layer:layer}));});}
+                            }
+                            processFile(i+1);
+                        }).catch(function(){processFile(i+1);});
+                    }else{
+                        GitHub.getFile(owner,repo,f.path,resolvedSha).then(function(content){
+                            var layer=Parser.detectLayer(f.path);
+                            var lines=content?content.split('\n').length:0;
+                            analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content||'',functions:[],lines:lines,layer:layer,churn:0,isCode:false});
+                            processFile(i+1);
+                        }).catch(function(){
+                            analyzed.push({path:f.path,name:f.name,folder:f.folder,content:'',functions:[],lines:0,layer:Parser.detectLayer(f.path),churn:0,isCode:false});
+                            processFile(i+1);
+                        });
+                    }
+                }
+                processFile(0);
+            }).then(function(cancelled){
+                if(cancelled===null||!isCurrentAnalysisGeneration(generation))return null;
+                return runAnalysisData({analyzed:analyzed,allFns:allFns,excludePatterns:excludePatterns.map(function(x){return x.raw;}),progress:setProgress,yieldFn:yieldToBrowser});
+            });
+        }).then(function(dataObj){
+            if(!dataObj||!isCurrentAnalysisGeneration(generation))return null;
+            var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:context,analyzer:{name:'codeflow-repository-adapter',version:'1.0.0'}});
+            if(!isCurrentAnalysisGeneration(generation))return null;
+            setData(dataObj);
+            setRepositoryGraph(graph);
+            return{dataObj:dataObj,graph:graph};
+        });
+    }
+
+    function analyzePR(){
+        if(!prUrl||!repoInfo)return;
+        var m=prUrl.match(/\/pull\/(\d+)/);
+        if(!m){showNotification('Invalid PR URL','error');return;}
+        var prNumber=parseInt(m[1],10);
+        var generation=beginNewAnalysisGeneration();
+        setLoading(true);
+        setProgress('Loading pull request...');
+        GitHub.resolvePR(repoInfo.owner,repoInfo.repo,prNumber).then(function(resolved){
+            if(!isCurrentAnalysisGeneration(generation))return;
+            if(!resolved){showNotification('Could not load PR','error');setLoading(false);return;}
+            setPrData(resolved.pr);
+            setSelected(null);setBlastRadius(null);setOwnership(null);setFolderFilter(null);resetNavHistory();
+            var context=normalizeContext({
+                owner:repoInfo.owner,repo:repoInfo.repo,prNumber:prNumber,
+                resolvedSha:resolved.resolvedSha,baseSha:resolved.baseSha||undefined,
+                sourceOwner:resolved.owner,sourceRepo:resolved.repo
+            });
+            analyzePRHead(resolved.owner,resolved.repo,resolved.resolvedSha,context,generation).then(function(result){
+                if(!isCurrentAnalysisGeneration(generation))return;
+                if(!result){setLoading(false);return;}
+                setLoading(false);
+            }).catch(function(err){
+                if(!isCurrentAnalysisGeneration(generation))return;
+                setError('PR analysis failed: '+(err.message||err));
+                setLoading(false);
+            });
+        }).catch(function(){
+            if(isCurrentAnalysisGeneration(generation)){showNotification('Could not load PR','error');setLoading(false);}
+        });
+    }
+    function resetAnalysis(){setData(null);setRepositoryGraph(null);resetNavHistory();setSelected(null);setBlastRadius(null);setOwnership(null);setRepoInfo(null);setRepoUrl('');setPrData(null);setFolderFilter(null);setLocalDirHandle(null);setLocalSourceKind(null);setArchitectureIncludeTests(false);setArchitectureIncludeBuildOutput(false);zipArchiveRef.current=null;zipFileRef.current=null;clearRoute();}
     function filterByFolder(path){setFolderFilter(function(prev){return prev===path?null:path;});}
     function getArchitectureViewStats(diagram,includeTests,includeBuildOutput){
         if(!diagram)return{blocks:0,dependencies:0,routes:0,apiRoutes:0,databaseTouchpoints:0,warnings:0};
@@ -4108,6 +4306,26 @@ function App(){
                     document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);
                 }}),
                 data?React.createElement(React.Fragment,null,
+                    // MOO-69 Commit 4: breadcrumb + back button for the real
+                    // navigation contract (src/graph-ir/navigation.js's
+                    // NavigationHistory) -- visible once a drill-down has
+                    // been opened at least once. MOO-70 doesn't have a real
+                    // file-layer view yet, so this coexists with (rather
+                    // than replaces) the existing tab content below; the
+                    // placeholder panel itself renders just below this.
+                    (navTrail.length>1||repositoryGraph)&&React.createElement('div',{className:'panel-header',style:{margin:'0 -12px 0',padding:'8px 12px',display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid var(--bd)'}},
+                        navTrail.length>1&&React.createElement('button',{className:'top-btn',disabled:!navCanGoBack,onClick:goNavBack,style:{padding:'4px 8px',fontSize:11}},'← Back'),
+                        React.createElement('div',{style:{fontSize:11,color:'var(--t3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}},navTrail.map(function(entry){return entry.label;}).join(' / ')),
+                        // MOO-69 Commit 5: make the resolved revision visible
+                        // in the UI, not just carried invisibly in context.
+                        repositoryGraph&&React.createElement('div',{title:repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha,style:{fontSize:10,color:'var(--t3)',fontFamily:'JetBrains Mono',whiteSpace:'nowrap'}},repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha.slice(0,7))
+                    ),
+                    navPanel&&React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
+                        React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' Drill down ('+navPanel.layer+')'),
+                        React.createElement('div',{className:'panel-subtitle',style:{marginBottom:8}},navPanel.coordinate?navPanel.coordinate.path:''),
+                        React.createElement('div',{style:{fontSize:12,color:'var(--t2)',marginBottom:navPanel.coordinate?8:0}},'File-layer view not yet implemented (MOO-70). This proves the navigation contract (coordinate, breadcrumb, back/forward history) end-to-end ahead of the real view.'),
+                        navPanel.coordinate&&React.createElement('button',{className:'top-btn',onClick:function(){window.open(githubBlobUrl(navPanel.coordinate),'_blank','noopener');}},iconLabel('eye','View on GitHub'))
+                    ),
                     React.createElement('div',{className:'panel-tabs'},
                         React.createElement('button',{className:'panel-tab'+(rightTab==='details'?' active':''),onClick:function(){setRightTab('details');setDrillDown(null);}},selected?iconLabel('file','FILE'):(graphConfig.vizType==='architecture'?iconLabel('layers','ARCH'):iconLabel('search','ISSUES'))),
                         React.createElement('button',{className:'panel-tab'+(rightTab==='patterns'?' active':''),onClick:function(){setRightTab('patterns');setDrillDown(null);}},iconLabel('puzzle','PATTERNS'),' ',React.createElement('span',{className:'badge badge-default'},data.patterns.length)),

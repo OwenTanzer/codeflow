@@ -100,6 +100,16 @@ export function loadConfig({ repoRoot, env = process.env }) {
     errors.push(`MAX_REPO_BYTES must be a positive integer, got: ${JSON.stringify(env.MAX_REPO_BYTES)}`);
   }
 
+  // MOO-69 Commit 6 (closing a gap left by Commit 2, which added the
+  // /api/graph/repository endpoint but never actually wired a timeout):
+  // bounds analyzeGithubRepo()'s fetch+parse phase so a very large or
+  // slow-to-respond repository fails clearly (ErrorCategory 'timeout')
+  // instead of hanging the request indefinitely.
+  const graphAnalysisTimeoutMs = env.GRAPH_ANALYSIS_TIMEOUT_MS ? Number(env.GRAPH_ANALYSIS_TIMEOUT_MS) : 60 * 1000;
+  if (!Number.isInteger(graphAnalysisTimeoutMs) || graphAnalysisTimeoutMs <= 0) {
+    errors.push(`GRAPH_ANALYSIS_TIMEOUT_MS must be a positive integer, got: ${JSON.stringify(env.GRAPH_ANALYSIS_TIMEOUT_MS)}`);
+  }
+
   if (errors.length > 0) {
     throw new ConfigError(errors);
   }
@@ -119,5 +129,6 @@ export function loadConfig({ repoRoot, env = process.env }) {
     maxRepoFiles,
     maxFileBytes,
     maxRepoBytes,
+    graphAnalysisTimeoutMs,
   };
 }
