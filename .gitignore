@@ -6,6 +6,7 @@ build/
 target/
 __pycache__/
 .venv-pyan3/
+.vendor/
 
 # Temp, coverage, and cache files
 *.log
