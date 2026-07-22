@@ -61,7 +61,7 @@ async function apiRequest(path, errorMap) {
  * *of* that allowlisted repo, and GitHub's own PR data is what tells us
  * which fork/SHA that resolves to.
  */
-async function resolveRef({ owner, repo, ref, pr }) {
+export async function resolveRef({ owner, repo, ref, pr }) {
   if (pr != null) {
     const prData = await apiRequest(`/repos/${owner}/${repo}/pulls/${pr}`, {
       404: 'Pull request not found',
@@ -88,7 +88,7 @@ async function resolveRef({ owner, repo, ref, pr }) {
  * (prData.head.sha) and doesn't need this second call in that case (see
  * analyzeGithubRepo below).
  */
-async function resolveCommitSha(owner, repo, ref) {
+export async function resolveCommitSha(owner, repo, ref) {
   const data = await apiRequest(`/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`, {
     404: 'Ref not found (branch, tag, or commit does not exist)',
   });
@@ -159,7 +159,7 @@ export function selectAnalyzableFiles(treeEntries, { maxRepoFiles, maxFileBytes,
  * @param {{owner: string, repo: string, resolvedRef: string, maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number}} options
  * @returns {Promise<{files: Array, skippedOversizedFiles: number}>}
  */
-async function fetchTree({ owner, repo, resolvedRef, maxRepoFiles, maxFileBytes, maxRepoBytes }) {
+export async function fetchTree({ owner, repo, resolvedRef, maxRepoFiles, maxFileBytes, maxRepoBytes }) {
   const data = await apiRequest(
     `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`,
     { 404: 'Ref not found (branch, commit, or PR head does not exist)' }
@@ -177,7 +177,7 @@ async function fetchBlobContent(owner, repo, sha) {
 }
 
 /** Fetch blob contents with limited concurrency — avoid firing hundreds of requests at once. */
-async function fetchAllContents(owner, repo, files, concurrency = 8) {
+export async function fetchAllContents(owner, repo, files, concurrency = 8) {
   const results = new Array(files.length);
   let next = 0;
   async function worker() {

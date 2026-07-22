@@ -21,6 +21,8 @@ import { RateLimiter } from './lib/rate-limit.js';
 import { createAnalyzeHandler } from './routes/analyze.js';
 import { createAnalyzeRepoHandler } from './routes/analyze-repo.js';
 import { createGraphRepositoryHandler } from './routes/graph-repository.js';
+import { createGraphFileHandler } from './routes/graph-file.js';
+import { verifyPyan3Available } from './lib/pyan3Adapter.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = join(__dirname, '..');
@@ -65,6 +67,19 @@ async function main() {
     process.exit(1);
   }
 
+  // MOO-70 Commit 7: the file layer's /api/graph/file route depends on
+  // pyan3 -- fail fast here (once, cached) rather than on the first real
+  // request. Deferred to this point (not Commit 2, when the wrapper was
+  // first written) specifically because no route depended on it until now
+  // -- wiring it in earlier would have broken server boot in any
+  // environment lacking pyan3, for a feature that wasn't shipped yet.
+  try {
+    await verifyPyan3Available({ pythonBin: config.pythonBin });
+  } catch (err) {
+    process.stderr.write('[codeflow-server] ' + err.message + '\n');
+    process.exit(1);
+  }
+
   const rateLimiter = new RateLimiter(config.rateLimitPerMinute);
   const rateLimitSweep = setInterval(() => rateLimiter.sweep(), 60_000);
   rateLimitSweep.unref();
@@ -75,6 +90,7 @@ async function main() {
   const handleAnalyze = createAnalyzeHandler({ config, workspaceManager });
   const handleAnalyzeRepo = createAnalyzeRepoHandler({ config });
   const handleGraphRepository = createGraphRepositoryHandler({ config });
+  const handleGraphFile = createGraphFileHandler({ config, workspaceManager });
 
   const server = createServer(async (req, res) => {
     const requestId = generateRequestId();
@@ -101,6 +117,8 @@ async function main() {
         await handleAnalyzeRepo(req, res, requestId);
       } else if (url.pathname === '/api/graph/repository' && req.method === 'POST') {
         await handleGraphRepository(req, res, requestId);
+      } else if (url.pathname === '/api/graph/file' && req.method === 'POST') {
+        await handleGraphFile(req, res, requestId);
       } else if (isApiRoute) {
         sendJson(res, 404, { error: 'Not found' });
       } else {
