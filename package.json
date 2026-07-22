@@ -16,5 +16,9 @@
   "devDependencies": {
     "playwright": "^1.61.1",
     "vite": "8.1.5"
+  },
+  "dependencies": {
+    "tree-sitter-wasms": "0.1.13",
+    "web-tree-sitter": "0.20.8"
   }
 }
