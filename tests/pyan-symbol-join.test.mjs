@@ -154,6 +154,43 @@ test('synthetic: two symbol-index entries sharing one qualifiedName make the pya
   assert.equal(joined.resolved.find((r) => r.pyanNode).matchState, 'ambiguous');
 });
 
+test('synthetic: same-name redefinitions at different lines (typing.overload/@property stubs) tie-break to the last one, not ambiguous', () => {
+  // Confirmed necessary against a real fixture (psf/requests' models.py:
+  // typing.overload stubs for _encode_params/iter_content/iter_lines,
+  // each a distinct function_definition tree-sitter sees but which pyan3
+  // collapses to one node -- Python's own last-definition-wins semantics
+  // for a repeated name in one scope, matched here rather than treating
+  // every such case as ambiguous.
+  const overloadStub = (startLine) => ({
+    path: 'mod.py',
+    moduleId: 'mod',
+    qualifiedName: 'mod.Widget.encode',
+    shortName: 'encode',
+    symbolKind: 'method',
+    symbolPath: ['Widget', 'encode'],
+    parentScope: 'mod.Widget',
+    startLine,
+    startColumn: 4,
+    endLine: startLine + 1,
+    endColumn: 0,
+    decorators: ['@overload'],
+    isAsync: false,
+  });
+  const joined = joinPyanToSymbols({
+    pyanNodes: [{ id: 'mod__Widget__encode', label: 'encode', qualifiedName: 'mod.Widget.encode', path: null, line: null, kind: 'method', parentScope: 'mod.Widget' }],
+    pyanEdges: [],
+    symbolEntries: [overloadStub(10), overloadStub(14), overloadStub(18)],
+    workspaceDir: '/workspace',
+  });
+
+  assert.equal(joined.stats.ambiguousCount, 0);
+  assert.equal(joined.stats.matchedCount, 1);
+  assert.equal(joined.stats.symbolOnlyCount, 0, 'the two earlier overload stubs must not surface as duplicate symbolOnly nodes');
+  const matched = joined.resolved.find((r) => r.pyanNode);
+  assert.equal(matched.matchState, 'matched');
+  assert.equal(matched.symbol.startLine, 18, 'the last-defined stub wins, matching Python\'s actual name-shadowing semantics');
+});
+
 test('symbolOnly: tree-sitter succeeds on syntax_error.py while pyan3 produces nothing for it', async () => {
   const content = readFileSync(join(FIXTURES, 'syntax_error.py'), 'utf8');
   const indexed = await indexPythonSymbols({ path: 'syntax_error.py', content });

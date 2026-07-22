@@ -67,13 +67,28 @@ export function joinPyanToSymbols({ pyanNodes, pyanEdges, symbolEntries, workspa
       resolved.push({ pyanNode, matchState: 'unresolved', symbol: null });
       continue;
     }
-    if (candidates.length > 1) {
+
+    // Real Python routinely defines multiple same-name symbols in one
+    // scope that collapse to a single runtime name: typing.overload
+    // stubs followed by the real implementation, @property
+    // getter/setter/deleter triples, or conditional `if PY2: def x /
+    // else: def x`. pyan3 itself only ever reports one node for these
+    // (matching Python's actual last-definition-wins name-shadowing
+    // semantics), so tie-break the same way rather than calling every
+    // such case ambiguous -- confirmed necessary against a real fixture
+    // (psf/requests' models.py, which uses exactly this typing.overload
+    // pattern for _encode_params/iter_content/iter_lines). Only a
+    // genuine tie in source position (which shouldn't occur for
+    // distinct definitions) is still reported ambiguous.
+    const maxLine = Math.max(...candidates.map((c) => (c.startLine == null ? -Infinity : c.startLine)));
+    const winners = candidates.filter((c) => (c.startLine == null ? -Infinity : c.startLine) === maxLine);
+    if (winners.length > 1) {
       ambiguousCount++;
       resolved.push({ pyanNode, matchState: 'ambiguous', symbol: null });
       continue;
     }
 
-    const symbol = candidates[0];
+    const symbol = winners[0];
     if (normalizedPath !== null && symbol.path !== normalizedPath) {
       warnings.push(
         `path mismatch for ${pyanNode.qualifiedName}: pyan3 reported "${normalizedPath}", symbol index has "${symbol.path}"`
