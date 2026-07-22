@@ -5,6 +5,7 @@ build/
 .next/
 target/
 __pycache__/
+.venv-pyan3/
 
 # Temp, coverage, and cache files
 *.log

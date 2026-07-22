@@ -6,6 +6,8 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { venvPythonPath } from '../../scripts/pyan3-venv-path.mjs';
+
 export class ConfigError extends Error {
   constructor(errors) {
     super('Invalid server configuration:\n' + errors.map((e) => ' - ' + e).join('\n'));
@@ -114,7 +116,15 @@ export function loadConfig({ repoRoot, env = process.env }) {
   // pyan ...`. Railway/CI (Linux) ship `python3`; some local dev machines
   // only have `python` on PATH — hence an env override rather than a
   // hardcoded platform check.
-  const pythonBin = env.PYTHON_BIN || 'python3';
+  //
+  // Live-verified finding (2026-07-22): a global pip install of pyan3
+  // does not survive Railway's build → runtime image split (see
+  // scripts/install-pyan3.mjs), so that script now installs into a venv
+  // rooted inside the repo directory instead. Default to that venv's
+  // python when it's present, since a bare `python3` on the runtime image
+  // has no pyan3 installed at all in that case.
+  const venvPython = venvPythonPath(repoRoot);
+  const pythonBin = env.PYTHON_BIN || (existsSync(venvPython) ? venvPython : 'python3');
   if (!pythonBin) {
     errors.push('PYTHON_BIN must not be empty when set.');
   }

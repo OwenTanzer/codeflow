@@ -50,32 +50,53 @@ issue chose to leave unfixed.
   to do that, the same caveat `repository-layer-density.md` gives its own
   300-node threshold.
 
-## Production Python dependency (PR review follow-up)
+## Production Python dependency (PR review follow-up, live-verified 2026-07-22)
 
 CI (`.github/workflows/test.yml`) has installed the pinned `pyan3==2.6.2`
-via `actions/setup-python` + pip since Commit 2, but nothing declared this
-dependency for an actual deployment until this note: `requirements.txt`
+via `actions/setup-python` + pip since Commit 2. `requirements.txt`
 (repo root) is the pinned manifest, and `package.json`'s `postinstall`
-script (`scripts/install-pyan3.mjs`) attempts to `pip install` it
-right after `npm install`/`npm ci` — piggybacking on the Node install step
-Railpack already runs for this repo (detected as a Node-primary app via
-`package.json`), rather than depending on Railpack-specific multi-language
-config syntax.
+script (`scripts/install-pyan3.mjs`) installs it right after
+`npm install`/`npm ci` — piggybacking on the Node install step Railpack
+already runs for this repo (detected as a Node-primary app), rather than
+depending on Railpack-specific multi-language config syntax.
 
-**Explicitly not verified**: whether Railway's Railpack build image has
-Python/pip available by default for a Node-detected service, or whether
-additional Railway service configuration (e.g. `RAILPACK_BUILD_APT_PACKAGES`
-to ensure `python3`/`pip` exist in the build image — see
-[Railway's build configuration docs](https://docs.railway.com/builds/build-configuration))
-is required on top of this. This repository has no live Railway deployment
-this work could exercise, so this is flagged rather than asserted as
-already working. If `python3`/`pip` are absent from the build image, the
-postinstall script's `spawnSync` calls simply fail (same as a missing
-binary today) and it logs a warning without failing the build — the
-runtime already handles this by serving `/api/graph/file` in degraded
-tree-sitter-only mode (see below) rather than crashing, so a missing
-production pyan3 install degrades functionality, it does not break the
-deployment.
+This was tested against a real Railway deployment and two real bugs were
+found and fixed, not just the originally-flagged "is Python even
+available" question:
+
+1. **Railpack language misdetection.** The mere presence of a root-level
+   `requirements.txt` made Railpack's zero-config detection classify the
+   whole app as a **Python** project and skip installing Node entirely —
+   `npm start` then failed with "command not found" and the deployment
+   never passed its healthcheck. Fixed with `railpack.json` at the repo
+   root, pinning `"provider": "node"` explicitly while still declaring
+   `"packages": {"python": "3.13"}` so Python/pip remain available.
+2. **Global pip installs don't survive the build → runtime image split.**
+   Even with Node correctly detected, a plain `pip install -r
+   requirements.txt` into the mise-managed Python's global site-packages
+   installed successfully during the build step but was silently absent
+   at runtime — Railpack assembles the final runtime image from a fresh
+   copy of its shared Python toolchain base image plus a copy of just
+   this project's own `/app` build output; anything written outside
+   `/app` during the build is discarded. Fixed by having
+   `scripts/install-pyan3.mjs` create a venv rooted inside the repo
+   directory (`.venv-pyan3/`, shared path logic in
+   `scripts/pyan3-venv-path.mjs`) and install into that instead — a path
+   under `/app` is copied forward like any other build artifact. This
+   mirrors what Railpack's own auto-detected Python provider does by
+   default (`python -m venv /app/.venv`), confirmed by comparing against
+   the build log from finding 1 above.
+   `server/lib/config.js` defaults `pythonBin` to this venv's python when
+   present (still overridable via `PYTHON_BIN`), so `verifyPyan3Available`
+   and every `pyan3Adapter.js` invocation pick it up automatically.
+
+Fix 1 above was confirmed by a real deployment reaching `SUCCESS` and
+passing its healthcheck. Fix 2 is a direct, locally-verified reproduction
+(the venv install/run sequence was run and its `pyan3 --version` invoked
+successfully on this machine) of the exact failure seen at runtime
+(`No module named pyan`), but the *combined* fix has not yet been
+reconfirmed against a fresh live deployment's `/readyz` response as of
+this writing.
 
 ## Cross-layer resilience (Commit 9's own checklist item)
 
