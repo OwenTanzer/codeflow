@@ -24,6 +24,15 @@
 // own resolveRef() already knows how to recover the fork/head SHA from
 // owner+repo+pr, exactly like the (currently client-unused) repository
 // endpoint already does.
+//
+// PR review follow-up: a PR-mode request always re-resolves the PR's
+// *current* head server-side (since no `ref` is sent), so without telling
+// the server what revision this graph was actually built from, a PR
+// receiving a new commit between the repository graph loading and a file
+// drill-down would silently analyze a different revision. `expectedResolvedSha`/
+// `expectedSourceOwner`/`expectedSourceRepo` (sent only in PR mode, where
+// this drift is actually possible) let the server reject a stale
+// drill-down instead.
 
 export class GraphFileClientError extends Error {
   constructor(message, { status, category, diagnostics } = {}) {
@@ -41,17 +50,22 @@ export class GraphFileClientError extends Error {
  * @param {object} input
  * @param {string} input.owner - the requested BASE repository owner (AnalysisContext.owner, never sourceOwner)
  * @param {string} input.repo - the requested BASE repository name (AnalysisContext.repo, never sourceRepo)
- * @param {string} input.resolvedSha - the parent graph's pinned revision, sent as `ref` when `pr` is not set
- * @param {number} [input.pr] - the PR number, when the parent graph's context.mode === 'pr'; takes precedence over resolvedSha, letting the server re-resolve the fork/head sha itself
+ * @param {string} input.resolvedSha - the parent graph's pinned revision, sent as `ref` when `pr` is not set, or as `expectedResolvedSha` (a check, not a fetch parameter) when it is
+ * @param {number} [input.pr] - the PR number, when the parent graph's context.mode === 'pr'; takes precedence over resolvedSha as the fetch parameter, letting the server re-resolve the fork/head sha itself
+ * @param {string} [input.sourceOwner] - the parent graph's resolved source owner, sent as `expectedSourceOwner` only in PR mode
+ * @param {string} [input.sourceRepo] - the parent graph's resolved source repo, sent as `expectedSourceRepo` only in PR mode
  * @param {string} input.path
  * @param {string|null} [input.depth]
  * @param {string} input.serverAuthToken
  * @returns {{url: string, init: RequestInit}}
  */
-export function buildGraphFileRequest({ owner, repo, resolvedSha, pr, path, depth, serverAuthToken }) {
+export function buildGraphFileRequest({ owner, repo, resolvedSha, pr, sourceOwner, sourceRepo, path, depth, serverAuthToken }) {
   const body = { owner, repo, path, depth: depth || undefined };
   if (pr != null) {
     body.pr = pr;
+    body.expectedResolvedSha = resolvedSha;
+    body.expectedSourceOwner = sourceOwner;
+    body.expectedSourceRepo = sourceRepo;
   } else {
     body.ref = resolvedSha;
   }

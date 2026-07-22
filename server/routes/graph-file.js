@@ -41,7 +41,7 @@ import { chooseDepthMode } from '../../src/graph-ir/depthPolicy.js';
 import { buildCacheKey } from '../../src/graph-ir/cacheKey.js';
 import { GRAPH_IR_SCHEMA_VERSION } from '../../src/graph-ir/graphIR.js';
 import { AdapterError, buildAdapterResult, AdapterResultError, sanitizeDiagnostic } from '../../src/graph-ir/adapterResult.js';
-import { AnalysisContextError } from '../../src/graph-ir/githubContext.js';
+import { AnalysisContextError, assertContextPropagation } from '../../src/graph-ir/githubContext.js';
 
 const ANALYZER = { name: 'codeflow-pyan3-adapter', version: '1.0.0' };
 
@@ -134,6 +134,42 @@ export function enforceFileRequestLimits(targetFiles, { maxRepoFiles, maxFileByt
     );
   }
   return files;
+}
+
+/**
+ * If the client declared what revision it expected (from its own
+ * already-loaded parent graph's AnalysisContext), verify the freshly
+ * resolved revision still matches before doing any real work. PR review
+ * finding: a PR-mode request always re-resolves the PR's *current* head
+ * (resolveRef ignores any `ref` once `pr` is set) — without this check, a
+ * PR receiving a new commit between the repository graph loading and a
+ * file drill-down would silently analyze a different revision than the
+ * one the user is looking at, exactly what MOO-70's revision-pinning
+ * requirement exists to prevent. Reuses
+ * src/graph-ir/githubContext.js's assertContextPropagation (the same
+ * mechanism MOO-68 built for this exact class of check) rather than a
+ * new ad hoc comparison.
+ * @param {object} request - the validated file request (validateFileRequest's output)
+ * @param {{sourceOwner: string, sourceRepo: string, resolvedSha: string}} resolved - what was actually just resolved
+ * @throws {AnalysisContextError}
+ */
+export function assertRevisionStillExpected(request, resolved) {
+  if (!request.expectedResolvedSha) return;
+  const expected = {
+    owner: request.owner,
+    repo: request.repo,
+    sourceOwner: request.expectedSourceOwner || request.owner,
+    sourceRepo: request.expectedSourceRepo || request.repo,
+    resolvedSha: request.expectedResolvedSha,
+  };
+  const actual = {
+    owner: request.owner,
+    repo: request.repo,
+    sourceOwner: resolved.sourceOwner,
+    sourceRepo: resolved.sourceRepo,
+    resolvedSha: resolved.resolvedSha,
+  };
+  assertContextPropagation(expected, actual);
 }
 
 /**
@@ -232,6 +268,10 @@ export function createGraphFileHandler({ config, workspaceManager }) {
             const { owner, repo, ref: resolvedRef } = await resolveRef(request);
             const resolvedSha = request.pr != null ? resolvedRef : await resolveCommitSha(owner, repo, resolvedRef);
 
+            // Fail fast if a PR moved since the parent graph was loaded,
+            // before doing any of the real (wasted, if stale) work below.
+            assertRevisionStillExpected(request, { sourceOwner: owner, sourceRepo: repo, resolvedSha });
+
             // Walk to the requested path's own entry non-recursively
             // (never the whole repository tree, which can be truncated by
             // GitHub for a large enough monorepo) to determine file vs.
@@ -280,6 +320,16 @@ export function createGraphFileHandler({ config, workspaceManager }) {
         if (err instanceof ValidationError) {
           log.warn('rejected graph-file request: path resolution failed', { message: err.message });
           return sendError(res, 400, err.message, 'unsupported_input', requestId);
+        }
+        if (err instanceof AnalysisContextError) {
+          log.warn('rejected graph-file request: PR revision changed since the parent graph was loaded', { message: err.message });
+          return sendError(
+            res,
+            409,
+            'The pull request has changed since the repository graph was loaded. Refresh the repository graph and try again.',
+            'unsupported_input',
+            requestId
+          );
         }
         if (err instanceof GithubFetchError) {
           const rateLimited = RATE_LIMIT_PATTERN.test(err.message);

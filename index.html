@@ -1235,11 +1235,17 @@ function FileLayerPanel(props){
         // sourceOwner/sourceRepo, the resolved fork for a PR) so the
         // server's allowlist check applies to the right repository; for
         // PR mode send `pr` and let the server re-resolve the fork/head
-        // sha itself, matching how resolveRef() already handles it.
+        // sha itself, matching how resolveRef() already handles it. Also
+        // pass sourceOwner/sourceRepo/resolvedSha through so
+        // buildGraphFileRequest can send expectedResolvedSha -- otherwise
+        // a PR receiving a new commit between this graph loading and a
+        // file drill-down would silently analyze a different revision.
         fetchFileGraph({
             owner:repositoryGraph.context.owner,
             repo:repositoryGraph.context.repo,
             pr:repositoryGraph.context.mode==='pr'?repositoryGraph.context.prNumber:undefined,
+            sourceOwner:repositoryGraph.context.sourceOwner,
+            sourceRepo:repositoryGraph.context.sourceRepo,
             resolvedSha:repositoryGraph.context.resolvedSha,
             path:path,
             serverAuthToken:committedToken,

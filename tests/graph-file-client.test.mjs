@@ -54,6 +54,35 @@ test('buildGraphFileRequest sends `pr` (not `ref`) when a PR number is given, pe
   assert.equal(body.owner, 'octocat', 'must be the base owner, never the resolved fork');
 });
 
+test('buildGraphFileRequest sends expectedResolvedSha/expectedSourceOwner/expectedSourceRepo in PR mode, so a moved PR head is rejected server-side', () => {
+  const { init } = buildGraphFileRequest({
+    owner: 'octocat',
+    repo: 'Hello-World',
+    resolvedSha: 'a'.repeat(40),
+    pr: 42,
+    sourceOwner: 'contributor',
+    sourceRepo: 'Hello-World',
+    path: 'src/app.py',
+    serverAuthToken: 'secret-token',
+  });
+  const body = JSON.parse(init.body);
+  assert.equal(body.expectedResolvedSha, 'a'.repeat(40));
+  assert.equal(body.expectedSourceOwner, 'contributor');
+  assert.equal(body.expectedSourceRepo, 'Hello-World');
+});
+
+test('buildGraphFileRequest does not send expected* fields outside PR mode', () => {
+  const { init } = buildGraphFileRequest({
+    owner: 'octocat',
+    repo: 'Hello-World',
+    resolvedSha: 'a'.repeat(40),
+    path: 'src/app.py',
+    serverAuthToken: 'secret-token',
+  });
+  const body = JSON.parse(init.body);
+  assert.equal(body.expectedResolvedSha, undefined);
+});
+
 test('mapGraphFileResponse returns the body as-is on a successful response', () => {
   const body = { graph: { layer: 'file' } };
   assert.deepEqual(mapGraphFileResponse(true, 200, body), body);

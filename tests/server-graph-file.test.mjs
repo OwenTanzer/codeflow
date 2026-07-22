@@ -11,7 +11,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { resolveFileTarget, runPyan3ForFile, enforceFileRequestLimits } from '../server/routes/graph-file.js';
+import { resolveFileTarget, runPyan3ForFile, enforceFileRequestLimits, assertRevisionStillExpected } from '../server/routes/graph-file.js';
+import { AnalysisContextError } from '../src/graph-ir/githubContext.js';
 import { validateFileRequest } from '../server/lib/validate-file-request.js';
 import { ValidationError } from '../server/lib/validate-repo-request.js';
 import { WorkspaceManager } from '../server/lib/workspace.js';
@@ -107,6 +108,49 @@ test('validateFileRequest: rejects an invalid depth value', () => {
   );
 });
 
+test('validateFileRequest: accepts and normalizes a valid expectedResolvedSha/expectedSourceOwner/expectedSourceRepo', () => {
+  const request = validateFileRequest({
+    owner: 'octocat',
+    repo: 'Hello-World',
+    path: 'src/app.py',
+    pr: 42,
+    expectedResolvedSha: 'A'.repeat(40),
+    expectedSourceOwner: 'contributor',
+    expectedSourceRepo: 'Hello-World',
+  });
+  assert.equal(request.expectedResolvedSha, 'a'.repeat(40));
+  assert.equal(request.expectedSourceOwner, 'contributor');
+  assert.equal(request.expectedSourceRepo, 'Hello-World');
+});
+
+test('validateFileRequest: defaults expected* fields to null when not provided', () => {
+  const request = validateFileRequest({ owner: 'octocat', repo: 'Hello-World', path: 'src/app.py' });
+  assert.equal(request.expectedResolvedSha, null);
+  assert.equal(request.expectedSourceOwner, null);
+  assert.equal(request.expectedSourceRepo, null);
+});
+
+test('validateFileRequest: rejects a malformed expectedResolvedSha', () => {
+  assert.throws(
+    () => validateFileRequest({ owner: 'octocat', repo: 'Hello-World', path: 'src/app.py', expectedResolvedSha: 'not-a-sha' }),
+    ValidationError
+  );
+});
+
+test('validateFileRequest: rejects expectedSourceOwner without a matching expectedSourceRepo', () => {
+  assert.throws(
+    () =>
+      validateFileRequest({
+        owner: 'octocat',
+        repo: 'Hello-World',
+        path: 'src/app.py',
+        expectedResolvedSha: 'a'.repeat(40),
+        expectedSourceOwner: 'contributor',
+      }),
+    ValidationError
+  );
+});
+
 // MOO-70 Commit 9: "keep [analysis] operational when pyan3 fails" -- a
 // forced pyan3 failure must degrade gracefully (empty relationship set,
 // a warning, no thrown error) rather than fail the request. Runs the
@@ -194,4 +238,53 @@ test('enforceFileRequestLimits: a huge unrelated repository does not affect a ti
   const target = [{ path: 'tiny.py', size: 42 }];
   const result = enforceFileRequestLimits(target, { maxRepoFiles: 500, maxFileBytes: 1_000_000, maxRepoBytes: 25_000_000 });
   assert.deepEqual(result, target);
+});
+
+// MOO-70 Commit 9 PR review (round 3): a PR-mode request always
+// re-resolves the PR's *current* head server-side (resolveRef ignores any
+// `ref` once `pr` is set) -- without this check, a PR receiving a new
+// commit between the repository graph loading and a file drill-down
+// would silently analyze a different revision than the one the user is
+// looking at.
+const SHA_A = 'a'.repeat(40);
+const SHA_B = 'b'.repeat(40);
+
+test('assertRevisionStillExpected: does nothing when the client sent no expectation (non-PR mode)', () => {
+  assert.doesNotThrow(() =>
+    assertRevisionStillExpected(
+      { owner: 'octocat', repo: 'Hello-World', expectedResolvedSha: null, expectedSourceOwner: null, expectedSourceRepo: null },
+      { sourceOwner: 'octocat', sourceRepo: 'Hello-World', resolvedSha: SHA_A }
+    )
+  );
+});
+
+test('assertRevisionStillExpected: passes when the freshly resolved revision matches what was expected', () => {
+  assert.doesNotThrow(() =>
+    assertRevisionStillExpected(
+      { owner: 'octocat', repo: 'Hello-World', expectedResolvedSha: SHA_A, expectedSourceOwner: 'contributor', expectedSourceRepo: 'Hello-World' },
+      { sourceOwner: 'contributor', sourceRepo: 'Hello-World', resolvedSha: SHA_A }
+    )
+  );
+});
+
+test('assertRevisionStillExpected: rejects when the PR has a new head since the parent graph was loaded (the actual bug reported)', () => {
+  assert.throws(
+    () =>
+      assertRevisionStillExpected(
+        { owner: 'octocat', repo: 'Hello-World', expectedResolvedSha: SHA_A, expectedSourceOwner: 'contributor', expectedSourceRepo: 'Hello-World' },
+        { sourceOwner: 'contributor', sourceRepo: 'Hello-World', resolvedSha: SHA_B }
+      ),
+    AnalysisContextError
+  );
+});
+
+test('assertRevisionStillExpected: rejects when the resolved source repository changed (e.g. PR retargeted to a different fork)', () => {
+  assert.throws(
+    () =>
+      assertRevisionStillExpected(
+        { owner: 'octocat', repo: 'Hello-World', expectedResolvedSha: SHA_A, expectedSourceOwner: 'contributor', expectedSourceRepo: 'Hello-World' },
+        { sourceOwner: 'someone-else', sourceRepo: 'Hello-World', resolvedSha: SHA_A }
+      ),
+    AnalysisContextError
+  );
 });
