@@ -25,8 +25,20 @@ async function collectRepoFiles(root) {
     'build',
     'coverage',
     '.venv',
+    '.venv-pyan3',
     'venv',
     'test-results',
+    // MOO-71 Commit 4: .vendor/codevisualizer/ is a whole pinned,
+    // built checkout of a *different* repo (CodeVisualizer-fork),
+    // provisioned by scripts/setup-codevisualizer-core.mjs on every
+    // npm install. Walking into it here would analyze that repo's
+    // architecture instead of this one's -- its hundreds of
+    // core/module-classified files were crowding out this repo's own
+    // test/fixture-kind blocks past ARCHITECTURE_MAX_BLOCKS (64) in a
+    // clean CI install, since this test's own walk has no other way to
+    // know it's a foreign, provisioned tree rather than part of this
+    // codebase.
+    '.vendor',
   ]);
 
   async function walk(dir) {
