@@ -10,9 +10,20 @@
 // one call, not a general private-server-auth overhaul.
 //
 // Revision-pinning convention (see server/routes/graph-file.js's own doc
-// comment): pass the parent graph's exact resolvedSha as `ref`, not a
-// branch name, so a branch move between the repository request and this
-// one can't silently switch what gets analyzed.
+// comment): for a branch/commit-mode parent graph, pass its exact
+// resolvedSha as `ref`, not a branch name, so a branch move between the
+// repository request and this one can't silently switch what gets
+// analyzed.
+//
+// PR review finding: for a *forked* PR's parent graph, `owner`/`repo` must
+// be the requested BASE repository (AnalysisContext's own owner/repo),
+// never sourceOwner/sourceRepo (the resolved fork) — the server's
+// allowlist check applies to whatever `owner`/`repo` this request sends,
+// and a contributor's fork is never itself the allowlisted repository.
+// For PR mode, send `pr` (the PR number) instead of `ref`; the server's
+// own resolveRef() already knows how to recover the fork/head SHA from
+// owner+repo+pr, exactly like the (currently client-unused) repository
+// endpoint already does.
 
 export class GraphFileClientError extends Error {
   constructor(message, { status, category, diagnostics } = {}) {
@@ -28,15 +39,22 @@ export class GraphFileClientError extends Error {
  * Build the request init object for POST /api/graph/file — extracted so
  * the request-shaping logic is testable without a real fetch.
  * @param {object} input
- * @param {string} input.owner
- * @param {string} input.repo
- * @param {string} input.resolvedSha - the parent graph's pinned revision, sent as `ref`
+ * @param {string} input.owner - the requested BASE repository owner (AnalysisContext.owner, never sourceOwner)
+ * @param {string} input.repo - the requested BASE repository name (AnalysisContext.repo, never sourceRepo)
+ * @param {string} input.resolvedSha - the parent graph's pinned revision, sent as `ref` when `pr` is not set
+ * @param {number} [input.pr] - the PR number, when the parent graph's context.mode === 'pr'; takes precedence over resolvedSha, letting the server re-resolve the fork/head sha itself
  * @param {string} input.path
  * @param {string|null} [input.depth]
  * @param {string} input.serverAuthToken
  * @returns {{url: string, init: RequestInit}}
  */
-export function buildGraphFileRequest({ owner, repo, resolvedSha, path, depth, serverAuthToken }) {
+export function buildGraphFileRequest({ owner, repo, resolvedSha, pr, path, depth, serverAuthToken }) {
+  const body = { owner, repo, path, depth: depth || undefined };
+  if (pr != null) {
+    body.pr = pr;
+  } else {
+    body.ref = resolvedSha;
+  }
   return {
     url: '/api/graph/file',
     init: {
@@ -45,7 +63,7 @@ export function buildGraphFileRequest({ owner, repo, resolvedSha, path, depth, s
         'Content-Type': 'application/json',
         Authorization: 'Bearer ' + serverAuthToken,
       },
-      body: JSON.stringify({ owner, repo, ref: resolvedSha, path, depth: depth || undefined }),
+      body: JSON.stringify(body),
     },
   };
 }

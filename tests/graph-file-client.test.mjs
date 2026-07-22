@@ -39,6 +39,21 @@ test('buildGraphFileRequest omits depth when not provided', () => {
   assert.equal(body.depth, undefined);
 });
 
+test('buildGraphFileRequest sends `pr` (not `ref`) when a PR number is given, per the base-repository allowlist fix', () => {
+  const { init } = buildGraphFileRequest({
+    owner: 'octocat',
+    repo: 'Hello-World',
+    resolvedSha: 'a'.repeat(40),
+    pr: 42,
+    path: 'src/app.py',
+    serverAuthToken: 'secret-token',
+  });
+  const body = JSON.parse(init.body);
+  assert.equal(body.pr, 42);
+  assert.equal(body.ref, undefined, 'ref must not also be sent -- the server re-resolves the fork/head sha from pr');
+  assert.equal(body.owner, 'octocat', 'must be the base owner, never the resolved fork');
+});
+
 test('mapGraphFileResponse returns the body as-is on a successful response', () => {
   const body = { graph: { layer: 'file' } };
   assert.deepEqual(mapGraphFileResponse(true, 200, body), body);

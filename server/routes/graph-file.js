@@ -6,8 +6,11 @@
 // withTimeout/GraphAnalysisTimeoutError/RATE_LIMIT_PATTERN directly rather
 // than duplicating them. Fetches only the requested file/package's blobs
 // (never the whole repository, unlike analyzeGithubRepo) via
-// github-analyzer-bridge.js's now-exported resolveRef/resolveCommitSha/
-// fetchTree/fetchAllContents.
+// github-analyzer-bridge.js's resolveRef/resolveCommitSha/
+// resolvePathEntry/fetchSubtreeFiles/fetchAllContents -- resolvePathEntry
+// walks non-recursively to the requested path itself rather than ever
+// fetching a (possibly GitHub-truncated, for a huge monorepo) full
+// recursive repository tree.
 //
 // Revision-pinning convention: a drill-down client should pass the parent
 // graph's exact resolvedSha as `ref`, not a branch name — validateRepoRequest's
@@ -19,7 +22,15 @@ import { isRepoAllowed } from '../lib/allowlist.js';
 import { createRequestLogger } from '../lib/logger.js';
 import { validateFileRequest } from '../lib/validate-file-request.js';
 import { ValidationError } from '../lib/validate-repo-request.js';
-import { resolveRef, resolveCommitSha, fetchRawTree, fetchAllContents, GithubFetchError } from '../lib/github-analyzer-bridge.js';
+import {
+  configureGithubClient,
+  resolveRef,
+  resolveCommitSha,
+  resolvePathEntry,
+  fetchSubtreeFiles,
+  fetchAllContents,
+  GithubFetchError,
+} from '../lib/github-analyzer-bridge.js';
 import { buildRequestContext, withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN } from './graph-repository.js';
 import { stagePythonFiles, runPyan3 } from '../lib/pyan3Adapter.js';
 import { parseDotGraph, extractPyanNodes, extractPyanEdges } from '../lib/dotGraph.js';
@@ -209,14 +220,37 @@ export function createGraphFileHandler({ config, workspaceManager }) {
       try {
         resolved = await withTimeout(
           (async () => {
+            // PR review finding: resolveRef/resolveCommitSha/etc. use the
+            // shared GitHub client, whose token is otherwise only ever set
+            // by analyzeGithubRepo() (the repository layer's entry point,
+            // never called here) -- without this, every GitHub call this
+            // route makes would run unauthenticated regardless of
+            // config.githubToken, unless some unrelated request happened
+            // to set it first as a side effect.
+            configureGithubClient({ token: config.githubToken });
+
             const { owner, repo, ref: resolvedRef } = await resolveRef(request);
             const resolvedSha = request.pr != null ? resolvedRef : await resolveCommitSha(owner, repo, resolvedRef);
-            // fetchRawTree (not fetchTree): no whole-repository size/count
-            // limits here -- those are applied below, after selecting the
-            // requested file/package, not against the entire tree.
-            const rawTree = await fetchRawTree({ owner, repo, resolvedRef });
-            const blobEntries = rawTree.filter((entry) => entry.type === 'blob');
-            const target = resolveFileTarget({ treeFiles: blobEntries, requestedPath: request.path });
+
+            // Walk to the requested path's own entry non-recursively
+            // (never the whole repository tree, which can be truncated by
+            // GitHub for a large enough monorepo) to determine file vs.
+            // package mode, then fetch only that scope's contents.
+            const entry = await resolvePathEntry({ owner, repo, resolvedRef, path: request.path });
+            if (!entry) {
+              throw new ValidationError(`"${request.path}" was not found in this revision`);
+            }
+            let treeFiles;
+            if (entry.type === 'blob') {
+              treeFiles = [entry];
+            } else if (entry.type === 'tree') {
+              const subtreeEntries = await fetchSubtreeFiles({ owner, repo, sha: entry.sha, pathPrefix: entry.path });
+              treeFiles = subtreeEntries.filter((e) => e.type === 'blob');
+            } else {
+              throw new ValidationError(`"${request.path}" is not a file or directory`);
+            }
+
+            const target = resolveFileTarget({ treeFiles, requestedPath: request.path });
             const limitedFiles = enforceFileRequestLimits(target.targetFiles, {
               maxRepoFiles: config.maxRepoFiles,
               maxFileBytes: config.maxFileBytes,

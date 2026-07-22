@@ -1231,9 +1231,15 @@ function FileLayerPanel(props){
         setFileGraphError(null);
         setFileGraphErrorStatus(null);
         setFileGraph(null);
+        // PR review fix: send the requested BASE owner/repo (never
+        // sourceOwner/sourceRepo, the resolved fork for a PR) so the
+        // server's allowlist check applies to the right repository; for
+        // PR mode send `pr` and let the server re-resolve the fork/head
+        // sha itself, matching how resolveRef() already handles it.
         fetchFileGraph({
-            owner:repositoryGraph.context.sourceOwner,
-            repo:repositoryGraph.context.sourceRepo,
+            owner:repositoryGraph.context.owner,
+            repo:repositoryGraph.context.repo,
+            pr:repositoryGraph.context.mode==='pr'?repositoryGraph.context.prNumber:undefined,
             resolvedSha:repositoryGraph.context.resolvedSha,
             path:path,
             serverAuthToken:committedToken,
