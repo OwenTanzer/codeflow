@@ -45,6 +45,44 @@ function sendError(res, status, message, category, requestId, options) {
 }
 
 /**
+ * Run pyan3 for a staged request and never throw — MOO-70 Commit 9
+ * resilience requirement ("keep [analysis] operational when pyan3
+ * fails"). A pyan3 crash (any category: subprocess_failure,
+ * parser_failure, timeout) degrades to an empty relationship set (the
+ * request still completes with a tree-sitter-only, lower-confidence
+ * graph — Commit 5's `symbolOnly` path) rather than failing the whole
+ * request. Extracted from the handler and exported specifically so this
+ * behavior is unit-testable without a real GitHub fetch — running pyan3
+ * itself needs no network, only already-staged local files.
+ * @param {object} input
+ * @param {string} input.pythonBin
+ * @param {{dir: string}} input.workspace
+ * @param {string[]} input.absolutePaths
+ * @param {number} input.timeoutMs
+ * @returns {Promise<{pyanNodes: object[], pyanEdges: object[], warnings: string[], failedCategory: string|null}>}
+ */
+export async function runPyan3ForFile({ pythonBin, workspace, absolutePaths, timeoutMs }) {
+  try {
+    const pyanResult = await runPyan3({ pythonBin, workspace, absolutePaths, timeoutMs });
+    const digraph = parseDotGraph(pyanResult.dot);
+    return {
+      pyanNodes: extractPyanNodes(digraph),
+      pyanEdges: extractPyanEdges(digraph),
+      warnings: [],
+      failedCategory: null,
+    };
+  } catch (err) {
+    const category = err instanceof AdapterError ? err.category : 'subprocess_failure';
+    return {
+      pyanNodes: [],
+      pyanEdges: [],
+      warnings: [`pyan3 analysis failed (${category}): ${err.message}`],
+      failedCategory: category,
+    };
+  }
+}
+
+/**
  * Classify a requested path against the already-fetched tree: an exact
  * Python-file blob match is a 'file' request; one or more Python files
  * under `${path}/` is a 'package' request. Self-describing from the tree
@@ -171,50 +209,73 @@ export function createGraphFileHandler({ config, workspaceManager }) {
       }
 
       // Stage into a fresh request workspace -- always cleaned up below,
-      // regardless of what happens next.
-      workspace = await workspaceManager.createRequestWorkspace(requestId);
-      const absolutePaths = await stagePythonFiles(workspace, resolved.files);
+      // regardless of what happens next. Diagnosed as its own stage
+      // ("workspace preparation") rather than falling into the generic
+      // catch-all, per the Commit 9 diagnostics requirement.
+      let absolutePaths;
+      try {
+        workspace = await workspaceManager.createRequestWorkspace(requestId);
+        absolutePaths = await stagePythonFiles(workspace, resolved.files);
+      } catch (err) {
+        const durationMs = Date.now() - startedAtMs;
+        log.error('workspace preparation failed', { message: err && err.message, durationMs });
+        return sendError(res, 500, 'Failed to prepare the analysis workspace', 'internal_error', requestId);
+      }
 
       // pyan3 failing does not fail the request -- degrade to a
       // tree-sitter-only graph (Commit 5's symbolOnly path) rather than a
-      // 5xx, matching the resilience Commit 2's plan flagged needing.
-      let pyanNodes = [];
-      let pyanEdges = [];
-      const pyanWarnings = [];
-      try {
-        const pyanResult = await runPyan3({
-          pythonBin: config.pythonBin,
-          workspace,
-          absolutePaths,
-          timeoutMs: config.pyan3TimeoutMs,
-        });
-        const digraph = parseDotGraph(pyanResult.dot);
-        pyanNodes = extractPyanNodes(digraph);
-        pyanEdges = extractPyanEdges(digraph);
-      } catch (err) {
-        const category = err instanceof AdapterError ? err.category : 'subprocess_failure';
-        log.warn('pyan3 analysis failed; degrading to tree-sitter-only graph', { message: err.message, category });
-        pyanWarnings.push(`pyan3 analysis failed (${category}): ${err.message}`);
-      }
-
-      // Phase 2: pure glue, no more network/subprocess calls.
-      const symbolEntries = [];
-      for (const file of resolved.files) {
-        const indexed = await indexPythonSymbols({ path: file.path, content: file.content });
-        symbolEntries.push(...indexed.entries);
-      }
-
-      const context = buildRequestContext(request, resolved);
-      const joined = joinPyanToSymbols({ pyanNodes, pyanEdges, symbolEntries, workspaceDir: workspace.dir });
-      joined.stats.warnings.push(...pyanWarnings);
-      const fullGraph = adaptFileAnalysis({ context, requestPath: request.path, joined, analyzer: ANALYZER });
-
-      const chosen = chooseDepthMode({
-        graph: fullGraph,
-        requestKind: resolved.mode,
-        totalSymbolCount: symbolEntries.length,
-        override: request.depth || undefined,
+      // 5xx, matching the resilience Commit 2's plan flagged needing. This
+      // failure is isolated to this one request/response: it shares no
+      // mutable state with server/routes/graph-repository.js's handler
+      // (a separate closure over the same read-only `config`), so it
+      // cannot affect the repository layer's own operation.
+      const pyanOutcome = await runPyan3ForFile({
+        pythonBin: config.pythonBin,
+        workspace,
+        absolutePaths,
+        timeoutMs: config.pyan3TimeoutMs,
       });
+      if (pyanOutcome.failedCategory) {
+        log.warn('pyan3 analysis failed; degrading to tree-sitter-only graph', {
+          category: pyanOutcome.failedCategory,
+          path: request.path,
+        });
+      }
+
+      // Phase 2: pure glue, no more network/subprocess calls. Diagnosed as
+      // its own stage ("graph construction") -- covers symbol indexing,
+      // joining, GraphIR conversion, and depth selection -- distinct from
+      // source retrieval/workspace prep/pyan3 above.
+      let chosen;
+      let context;
+      let joined;
+      try {
+        const symbolEntries = [];
+        for (const file of resolved.files) {
+          const indexed = await indexPythonSymbols({ path: file.path, content: file.content });
+          symbolEntries.push(...indexed.entries);
+        }
+
+        context = buildRequestContext(request, resolved);
+        joined = joinPyanToSymbols({ pyanNodes: pyanOutcome.pyanNodes, pyanEdges: pyanOutcome.pyanEdges, symbolEntries, workspaceDir: workspace.dir });
+        joined.stats.warnings.push(...pyanOutcome.warnings);
+        const fullGraph = adaptFileAnalysis({ context, requestPath: request.path, joined, analyzer: ANALYZER });
+
+        chosen = chooseDepthMode({
+          graph: fullGraph,
+          requestKind: resolved.mode,
+          totalSymbolCount: symbolEntries.length,
+          override: request.depth || undefined,
+        });
+      } catch (err) {
+        if (err instanceof AnalysisContextError) {
+          log.warn('graph-file contract violation during graph construction', { message: err.message });
+          return sendError(res, 502, 'The analyzed file state could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
+        }
+        const durationMs = Date.now() - startedAtMs;
+        log.error('graph construction failed (symbol indexing, join, or GraphIR conversion)', { message: err && err.message, durationMs });
+        return sendError(res, 500, 'Analysis failed while building the file graph', 'internal_error', requestId);
+      }
 
       const cacheKey = buildCacheKey({
         context,
@@ -245,11 +306,18 @@ export function createGraphFileHandler({ config, workspaceManager }) {
         sourceRepo: resolved.sourceRepo,
         resolvedSha: resolved.resolvedSha,
         mode: resolved.mode,
+        analyzerName: ANALYZER.name,
+        analyzerVersion: ANALYZER.version,
         depth: chosen.mode,
         durationMs,
         nodeCount: chosen.graph.nodes.length,
         edgeCount: chosen.graph.edges.length,
         warningCount: chosen.graph.warnings.length,
+        matchedCount: joined.stats.matchedCount,
+        unresolvedCount: joined.stats.unresolvedCount,
+        ambiguousCount: joined.stats.ambiguousCount,
+        symbolOnlyCount: joined.stats.symbolOnlyCount,
+        pyanFailedCategory: pyanOutcome.failedCategory,
         cacheKey,
         cacheHit: false,
       });

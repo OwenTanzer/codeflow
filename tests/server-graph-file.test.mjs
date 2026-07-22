@@ -4,11 +4,22 @@
 // available, so this covers everything testable without network access,
 // matching tests/server-graph-repository.test.mjs's own scope exactly.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { resolveFileTarget } from '../server/routes/graph-file.js';
+import { resolveFileTarget, runPyan3ForFile } from '../server/routes/graph-file.js';
 import { validateFileRequest } from '../server/lib/validate-file-request.js';
 import { ValidationError } from '../server/lib/validate-repo-request.js';
+import { WorkspaceManager } from '../server/lib/workspace.js';
+import { stagePythonFiles } from '../server/lib/pyan3Adapter.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const FIXTURES = join(__dirname, 'fixtures/python-symbols');
+const PYTHON_BIN = process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3');
 
 const TREE_FILES = [
   { path: 'README.md' },
@@ -94,4 +105,50 @@ test('validateFileRequest: rejects an invalid depth value', () => {
     () => validateFileRequest({ owner: 'octocat', repo: 'Hello-World', path: 'src/app.py', depth: 'ultra' }),
     ValidationError
   );
+});
+
+// MOO-70 Commit 9: "keep [analysis] operational when pyan3 fails" -- a
+// forced pyan3 failure must degrade gracefully (empty relationship set,
+// a warning, no thrown error) rather than fail the request. Runs the
+// real pinned pyan3 binary against a real broken-syntax fixture (no
+// network needed -- pyan3 invocation itself only needs already-staged
+// local files) rather than mocking the subprocess.
+async function withWorkspace(fn) {
+  const root = await mkdtemp(join(tmpdir(), 'codeflow-graph-file-test-'));
+  try {
+    const manager = new WorkspaceManager(root);
+    await manager.ensureRoot();
+    const ws = await manager.createRequestWorkspace('req-1');
+    await fn(ws);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test('runPyan3ForFile: a forced pyan3 failure degrades to an empty relationship set with a warning, never throwing', async () => {
+  await withWorkspace(async (ws) => {
+    const content = readFileSync(join(FIXTURES, 'syntax_error.py'), 'utf8');
+    const [absPath] = await stagePythonFiles(ws, [{ path: 'syntax_error.py', content }]);
+
+    const outcome = await runPyan3ForFile({ pythonBin: PYTHON_BIN, workspace: ws, absolutePaths: [absPath], timeoutMs: 15_000 });
+
+    assert.deepEqual(outcome.pyanNodes, []);
+    assert.deepEqual(outcome.pyanEdges, []);
+    assert.equal(outcome.failedCategory, 'parser_failure');
+    assert.equal(outcome.warnings.length, 1);
+    assert.match(outcome.warnings[0], /pyan3 analysis failed \(parser_failure\)/);
+  });
+});
+
+test('runPyan3ForFile: a clean file returns real nodes/edges with no failure category', async () => {
+  await withWorkspace(async (ws) => {
+    const content = readFileSync(join(FIXTURES, 'calls.py'), 'utf8');
+    const [absPath] = await stagePythonFiles(ws, [{ path: 'calls.py', content }]);
+
+    const outcome = await runPyan3ForFile({ pythonBin: PYTHON_BIN, workspace: ws, absolutePaths: [absPath], timeoutMs: 15_000 });
+
+    assert.equal(outcome.failedCategory, null);
+    assert.equal(outcome.warnings.length, 0);
+    assert.ok(outcome.pyanNodes.length > 0);
+  });
 });

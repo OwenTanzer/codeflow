@@ -1208,6 +1208,9 @@ function FileLayerPanel(props){
     var selectSymbolRef=useRef(null);
     var activateSymbolRef=useRef(null);
     var path=navPanel.coordinate?navPanel.coordinate.path:null;
+    // MOO-70 Commit 9: "add user-facing retry" -- included in the fetch
+    // effect's dependency array purely to force a re-run on demand.
+    var _retry=useState(0),retryCount=_retry[0],setRetryCount=_retry[1];
 
     useEffect(function(){
         if(!path||!repositoryGraph||!serverAuthToken)return;
@@ -1231,7 +1234,7 @@ function FileLayerPanel(props){
             setFileGraphLoading(false);
         });
         return function(){cancelled=true;};
-    },[path,repositoryGraph,serverAuthToken]);
+    },[path,repositoryGraph,serverAuthToken,retryCount]);
 
     selectSymbolRef.current=function(){}; // MOO-70 Commit 8: selection highlighting deferred, matching this pass's minimal scope
     activateSymbolRef.current=function(nodeId){
@@ -1264,7 +1267,10 @@ function FileLayerPanel(props){
     return React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
         React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' ',path),
         fileGraphLoading&&React.createElement('div',{style:{fontSize:12,color:'var(--t2)'}},'Loading file graph…'),
-        fileGraphError&&React.createElement('div',{style:{fontSize:12,color:'#f87171'}},fileGraphError),
+        fileGraphError&&React.createElement('div',{style:{fontSize:12,color:'#f87171',marginBottom:8}},
+            React.createElement('div',{style:{marginBottom:6}},fileGraphError),
+            React.createElement('button',{className:'top-btn',onClick:function(){setRetryCount(function(c){return c+1;});}},iconLabel('refresh','Retry'))
+        ),
         fileGraph&&React.createElement('svg',{ref:svgRef,style:{width:'100%',height:320,background:'var(--bg2)',borderRadius:8}}),
         fileGraph&&fileGraph.warnings&&fileGraph.warnings.length>0&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',marginTop:6}},fileGraph.warnings.length+' analysis warning(s) -- confidence '+Math.round(fileGraph.confidence*100)+'%'),
         navPanel.coordinate&&React.createElement('button',{className:'top-btn',style:{marginTop:8},onClick:function(){window.open(githubBlobUrl(navPanel.coordinate),'_blank','noopener');}},iconLabel('eye','View on GitHub'))
