@@ -90,13 +90,9 @@ available" question:
    present (still overridable via `PYTHON_BIN`), so `verifyPyan3Available`
    and every `pyan3Adapter.js` invocation pick it up automatically.
 
-Fix 1 above was confirmed by a real deployment reaching `SUCCESS` and
-passing its healthcheck. Fix 2 is a direct, locally-verified reproduction
-(the venv install/run sequence was run and its `pyan3 --version` invoked
-successfully on this machine) of the exact failure seen at runtime
-(`No module named pyan`), but the *combined* fix has not yet been
-reconfirmed against a fresh live deployment's `/readyz` response as of
-this writing.
+Verified end-to-end against a real Railway deployment: after both fixes,
+a fresh deployment reached `SUCCESS`, passed its healthcheck, and
+`/readyz` reports `checks.pyan3.ok: true`.
 
 ## Cross-layer resilience (Commit 9's own checklist item)
 
