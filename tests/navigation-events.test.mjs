@@ -147,3 +147,59 @@ test('NavigationHistory.back/forward throw at the boundaries', () => {
   assert.throws(() => history.back(), NavigationError);
   assert.throws(() => history.forward(), NavigationError);
 });
+
+// MOO-71 Commit 8: BreadcrumbEntry.graphCacheKey/selectedNodeId have existed
+// since MOO-68 Commit 5 so back/forward could restore a view from cache
+// instead of re-running analysis, but nothing ever wrote them until the file
+// and function panels did. updateCurrent is that write path.
+test('NavigationHistory.updateCurrent records panel state onto the active entry', () => {
+  const history = new NavigationHistory(makeBreadcrumbEntry('repository', null, { label: 'Repository' }));
+  history.push(makeBreadcrumbEntry('file', null, { label: 'sessions.py' }));
+
+  const updated = history.updateCurrent({ graphCacheKey: 'graphir:v1:abc', selectedNodeId: 'n7' });
+
+  assert.equal(updated.graphCacheKey, 'graphir:v1:abc');
+  assert.equal(updated.selectedNodeId, 'n7');
+  assert.equal(history.current().graphCacheKey, 'graphir:v1:abc');
+  assert.equal(history.current().label, 'sessions.py', 'unpatched fields survive');
+  assert.equal(history.trail()[0].graphCacheKey, null, 'only the current entry is touched');
+});
+
+test('NavigationHistory.updateCurrent replaces rather than mutates, so stale references cannot read new state', () => {
+  const history = new NavigationHistory(makeBreadcrumbEntry('file', null, { label: 'a.py' }));
+  const before = history.current();
+  history.updateCurrent({ graphCacheKey: 'k1' });
+
+  assert.notEqual(history.current(), before, 'a new object identity signals the change to React');
+  assert.equal(before.graphCacheKey, null, 'the previously held entry is not mutated underneath its holder');
+});
+
+test('NavigationHistory.updateCurrent does not truncate forward history -- it records, it does not navigate', () => {
+  const history = new NavigationHistory(makeBreadcrumbEntry('repository', null, { label: 'Repository' }));
+  history.push(makeBreadcrumbEntry('file', null, { label: 'a.py' }));
+  history.push(makeBreadcrumbEntry('function', null, { label: 'a.run' }));
+  history.back();
+
+  history.updateCurrent({ graphCacheKey: 'k-file' });
+
+  assert.equal(history.canGoForward, true, 'the function entry is still reachable');
+  assert.equal(history.forward().label, 'a.run');
+});
+
+test('repository -> file -> function -> back restores the file entry and its recorded graph', () => {
+  const history = new NavigationHistory(makeBreadcrumbEntry('repository', null, { label: 'Repository' }));
+
+  history.push(makeBreadcrumbEntry('file', null, { label: 'sessions.py' }));
+  history.updateCurrent({ graphCacheKey: 'key-file' });
+  history.push(makeBreadcrumbEntry('function', null, { label: 'Session.request' }));
+  history.updateCurrent({ graphCacheKey: 'key-function', selectedNodeId: 'stmt_3' });
+
+  const back = history.back();
+  assert.equal(back.layer, 'file');
+  assert.equal(back.graphCacheKey, 'key-file', 'the file view is restorable without re-analysis');
+
+  const forward = history.forward();
+  assert.equal(forward.layer, 'function');
+  assert.equal(forward.graphCacheKey, 'key-function');
+  assert.equal(forward.selectedNodeId, 'stmt_3', 'selection is part of restored state');
+});

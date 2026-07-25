@@ -247,6 +247,31 @@ export class NavigationHistory {
     return this._stack[this._index];
   }
 
+  /**
+   * Replace the current entry with a patched copy — how a panel records the
+   * state it should be restored to (MOO-71 Commit 8): the cache key of the
+   * graph it actually loaded, and which node was selected.
+   *
+   * `graphCacheKey` and `selectedNodeId` have existed on BreadcrumbEntry
+   * since MOO-68 Commit 5 precisely so back/forward could restore a view
+   * from cache instead of re-running analysis; nothing had ever written them
+   * until now, so they were always null.
+   *
+   * Replaces rather than mutates so a caller holding a previous entry (React
+   * props, a memo dependency) sees a changed identity instead of silently
+   * reading a mutated object. Forward history is deliberately NOT truncated:
+   * this records what is already being shown, it is not a navigation.
+   *
+   * @param {Partial<BreadcrumbEntry>} patch
+   * @returns {BreadcrumbEntry} the updated entry
+   */
+  updateCurrent(patch) {
+    const updated = { ...this._stack[this._index], ...patch };
+    this._stack = this._stack.slice();
+    this._stack[this._index] = updated;
+    return updated;
+  }
+
   get canGoBack() {
     return this._index > 0;
   }

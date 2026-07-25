@@ -1232,7 +1232,9 @@ function ServerTokenPrompt(props){
 function FileLayerPanel(props){
     var navPanel=props.navPanel,repositoryGraph=props.repositoryGraph,
         theme=props.theme,openFileDrillDown=props.openFileDrillDown,
-        showNotification=props.showNotification,onHover=props.onHover;
+        showNotification=props.showNotification,onHover=props.onHover,
+        cacheGraph=props.cacheGraph,readCachedGraph=props.readCachedGraph,
+        recordPanelState=props.recordPanelState;
 
     // MOO-71 Commit 7: the committed token now lives in App() and arrives as
     // a prop, because a second panel (FunctionLayerPanel) needs the same one
@@ -1262,7 +1264,19 @@ function FileLayerPanel(props){
     var _retry=useState(0),retryCount=_retry[0],setRetryCount=_retry[1];
 
     useEffect(function(){
-        if(!path||!repositoryGraph||!committedToken)return;
+        if(!path||!repositoryGraph)return;
+        // MOO-71 Commit 8: restore the previously loaded file graph when
+        // navigating back from a function drill-down, rather than re-running
+        // pyan3 analysis for a view the user already had.
+        var cached=readCachedGraph(navPanel.graphCacheKey);
+        if(cached){
+            setFileGraph(cached);
+            setFileGraphLoading(false);
+            setFileGraphError(null);
+            setFileGraphErrorStatus(null);
+            return;
+        }
+        if(!committedToken)return;
         var cancelled=false;
         setFileGraphLoading(true);
         setFileGraphError(null);
@@ -1290,6 +1304,9 @@ function FileLayerPanel(props){
             if(cancelled)return;
             setFileGraph(result.graph);
             setFileGraphLoading(false);
+            var key=result.cache&&result.cache.key;
+            cacheGraph(key,result.graph);
+            if(key)recordPanelState({graphCacheKey:key});
         }).catch(function(err){
             if(cancelled)return;
             var status=err instanceof GraphFileClientError?err.status:null;
@@ -1304,7 +1321,7 @@ function FileLayerPanel(props){
             setFileGraphErrorStatus(status);
         });
         return function(){cancelled=true;};
-    },[path,repositoryGraph,committedToken,retryCount]);
+    },[path,repositoryGraph,committedToken,retryCount,navPanel.graphCacheKey]);
 
     selectSymbolRef.current=function(){}; // MOO-70 Commit 8: selection highlighting deferred, matching this pass's minimal scope
     activateSymbolRef.current=function(nodeId){
@@ -1384,7 +1401,9 @@ function FunctionLayerPanel(props){
         theme=props.theme,showNotification=props.showNotification,onHover=props.onHover,
         committedToken=props.serverAuthToken,onTokenRejected=props.onTokenRejected,
         onCommitToken=props.onCommitToken,onChangeToken=props.onChangeToken,
-        tokenRejected=props.tokenRejected;
+        tokenRejected=props.tokenRejected,
+        cacheGraph=props.cacheGraph,readCachedGraph=props.readCachedGraph,
+        recordPanelState=props.recordPanelState;
 
     var _fg=useState(null),functionGraph=_fg[0],setFunctionGraph=_fg[1];
     var _l=useState(false),loadingGraph=_l[0],setLoadingGraph=_l[1];
@@ -1410,7 +1429,20 @@ function FunctionLayerPanel(props){
     var symbolKey=coordinate&&coordinate.symbolPath?coordinate.symbolPath.join('.'):null;
 
     useEffect(function(){
-        if(!path||!symbolKey||!repositoryGraph||!committedToken)return;
+        if(!path||!symbolKey||!repositoryGraph)return;
+        // MOO-71 Commit 8: restore from cache before considering a fetch, so
+        // navigating back to a function already viewed is instant and cannot
+        // re-run analysis at a different revision. Also means back/forward
+        // works without a server token still being held.
+        var cached=readCachedGraph(navPanel.graphCacheKey);
+        if(cached){
+            setFunctionGraph(cached);
+            setSelectedNodeId(navPanel.selectedNodeId||null);
+            setLoadingGraph(false);
+            setGraphError(null);
+            return;
+        }
+        if(!committedToken)return;
         var cancelled=false;
         setLoadingGraph(true);
         setGraphError(null);
@@ -1435,6 +1467,12 @@ function FunctionLayerPanel(props){
             if(cancelled)return;
             setFunctionGraph(result.graph);
             setLoadingGraph(false);
+            // Record against the breadcrumb entry so back/forward can restore
+            // this exact graph. `cancelled` already guarantees a superseded
+            // response never reaches here.
+            var key=result.cache&&result.cache.key;
+            cacheGraph(key,result.graph);
+            if(key)recordPanelState({graphCacheKey:key});
         }).catch(function(err){
             if(cancelled)return;
             var status=err instanceof GraphFunctionClientError?err.status:null;
@@ -1450,9 +1488,13 @@ function FunctionLayerPanel(props){
             });
         });
         return function(){cancelled=true;};
-    },[path,symbolKey,repositoryGraph,committedToken,retryCount]);
+    },[path,symbolKey,repositoryGraph,committedToken,retryCount,navPanel.graphCacheKey]);
 
-    selectSymbolRef.current=function(nodeId){setSelectedNodeId(nodeId);};
+    selectSymbolRef.current=function(nodeId){
+        setSelectedNodeId(nodeId);
+        // Selection is part of "prior state" for back/forward restore.
+        recordPanelState({selectedNodeId:nodeId});
+    };
     activateSymbolRef.current=function(){
         showNotification('Following a call needs the callee’s own coordinate, which this layer does not yet resolve — use View on GitHub instead.','warning');
     };
@@ -1574,7 +1616,23 @@ function App(){
     // distinctly from the pre-existing `drillDown`/`setDrillDown` below
     // (useRepositorySelection's unrelated issue/pattern/security modal
     // state), not a rename of it.
-    var _nav=useRepositoryDrillDownPanel(),navTrail=_nav.trail,navPanel=_nav.panel,navCanGoBack=_nav.canGoBack,openFileDrillDown=_nav.openDrillDown,goNavBack=_nav.goBack,resetNavHistory=_nav.resetHistory;
+    var _nav=useRepositoryDrillDownPanel(),navTrail=_nav.trail,navPanel=_nav.panel,navCanGoBack=_nav.canGoBack,openFileDrillDown=_nav.openDrillDown,goNavBack=_nav.goBack,resetNavHistory=_nav.resetHistory,recordPanelState=_nav.recordPanelState;
+    // MOO-71 Commit 8: in-memory graph cache backing back/forward restore.
+    // Keyed by the server's own cache key (AdapterResult.cache.key, built by
+    // src/graph-ir/cacheKey.js) rather than a key derived here, so the client
+    // and server agree on what "the same analysis" means by construction --
+    // that key already folds in revision, analyzer version, schema version,
+    // and the requested coordinate.
+    //
+    // A ref, not state: writing it must never itself trigger a render, and
+    // nothing renders *from* the map -- panels read it only when deciding
+    // whether a fetch is needed. Lives for the life of the page, and is
+    // cleared whenever a new repository analysis starts, since every key is
+    // scoped to a revision that no longer applies.
+    var graphCacheRef=useRef(null);
+    if(!graphCacheRef.current)graphCacheRef.current=new Map();
+    function cacheGraph(cacheKey,graph){if(cacheKey)graphCacheRef.current.set(cacheKey,graph);}
+    function readCachedGraph(cacheKey){return cacheKey?graphCacheRef.current.get(cacheKey)||null:null;}
     // MOO-69 PR review: guards against a slower, still-in-flight repository/
     // PR analysis completing after a newer one has already started (or
     // finished) and silently overwriting its data/repositoryGraph. Every
@@ -1823,6 +1881,10 @@ function App(){
         setData(null);
         setRepositoryGraph(null);
         resetNavHistory();
+        // MOO-71 Commit 8: every cached graph is keyed to the revision being
+        // replaced, so keeping them across a new analysis could only ever
+        // serve a stale view.
+        graphCacheRef.current.clear();
         setSelected(null);
         setBlastRadius(null);
         setOwnership(null);
@@ -4247,7 +4309,7 @@ function App(){
             if(isCurrentAnalysisGeneration(generation)){showNotification('Could not load PR','error');setLoading(false);}
         });
     }
-    function resetAnalysis(){setData(null);setRepositoryGraph(null);resetNavHistory();setSelected(null);setBlastRadius(null);setOwnership(null);setRepoInfo(null);setRepoUrl('');setPrData(null);setFolderFilter(null);setLocalDirHandle(null);setLocalSourceKind(null);setArchitectureIncludeTests(false);setArchitectureIncludeBuildOutput(false);zipArchiveRef.current=null;zipFileRef.current=null;clearRoute();}
+    function resetAnalysis(){setData(null);setRepositoryGraph(null);resetNavHistory();graphCacheRef.current.clear();setSelected(null);setBlastRadius(null);setOwnership(null);setRepoInfo(null);setRepoUrl('');setPrData(null);setFolderFilter(null);setLocalDirHandle(null);setLocalSourceKind(null);setArchitectureIncludeTests(false);setArchitectureIncludeBuildOutput(false);zipArchiveRef.current=null;zipFileRef.current=null;clearRoute();}
     function filterByFolder(path){setFolderFilter(function(prev){return prev===path?null:path;});}
     function getArchitectureViewStats(diagram,includeTests,includeBuildOutput){
         if(!diagram)return{blocks:0,dependencies:0,routes:0,apiRoutes:0,databaseTouchpoints:0,warnings:0};
@@ -4702,6 +4764,7 @@ function App(){
                         serverAuthToken:serverAuthToken,tokenRejected:serverTokenRejected,
                         onCommitToken:commitServerAuthToken,onTokenRejected:handleServerTokenRejected,
                         onChangeToken:handleChangeServerToken,
+                        cacheGraph:cacheGraph,readCachedGraph:readCachedGraph,recordPanelState:recordPanelState,
                     }):navPanel.layer==='function'?React.createElement(FunctionLayerPanel,{
                         navPanel:navPanel,repositoryGraph:repositoryGraph,
                         theme:theme,
@@ -4709,6 +4772,7 @@ function App(){
                         serverAuthToken:serverAuthToken,tokenRejected:serverTokenRejected,
                         onCommitToken:commitServerAuthToken,onTokenRejected:handleServerTokenRejected,
                         onChangeToken:handleChangeServerToken,
+                        cacheGraph:cacheGraph,readCachedGraph:readCachedGraph,recordPanelState:recordPanelState,
                     }):React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
                         React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' Drill down ('+navPanel.layer+')'),
                         React.createElement('div',{className:'panel-subtitle',style:{marginBottom:8}},navPanel.coordinate?navPanel.coordinate.path:''),

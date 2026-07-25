@@ -74,6 +74,27 @@ Both were real bugs in the layered renderer, found only by looking at output:
    X over the graph. Lanes now sit to the right of the *entire* drawing, and
    the initial fit accounts for their width.
 
+## Verified in the running app
+
+`tests/function-layer-smoke.mjs` (MOO-71 Commit 8) drives the whole path
+through the real UI — repository → file → function → back — against
+`psf/requests`. Not part of the zero-setup `node --test` suite; it needs a
+running server plus a GitHub PAT and the server token:
+
+```
+node tests/function-layer-smoke.mjs http://localhost:3000/ <githubPat> <serverToken>
+```
+
+Latest run, drilling into `SessionRedirectMixin.resolve_redirects`:
+55 nodes, 3 dashed loop back-edges, 18 true/false branch labels, 1 `on <Error>`
+exception label, 0 Mermaid entities, 0 console errors. `img/function-layer-in-app.png`
+is that view inside the app.
+
+The back-navigation check asserts on *request counts*, not appearance: after
+repository → file → function → back, exactly one `/api/graph/file` request has
+been issued in total, proving the file view was restored from cache rather than
+re-analyzed.
+
 ## Known limitations, for MOO-44's Garrison matrix
 
 - **`for...else` is dropped upstream.** A `for` loop's `else` clause produces
