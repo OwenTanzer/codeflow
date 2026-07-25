@@ -95,6 +95,39 @@ repository → file → function → back, exactly one `/api/graph/file` request
 been issued in total, proving the file view was restored from cache rather than
 re-analyzed.
 
+## Failure isolation and diagnostics (MOO-71 Commit 10)
+
+Each stage of a function request reports a distinct `ErrorCategory`, so a
+failure names what actually broke rather than collapsing into a generic 500:
+
+| Stage | Category | Status |
+|---|---|---|
+| Repository not allowlisted / bad input / unresolved or ambiguous symbol | `unsupported_input` | 400/403/404 |
+| PR head moved since the parent graph loaded | `unsupported_input` | 409 |
+| GitHub fetch failed / rate limited | `github_access` | 502/429 |
+| Analysis exceeded its budget | `timeout` | 504 |
+| **Source has syntax errors** | `parser_failure` | 502 |
+| **Our offset conversion disagrees with CodeVisualizer's parse** | `malformed_analyzer_output` | 502 |
+| Anything genuinely unexpected | `internal_error` | 500 |
+
+The two bolded rows were previously one. `@codevisualizer/core` raises a single
+`FunctionRangeNotFoundError` for both, because tree-sitter is error-tolerant —
+it never throws on a syntax error, it returns a tree containing ERROR nodes, so
+unparseable source arrives as "no function matches that exact range" rather than
+as a parse error. Everything was therefore reported as *"Internal conversion
+error"*, telling users we had a bug when their file simply was not valid Python.
+`classifyFunctionRangeFailure` splits them using `tree.rootNode.hasError()` from
+the symbol index that already ran over the same source, so it costs no extra
+parse. The panel adapts its wording too: retrying is pointless for a parse
+failure and it says so.
+
+**Layer isolation** is structural rather than defensive: each layer is a
+separate panel with its own fetch and error state, and since MOO-71 Commit 8 the
+repository and file graphs are restored from cache on back-navigation without
+re-analysis — so a failing function request cannot disturb, invalidate, or
+require re-running the layers above it. `tests/function-layer-smoke.mjs` exercises
+that path end to end.
+
 ## Known limitations, for MOO-44's Garrison matrix
 
 - **`for...else` is dropped upstream.** A `for` loop's `else` clause produces
