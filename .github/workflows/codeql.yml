@@ -3,8 +3,9 @@ name: CodeQL
 on:
   push:
     branches: ["main"]
+  # MOO-71: no base filter, matching test.yml -- a stacked PR should get the
+  # same security analysis as one targeting main, not none.
   pull_request:
-    branches: ["main"]
 
 jobs:
   analyze:
