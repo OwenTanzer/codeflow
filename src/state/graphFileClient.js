@@ -34,13 +34,19 @@
 // this drift is actually possible) let the server reject a stale
 // drill-down instead.
 
-export class GraphFileClientError extends Error {
-  constructor(message, { status, category, diagnostics } = {}) {
-    super(message);
+// MOO-71 Commit 7: header construction and response mapping moved to
+// src/state/serverRequest.js so this client and the new function-layer one
+// share a single authenticated request helper rather than each building
+// `Authorization` itself. This module's own public surface
+// (buildGraphFileRequest/mapGraphFileResponse/fetchFileGraph/
+// GraphFileClientError) is unchanged -- tests/graph-file-client.test.mjs
+// passes unmodified, which is the proof the refactor is behavior-preserving.
+import { ServerRequestError, buildServerJsonRequest, mapServerJsonResponse, sendServerJsonRequest } from './serverRequest.js';
+
+export class GraphFileClientError extends ServerRequestError {
+  constructor(message, options) {
+    super(message, options);
     this.name = 'GraphFileClientError';
-    this.status = status;
-    this.category = category;
-    this.diagnostics = diagnostics || [];
   }
 }
 
@@ -69,17 +75,7 @@ export function buildGraphFileRequest({ owner, repo, resolvedSha, pr, sourceOwne
   } else {
     body.ref = resolvedSha;
   }
-  return {
-    url: '/api/graph/file',
-    init: {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + serverAuthToken,
-      },
-      body: JSON.stringify(body),
-    },
-  };
+  return buildServerJsonRequest({ path: '/api/graph/file', body, serverAuthToken });
 }
 
 /**
@@ -93,15 +89,7 @@ export function buildGraphFileRequest({ owner, repo, resolvedSha, pr, sourceOwne
  * @throws {GraphFileClientError}
  */
 export function mapGraphFileResponse(ok, status, body) {
-  if (!ok) {
-    const diagnostic = Array.isArray(body.diagnostics) ? body.diagnostics[0] : null;
-    throw new GraphFileClientError(body.error || `Request failed with status ${status}`, {
-      status,
-      category: diagnostic && diagnostic.category,
-      diagnostics: body.diagnostics,
-    });
-  }
-  return body;
+  return mapServerJsonResponse(ok, status, body, GraphFileClientError);
 }
 
 /**
@@ -110,7 +98,5 @@ export function mapGraphFileResponse(ok, status, body) {
  */
 export async function fetchFileGraph(input) {
   const { url, init } = buildGraphFileRequest(input);
-  const res = await fetch(url, init);
-  const body = await res.json().catch(() => ({}));
-  return mapGraphFileResponse(res.ok, res.status, body);
+  return sendServerJsonRequest({ url, init, ErrorClass: GraphFileClientError });
 }
