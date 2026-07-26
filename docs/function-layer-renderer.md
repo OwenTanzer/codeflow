@@ -116,10 +116,16 @@ it never throws on a syntax error, it returns a tree containing ERROR nodes, so
 unparseable source arrives as "no function matches that exact range" rather than
 as a parse error. Everything was therefore reported as *"Internal conversion
 error"*, telling users we had a bug when their file simply was not valid Python.
-`classifyFunctionRangeFailure` splits them using `tree.rootNode.hasError()` from
-the symbol index that already ran over the same source, so it costs no extra
-parse. The panel adapts its wording too: retrying is pointless for a parse
-failure and it says so.
+`classifyFunctionRangeFailure` splits them using `errorRanges` — byte ranges of
+every ERROR/MISSING node, collected by the symbol index from the same parse
+that already computes `tree.rootNode.hasError()`, so it costs no extra parse.
+The check is target-local: it looks for an error range overlapping the
+specific function's own `[startByte, endByte)`, not whether the file has a
+parse error anywhere. A file-wide check would mislabel a clean function's own
+bug as `parser_failure` merely because some unrelated function elsewhere in
+the file fails to parse. The panel adapts its wording too: retrying is
+pointless for a parse failure, it says so, and the Retry button itself is
+hidden in that case rather than left inviting a useless request.
 
 **Layer isolation** is structural rather than defensive: each layer is a
 separate panel with its own fetch and error state, and since MOO-71 Commit 8 the
