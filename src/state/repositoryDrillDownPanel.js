@@ -29,9 +29,25 @@ export function useRepositoryDrillDownPanel() {
   const history = historyRef.current;
 
   const openDrillDown = React.useCallback((event) => {
-    historyRef.current.push(
-      makeBreadcrumbEntry(event.targetLayer, event.coordinate, { label: event.coordinate.path })
-    );
+    // MOO-71 Commit 8: a function-layer entry is labelled by the symbol it
+    // actually opened, not by its file path -- several functions in one file
+    // would otherwise produce a breadcrumb trail of identical-looking
+    // segments ("sessions.py / sessions.py").
+    const label =
+      event.targetLayer === 'function' && event.coordinate.symbolPath && event.coordinate.symbolPath.length > 0
+        ? event.coordinate.symbolPath.join('.')
+        : event.coordinate.path;
+    historyRef.current.push(makeBreadcrumbEntry(event.targetLayer, event.coordinate, { label }));
+    forceRender();
+  }, []);
+
+  // MOO-71 Commit 8: how a panel records the state its history entry should
+  // be restored to -- the cache key of the graph it loaded, and the selected
+  // node. Deliberately records against whichever entry is current *now*, so
+  // a late-arriving response cannot write its state onto an entry the user
+  // has already navigated away from.
+  const recordPanelState = React.useCallback((patch) => {
+    historyRef.current.updateCurrent(patch);
     forceRender();
   }, []);
 
@@ -67,5 +83,6 @@ export function useRepositoryDrillDownPanel() {
     goBack,
     goForward,
     resetHistory,
+    recordPanelState,
   };
 }

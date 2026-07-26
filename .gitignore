@@ -38,3 +38,6 @@ Thumbs.db
 *_old.*
 *_copy.*
 *.swp
+
+# Regenerated on every tests/function-layer-smoke.mjs run (MOO-71 Commit 8)
+docs/img/smoke-*.png

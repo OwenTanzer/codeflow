@@ -116,3 +116,33 @@ test('adaptFunctionAnalysis: no dangling edges (every source/target references a
     assert.ok(nodeIds.has(edge.target), `edge target ${edge.target} is not a real node id`);
   }
 });
+
+// MOO-71 Commit 7: @codevisualizer/core runs every label through
+// StringProcessor.escapeString, which rewrites Mermaid-hostile characters into
+// Mermaid's numeric entities (`"` -> #quot;, `<` -> #60;, `>` -> #62;, backtick
+// -> #96;). Those are presentation escapes for a Mermaid code fence, and
+// GraphIR is supposed to carry semantics -- left in place, a real condition
+// displays as `value #62; limit`. Verified against the real analyzer rather
+// than a synthetic label, since the escaping happens upstream of this adapter.
+test('adaptFunctionAnalysis: decodes Mermaid escape entities so GraphIR labels carry real source text', async () => {
+  const { source, entrySymbol, flowchartIR } = await analyzeRealFunction('control_flow.py', ['process']);
+
+  // Precondition: the raw FlowchartIR really does contain the escaping. If
+  // upstream ever stops escaping, this assertion fails loudly rather than
+  // letting the decode below silently become dead code.
+  const rawLabels = flowchartIR.nodes.map((n) => n.label).join(' | ');
+  assert.match(rawLabels, /#quot;|#60;|#62;|#96;/, 'expected raw FlowchartIR labels to still be Mermaid-escaped');
+
+  const graph = adaptFunctionAnalysis({ context: CONTEXT, entrySymbol, source, flowchartIR, analyzer: ANALYZER });
+  const labels = graph.nodes.map((n) => n.label).join(' | ');
+
+  assert.doesNotMatch(labels, /#quot;|#60;|#62;|#96;/, `decoded labels should carry no Mermaid entities; got ${labels}`);
+  assert.ok(
+    graph.nodes.some((n) => n.label.includes('value > limit')),
+    'the while condition should read `value > limit`, not `value #62; limit`'
+  );
+  assert.ok(
+    graph.nodes.some((n) => n.label.includes('"')),
+    'the docstring statement should carry real double quotes'
+  );
+});
