@@ -63,6 +63,44 @@ test('selectAnalyzableFiles rejects the whole request when the file-count limit 
   );
 });
 
+// MOO-72 Commit 1A review (Blocker B): server/lib/config.js's MAX_REPO_FILES
+// default moved 500 -> 750 to match the old client-side browser path's
+// ANALYSIS_LIMITS.repoMax ceiling -- but that old path silently sampled down
+// to 750 files with a warning, while this route hard-rejects past the limit.
+// These boundary tests pin the new limit's edges directly (passing
+// maxRepoFiles: 750 explicitly, per this file's existing convention of never
+// reading from loadConfig) so a future accidental config change is caught
+// here rather than only in server-config.test.mjs's single defaults check.
+test('selectAnalyzableFiles accepts exactly 500 files under the new 750 limit', () => {
+  const entries = Array.from({ length: 500 }, (_, i) => blob(`file-${i}.js`, 10));
+  const { files } = selectAnalyzableFiles(entries, { ...LIMITS, maxRepoFiles: 750, maxRepoBytes: 1024 * 1024 });
+  assert.equal(files.length, 500);
+});
+
+test('selectAnalyzableFiles accepts 501 files under the new 750 limit (previously rejected at 500)', () => {
+  const entries = Array.from({ length: 501 }, (_, i) => blob(`file-${i}.js`, 10));
+  const { files } = selectAnalyzableFiles(entries, { ...LIMITS, maxRepoFiles: 750, maxRepoBytes: 1024 * 1024 });
+  assert.equal(files.length, 501);
+});
+
+test('selectAnalyzableFiles accepts exactly 750 files (the new limit itself)', () => {
+  const entries = Array.from({ length: 750 }, (_, i) => blob(`file-${i}.js`, 10));
+  const { files } = selectAnalyzableFiles(entries, { ...LIMITS, maxRepoFiles: 750, maxRepoBytes: 1024 * 1024 });
+  assert.equal(files.length, 750);
+});
+
+test('selectAnalyzableFiles rejects 751 files (one over the new limit)', () => {
+  const entries = Array.from({ length: 751 }, (_, i) => blob(`file-${i}.js`, 10));
+  assert.throws(
+    () => selectAnalyzableFiles(entries, { ...LIMITS, maxRepoFiles: 750, maxRepoBytes: 1024 * 1024 }),
+    (err) => {
+      assert.ok(err instanceof GithubFetchError);
+      assert.match(err.message, /751 analyzable files, over the configured limit of 750/);
+      return true;
+    }
+  );
+});
+
 test('selectAnalyzableFiles ignores non-blob tree entries (directories, submodules)', () => {
   const { files } = selectAnalyzableFiles(
     [

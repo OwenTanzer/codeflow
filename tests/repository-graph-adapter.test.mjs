@@ -25,7 +25,7 @@ const { normalizeContext } = await import('../src/graph-ir/githubContext.js');
 
 const SHA = 'a'.repeat(40);
 const CONTEXT = normalizeContext({ owner: 'octocat', repo: 'Hello-World', resolvedSha: SHA });
-const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.0.0' };
+const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.1.0' };
 
 async function analyzeFixture(name) {
   const root = join(__dirname, 'fixtures', name);
@@ -107,9 +107,21 @@ test('full function list and per-function call stats survive under graph metadat
   const analysisData = await analyzeFixture('golden-world');
   const graph = adaptRepositoryAnalysis({ analysisData, context: CONTEXT, analyzer: ANALYZER });
   assert.deepEqual(graph.metadata.functions, analysisData.functions);
-  assert.deepEqual(graph.metadata.fnStats, analysisData.fnStats);
   assert.ok(graph.metadata.functions.length > 0, 'fixture must have real functions to compare');
   assert.ok(graph.metadata.functions.every((fn) => typeof fn.file === 'string'), 'each function must carry its owning file path');
+
+  // MOO-72 Commit 1A review: fnStats deliberately does NOT carry `.code`
+  // verbatim -- it's an exact duplicate of the matching functions[] entry's
+  // own `.code`, stripped here to avoid serializing every function's
+  // source text twice (rehydrated client-side by
+  // repositoryGraphToViewModel.js, see tests/repository-graph-to-view-model.test.mjs).
+  const { code: _unusedA, ...analysisFnStatWithoutCode } = Object.values(analysisData.fnStats)[0];
+  const { code: _unusedB, ...adaptedFnStatWithoutCode } = Object.values(graph.metadata.fnStats)[0];
+  assert.deepEqual(adaptedFnStatWithoutCode, analysisFnStatWithoutCode, 'every field except code must survive verbatim');
+  assert.ok(
+    Object.values(graph.metadata.fnStats).every((stat) => !('code' in stat)),
+    'fnStats entries must not carry a code field at all'
+  );
 });
 
 test('node metadata carries forward function count, lines, and layer the existing renderer/detail-panel reads', async () => {

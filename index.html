@@ -2565,7 +2565,14 @@ function App(){
             })();
         }else{
             // Fetch from GitHub
-            GitHub.getFile(repoInfo.owner,repoInfo.repo,path).then(function(content){
+            // MOO-72 Commit 1A review: server-sourced repositoryGraph never
+            // ships file content (see repositoryGraphToViewModel.js), so
+            // this fallback now runs for every GitHub-sourced preview, not
+            // rarely. Without pinning to the same revision the analysis
+            // actually ran against, the graph can represent commit A while
+            // the preview silently shows a later commit B's content.
+            var previewRef=repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha;
+            GitHub.getFile(repoInfo.owner,repoInfo.repo,path,previewRef).then(function(content){
                 if(content){
                     setFilePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
                 }else{
@@ -4115,7 +4122,7 @@ function App(){
             });
         }).then(function(dataObj){
             if(!dataObj||!isCurrentAnalysisGeneration(generation))return null;
-            var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:context,analyzer:{name:'codeflow-repository-adapter',version:'1.0.0'}});
+            var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:context,analyzer:{name:'codeflow-repository-adapter',version:'1.1.0'}});
             if(!isCurrentAnalysisGeneration(generation))return null;
             setData(dataObj);
             setRepositoryGraph(graph);

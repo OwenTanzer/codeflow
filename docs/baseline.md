@@ -958,6 +958,66 @@ placeholder panel; the new endpoint's timeout/rate-limit paths) needs a
 live GitHub credential to exercise end-to-end, same manual-precondition
 category as `tests/server-smoke.mjs`'s other GitHub-requiring steps.
 
+## MOO-72 Commit 1A review — parser capability on the GitHub-backed server path
+
+`server/lib/github-analyzer-bridge.js` (the `/api/graph/repository` route's
+backing pipeline) stubs `globalThis.TreeSitter`/`Babel` to `undefined` before
+importing `src/analyzer.js`, same as every other Node-side consumer
+documented above — but as of this commit it loads the real `acorn` npm
+package (pure JS, zero native deps) instead of stubbing that too:
+`globalThis.acorn = acorn` (an `import * as acorn from 'acorn'`, matching
+the shape `Parser`'s ambient-global reads already expect —
+`acorn.parse(...)`).
+
+This is not a new tradeoff — `server/lib/analyzer-bridge.js`'s `/api/analyze`
+route made the identical TreeSitter/Babel/acorn-stub choice starting Commit
+6, and the whole Node test suite already ran this way. This commit applies
+that same tradeoff to a bigger surface (a whole repository instead of one
+file/directory), and additionally narrows the gap by adding acorn.
+
+**What loading acorn fixes**, confirmed via
+`tests/parser-capability-acorn.test.mjs` (a differential test toggling
+`globalThis.acorn` between calls, not two separate process runs):
+- Plain `.js`/`.mjs`/`.cjs` function/class discovery moves from a per-line
+  regex to real AST parsing — catches constructs the regex fallback
+  provably cannot (e.g. a multi-line arrow-function parameter list; the line
+  regex requires the whole `(...) =>` shape on one physical line).
+- JS call-edge detection also moves from an unstripped token heuristic to
+  AST-based detection, removing false positives from calls that only appear
+  inside string/comment text.
+- Incidentally, even for JSX (which acorn cannot parse — see below), having
+  acorn loaded routes `Parser.extract` into the JS-specific `extractWithRegex`
+  fallback instead of the generic multi-language `extractOtherLanguages`
+  bucket. The generic bucket only accidentally catches JS via patterns meant
+  for other languages (e.g. PHP's `function name(`) and has no `isExported`
+  detection at all; the JS-specific fallback does. This was found while
+  writing the differential test, not previously documented.
+
+**What remains a real, confirmed gap** (tracked as follow-up, not silently
+absorbed by this commit):
+- `.jsx`/`.ts`/`.tsx` files still get no true AST parsing on the server
+  path — acorn alone cannot parse JSX or TypeScript syntax, and `Babel` (the
+  classic `@babel/standalone` browser-global shape `Parser` calls,
+  `Babel.transform(code, {presets:['react','typescript'], ...})`) is not
+  loaded. `@babel/core` doesn't have a drop-in equivalent to that call
+  shape; restoring this would mean depending on `@babel/standalone` itself
+  (Node-compatible, heavier) or building a small adapter over
+  `@babel/core` + `@babel/preset-react`/`@babel/preset-typescript`.
+- Python call-edge detection still uses the token-heuristic fallback
+  instead of real tree-sitter CST scope-awareness, even though the
+  Node-native runtime for this already exists in this exact repo
+  (`server/lib/pythonSymbolIndex.js`, real `web-tree-sitter` +
+  `tree-sitter-wasms`, no CDN/browser globals) and `tree-sitter-wasms`
+  already vendors compiled JS/TypeScript/TSX grammars too — unused today.
+  Wiring this into `Parser.findCalls`'s tree-sitter branch means either a
+  `globalThis.TreeSitter`-shaped shim proxying to `web-tree-sitter`, or
+  refactoring `Parser` to accept an injectable parser loader instead of
+  only reading the ambient global.
+- Every other language's function discovery and call-edge detection was
+  regex/heuristic-based even in the original browser path (tree-sitter
+  grammars for them were listed but never actually loaded) — unaffected by
+  any of this, not a regression.
+
 ## What this baseline does not cover
 
 - Browser-only behavior (D3 rendering, drag/zoom/click interactions, local

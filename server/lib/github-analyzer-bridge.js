@@ -15,9 +15,20 @@
 // resolved ref's tree) instead of the Contents API's own ref resolution,
 // which also sidesteps needing to export more analyzer-internal URL
 // helpers just for this.
+// MOO-72 Commit 1A review (Blocker A): acorn is real, Node-compatible, pure
+// JS with zero native deps -- loading it here (rather than stubbing it to
+// undefined like TreeSitter/Babel) fixes plain .js/.mjs/.cjs function/class
+// discovery and enables AST-based call detection for those files instead of
+// falling back to the unstripped token heuristic. It does NOT parse JSX/TS
+// syntax on its own -- .jsx/.ts/.tsx files still need Babel to strip that
+// syntax first, so TreeSitter/Babel stay stubbed; see docs/baseline.md for
+// the full remaining-gap writeup (Python/JS tree-sitter call detection,
+// JSX/TS AST parsing).
+import * as acorn from 'acorn';
+
 if (!('TreeSitter' in globalThis)) globalThis.TreeSitter = undefined;
 if (!('Babel' in globalThis)) globalThis.Babel = undefined;
-if (!('acorn' in globalThis)) globalThis.acorn = undefined;
+if (!('acorn' in globalThis)) globalThis.acorn = acorn;
 
 const { GitHub, Parser, shouldExcludeFile, shouldIgnoreDirectory, buildAnalysisData, compileExcludePatterns } = await import(
   '../../src/analyzer.js'

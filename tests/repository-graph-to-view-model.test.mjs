@@ -26,7 +26,7 @@ const { normalizeContext } = await import('../src/graph-ir/githubContext.js');
 
 const SHA = 'a'.repeat(40);
 const CONTEXT = normalizeContext({ owner: 'octocat', repo: 'Hello-World', resolvedSha: SHA });
-const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.0.0' };
+const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.1.0' };
 
 async function analyzeFixture(name) {
   const root = join(__dirname, 'fixtures', name);
@@ -56,7 +56,23 @@ test('files: path/name/folder/layer/lines/complexity/parserProvenance/dependenci
   }
 });
 
-test('connections: source/target/fn/count survive the round trip (as real file paths, not node ids)', async () => {
+// MOO-72 Commit 1A review: a `Set` of `fn:count` pairs can pass with a
+// swapped source/target (since source/target were never part of the key),
+// and a `Set` collapses genuine duplicate connections (e.g. two distinct
+// file pairs that happen to call the same function the same number of
+// times) into one, silently hiding a dropped connection. Canonicalize each
+// connection with every distinguishing field and compare sorted multisets
+// (arrays, not Sets) instead.
+// Normalizes `kind`/`functionKey` the same way the adapter intentionally
+// does (repositoryGraphAdapter.js: `conn.kind || 'calls'`,
+// `conn.functionKey || null`) so this comparison isn't tripped up by that
+// deliberate normalization -- the original analysisData.connections leaves
+// call-graph edges' `kind`/`functionKey` unset entirely.
+function canonicalizeConnection(c) {
+  return `${c.source}|${c.target}|${c.kind || 'calls'}|${c.functionKey || null}|${c.fn}|${c.count}`;
+}
+
+test('connections: source/target/kind/functionKey/fn/count survive the round trip as a multiset (as real file paths, not node ids)', async () => {
   const analysisData = await analyzeFixture('golden-world');
   const graph = adaptRepositoryAnalysis({ analysisData, context: CONTEXT, analyzer: ANALYZER });
   const viewModel = repositoryGraphToViewModel(graph);
@@ -67,13 +83,10 @@ test('connections: source/target/fn/count survive the round trip (as real file p
     assert.ok(paths.has(conn.source), `connection source ${conn.source} must be a real file path, not a node id`);
     assert.ok(paths.has(conn.target), `connection target ${conn.target} must be a real file path, not a node id`);
   }
-  // Every original connection's (fn, count) pair must appear somewhere in
-  // the reconstructed list -- order isn't guaranteed to match since the
-  // adapter/mapper don't promise stable ordering.
-  const reconstructedPairs = new Set(viewModel.connections.map((c) => `${c.fn}:${c.count}`));
-  for (const original of analysisData.connections) {
-    assert.ok(reconstructedPairs.has(`${original.fn}:${original.count}`), `connection ${original.fn}:${original.count} must survive`);
-  }
+
+  const originalKeys = analysisData.connections.map(canonicalizeConnection).sort();
+  const reconstructedKeys = viewModel.connections.map(canonicalizeConnection).sort();
+  assert.deepEqual(reconstructedKeys, originalKeys, 'the full multiset of connections (including duplicates and correct source/target pairing) must survive the round trip');
 });
 
 test('fnStats and functions survive verbatim (needed by the file-detail Functions card)', async () => {
@@ -82,7 +95,19 @@ test('fnStats and functions survive verbatim (needed by the file-detail Function
   const viewModel = repositoryGraphToViewModel(graph);
 
   assert.deepEqual(viewModel.fnStats, analysisData.fnStats);
+  assert.ok(Object.keys(analysisData.fnStats).length > 0, 'fixture must have real fnStats to compare');
+
+  // MOO-72 Commit 1A review: a bare length check can pass even if the
+  // reconstructed functions are a different set (e.g. duplicates, or one
+  // function's full record swapped for another's) -- deep-compare each
+  // function by its stable key instead.
   assert.equal(viewModel.functions.length, analysisData.functions.length);
+  const originalByKey = new Map(analysisData.functions.map((fn) => [fn.key, fn]));
+  const reconstructedByKey = new Map(viewModel.functions.map((fn) => [fn.key, fn]));
+  assert.equal(reconstructedByKey.size, originalByKey.size, 'no duplicate or dropped function keys');
+  for (const [key, original] of originalByKey) {
+    assert.deepEqual(reconstructedByKey.get(key), original, `function ${key} must survive verbatim`);
+  }
 });
 
 test('repository-wide summaries (stats, patterns, security, duplicates, dead functions, architecture diagram, folders, tree, excludePatterns) survive', async () => {

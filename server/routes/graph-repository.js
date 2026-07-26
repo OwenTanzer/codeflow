@@ -18,7 +18,7 @@ import { GRAPH_IR_SCHEMA_VERSION } from '../../src/graph-ir/graphIR.js';
 import { AdapterError, buildAdapterResult, AdapterResultError, sanitizeDiagnostic } from '../../src/graph-ir/adapterResult.js';
 import { buildCacheKey } from '../../src/graph-ir/cacheKey.js';
 
-const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.0.0' };
+const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.1.0' };
 
 function sendJson(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });

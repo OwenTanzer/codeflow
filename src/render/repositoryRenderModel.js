@@ -37,7 +37,11 @@ function fromGraphIR(graph, folderFilter) {
       folder: (n.metadata && n.metadata.folder) || 'root',
       fnCount: (n.metadata && n.metadata.functionCount) || 0,
       layer: (n.metadata && n.metadata.layer) || 'util',
-      churn: (n.metadata && n.metadata.churn) || 0,
+      // MOO-72 Commit 1A review: `|| 0` was silently coercing a real
+      // "not computed" null (server-sourced repositories don't fetch
+      // per-file commit history) into a fabricated zero -- the exact bug
+      // already fixed in repositoryGraphAdapter.js, leaking back in here.
+      churn: n.metadata ? n.metadata.churn ?? null : null,
     });
   });
 
@@ -73,7 +77,12 @@ function fromLegacyAnalysisData(data, folderFilter) {
     folder: f.folder,
     fnCount: f.functions.length,
     layer: f.layer,
-    churn: f.churn || 0,
+    // MOO-72 Commit 1A review: aligned with fromGraphIR's null-preserving
+    // semantics above for consistency -- local/ZIP-sourced churn is always
+    // a real computed number today, so this is a no-op in practice, but
+    // keeps both branches honest about "not computed" vs "computed zero"
+    // if that ever changes.
+    churn: f.churn ?? null,
   }));
   const linkMap = new Map();
   data.connections.forEach((c) => {

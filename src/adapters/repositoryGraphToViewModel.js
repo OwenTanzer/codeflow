@@ -24,9 +24,23 @@ export function repositoryGraphToViewModel(graph) {
   const allFunctions = metadata.functions || [];
 
   const functionsByFile = new Map();
+  const functionsByKey = new Map();
   for (const fn of allFunctions) {
     if (!functionsByFile.has(fn.file)) functionsByFile.set(fn.file, []);
     functionsByFile.get(fn.file).push(fn);
+    if (fn.key) functionsByKey.set(fn.key, fn);
+  }
+
+  // MOO-72 Commit 1A review: the server strips `.code` from each fnStats
+  // entry before sending it (repositoryGraphAdapter.js's
+  // stripCodeFromFnStats) since it's an exact duplicate of the matching
+  // `functions[]` entry's own `.code` -- rehydrated here, at the view-model
+  // boundary, so the legacy Functions card/detailed export (which read
+  // `fnStats[key].code` directly) see the same shape they always have.
+  const fnStats = Object.create(null);
+  for (const [key, stat] of Object.entries(metadata.fnStats || {})) {
+    const fn = functionsByKey.get(key);
+    fnStats[key] = fn ? { ...stat, code: fn.code } : stat;
   }
 
   const pathByNodeId = new Map(graph.nodes.map((n) => [n.id, n.coordinate ? n.coordinate.path : null]));
@@ -65,7 +79,7 @@ export function repositoryGraphToViewModel(graph) {
     files,
     functions: allFunctions,
     connections,
-    fnStats: metadata.fnStats || {},
+    fnStats,
     folders: metadata.folders || [],
     tree: metadata.tree,
     issues: metadata.issues || [],

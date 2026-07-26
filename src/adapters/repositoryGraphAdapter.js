@@ -20,6 +20,28 @@ import { makeCoordinate } from '../graph-ir/sourceCoordinate.js';
 import { makeGraphIR } from '../graph-ir/graphIR.js';
 
 /**
+ * Drop the duplicated `.code` field from each fnStats entry -- the exact
+ * same source snippet already lives on the matching `functions[]` entry.
+ * Shallow-cloned per entry rather than mutating `analysisData.fnStats` in
+ * place, since local/ZIP analysis reads that same object directly (not
+ * through this adapter) and must keep its own `.code` field.
+ * @param {object} fnStats
+ * @returns {object}
+ */
+function stripCodeFromFnStats(fnStats) {
+  // Object.create(null), not {}, matching src/analyzer.js's own
+  // `fnStats=Object.create(null)` -- purely a prototype-identity detail
+  // (irrelevant once this crosses JSON.stringify over the wire), kept only
+  // so this stays a faithful clone rather than a different shape.
+  const stripped = Object.create(null);
+  for (const [key, stat] of Object.entries(fnStats || {})) {
+    const { code, ...rest } = stat;
+    stripped[key] = rest;
+  }
+  return stripped;
+}
+
+/**
  * @param {import('../graph-ir/githubContext.js').AnalysisContext} context
  * @param {string} path
  * @returns {import('../graph-ir/sourceCoordinate.js').SourceCoordinate}
@@ -175,7 +197,16 @@ export function adaptRepositoryAnalysis({ analysisData, context, analyzer }) {
       // constantly-used part of the UI, not an optional enrichment like
       // churn.
       functions: analysisData.functions,
-      fnStats: analysisData.fnStats,
+      // MOO-72 Commit 1A review: `fnStats[key].code` duplicates the exact
+      // same source snippet already present on the matching `functions[]`
+      // entry (both come from the same Parser.extract() result --
+      // createFunctionStat copies `fn.code` verbatim). Stripped here so the
+      // response doesn't serialize every function's source text twice;
+      // repositoryGraphToViewModel.js rehydrates it client-side from
+      // `functions[]` (matched by `.key`) so the legacy "Functions" card and
+      // detailed export -- which read `fnStats[key].code` -- see no
+      // difference.
+      fnStats: stripCodeFromFnStats(analysisData.fnStats),
     },
   });
 }

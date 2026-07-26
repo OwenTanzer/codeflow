@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@codevisualizer/core": "file:.vendor/codevisualizer/packages/core",
+    "acorn": "^8.17.0",
     "tree-sitter-wasms": "0.1.13",
     "ts-graphviz": "3.0.7",
     "web-tree-sitter": "0.20.8"

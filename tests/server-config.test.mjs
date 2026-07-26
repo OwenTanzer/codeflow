@@ -57,7 +57,9 @@ test('loadConfig succeeds and applies defaults when all required config is prese
     assert.deepEqual(config.allowedOwners, ['octocat']);
     assert.equal(config.rateLimitPerMinute, 30);
     assert.equal(config.maxRequestBodyBytes, 16 * 1024);
-    assert.equal(config.maxRepoFiles, 500);
+    // MOO-72 Commit 1A review: 750, matching the replaced client-side
+    // browser path's ceiling (index.html's ANALYSIS_LIMITS.repoMax).
+    assert.equal(config.maxRepoFiles, 750);
     assert.equal(config.maxFileBytes, 1 * 1024 * 1024);
     assert.equal(config.maxRepoBytes, 25 * 1024 * 1024);
   });
