@@ -3,8 +3,13 @@ name: Test
 on:
   push:
     branches: ["main"]
+  # MOO-71: no base filter. This previously only ran for PRs targeting `main`,
+  # so a stacked PR (one opened against another in-review branch, which is how
+  # this project sequences dependent commits -- see MOO-71 Stage 1 and Stage 4)
+  # reported no checks at all and had to be verified by hand. Running on every
+  # pull request costs nothing here and means a stacked PR is verified before
+  # it is rebased onto main rather than after.
   pull_request:
-    branches: ["main"]
 
 jobs:
   test:

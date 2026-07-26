@@ -1540,10 +1540,19 @@ function FunctionLayerPanel(props){
             React.createElement('div',{style:{marginBottom:6}},
                 graphError.message,
                 graphError.status===404&&' — this symbol did not resolve to a function in that file.',
-                graphError.status===400&&' — the symbol was ambiguous, so it was rejected rather than guessed.'
+                graphError.status===400&&' — the symbol was ambiguous, so it was rejected rather than guessed.',
+                // MOO-71 Commit 10: distinguish "your source doesn't parse"
+                // from "our analyzer broke" -- retrying is useless for the
+                // former and the wording should not imply otherwise.
+                graphError.category==='parser_failure'&&' Retrying will not help until the file parses.',
+                graphError.category==='malformed_analyzer_output'&&' This is a bug in the analyzer, not in your code.'
             ),
             React.createElement('div',{style:{display:'flex',gap:8}},
-                React.createElement('button',{className:'top-btn',onClick:function(){setRetryCount(function(c){return c+1;});}},iconLabel('refresh','Retry')),
+                // A parser_failure means the source itself doesn't parse, so
+                // retrying would just repeat the same rejection -- hide the
+                // button rather than leave it inviting a request that cannot
+                // succeed, per the diagnostic message immediately above it.
+                graphError.category!=='parser_failure'&&React.createElement('button',{className:'top-btn',onClick:function(){setRetryCount(function(c){return c+1;});}},iconLabel('refresh','Retry')),
                 React.createElement('button',{className:'top-btn',onClick:onChangeToken},'Change token')
             )
         ),

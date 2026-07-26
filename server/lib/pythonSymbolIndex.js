@@ -63,6 +63,27 @@ export function moduleIdFromPath(path) {
   return segments.join('.');
 }
 
+// MOO-71 Commit 10 (review follow-up): byte ranges of every ERROR/MISSING
+// node in the tree, so a caller can ask "is there a parse error inside this
+// specific byte range" instead of only "does this file have a parse error
+// anywhere" -- tree.rootNode.hasError() is file-wide, so an unrelated syntax
+// error elsewhere in the file would otherwise make every function in the
+// file look unparseable, masking a real bug in a function that itself parses
+// fine. Only walked when hasError() is already true, so a clean file (the
+// common case) pays nothing extra.
+function collectErrorRanges(node, out) {
+  // web-tree-sitter's isMissing/hasError are methods, not properties -- a
+  // missing-call reference is always truthy and would silently treat every
+  // node as an error range.
+  if (node.type === 'ERROR' || node.isMissing()) {
+    out.push({ startIndex: node.startIndex, endIndex: node.endIndex });
+  }
+  for (let i = 0; i < node.childCount; i++) {
+    collectErrorRanges(node.child(i), out);
+  }
+  return out;
+}
+
 function rangeOf(node) {
   return {
     startLine: node.startPosition.row + 1,
@@ -161,11 +182,14 @@ function walkNode(node, ctx, scopeChain, enclosingKind, entries) {
  * @param {object} input
  * @param {string} input.path - repo-root-relative file path
  * @param {string} input.content - the file's full source text
- * @returns {Promise<{path: string, moduleId: string, parseErrors: boolean, entries: object[]}>}
+ * @returns {Promise<{path: string, moduleId: string, parseErrors: boolean, errorRanges: {startIndex: number, endIndex: number}[], entries: object[]}>}
  */
 export async function indexPythonSymbols({ path, content }) {
   const parser = await getParser();
   const tree = parser.parse(content);
+  const parseErrors = tree.rootNode.hasError();
+  // Only walked on the error path -- see collectErrorRanges' own comment.
+  const errorRanges = parseErrors ? collectErrorRanges(tree.rootNode, []) : [];
   // Normalized once, at the source, so every entry's `path` is consistently
   // POSIX-form regardless of the caller's own path-separator convention
   // (e.g. Node's `path.join` on Windows produces backslashes) -- found via
@@ -200,7 +224,8 @@ export async function indexPythonSymbols({ path, content }) {
   return {
     path: normalizedPath,
     moduleId,
-    parseErrors: tree.rootNode.hasError(),
+    parseErrors,
+    errorRanges,
     entries,
   };
 }
