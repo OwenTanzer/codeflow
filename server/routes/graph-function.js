@@ -83,20 +83,29 @@ function sendError(res, status, message, category, requestId, options) {
  * the two indistinguishable in logs — the opposite of what Commit 10's
  * "logs identify parser failure separately" asks for.
  *
- * `sourceHasParseErrors` comes from the symbol index that already ran over this
- * same source (`tree.rootNode.hasError()`), so this needs no extra parse.
+ * Deliberately target-local rather than file-wide: an early version checked
+ * `tree.rootNode.hasError()` for the whole file, which meant an unrelated
+ * syntax error anywhere in the file would label *every* function's
+ * FunctionRangeNotFoundError as parser_failure -- including one whose own
+ * range parses cleanly, concealing a genuine offset-conversion bug behind an
+ * unrelated typo elsewhere in the file. `errorRanges` (from the symbol index,
+ * which already walked the tree for `tree.rootNode.hasError()`) lets this
+ * check only the target function's own [startByte, endByte) span.
  *
  * Extracted and exported so both branches are unit-testable without a live
  * GitHub credential, matching this module's existing `resolveFunctionSymbol`.
  *
  * @param {object} input
- * @param {boolean} input.sourceHasParseErrors
+ * @param {{startIndex: number, endIndex: number}[]} input.errorRanges
  * @param {number} input.startByte
  * @param {number} input.endByte
  * @returns {{status: number, category: string, message: string}}
  */
-export function classifyFunctionRangeFailure({ sourceHasParseErrors, startByte, endByte }) {
-  if (sourceHasParseErrors) {
+export function classifyFunctionRangeFailure({ errorRanges, startByte, endByte }) {
+  const targetRangeHasParseError = errorRanges.some(
+    (range) => range.startIndex < endByte && range.endIndex > startByte
+  );
+  if (targetRangeHasParseError) {
     // The source is at fault. Same category pyan3's adapter already uses for
     // the same situation at the file layer (server/lib/pyan3Adapter.js), so
     // both analyzers report an unparseable file identically.
@@ -242,16 +251,18 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable 
       // Symbol resolution: identify the exact function via MOO-70's
       // canonical symbol index, never a position/name-based guess.
       let entry;
-      // MOO-71 Commit 10: whether tree-sitter found syntax errors anywhere in
-      // this file. Captured here (the symbol index already computes it via
-      // tree.rootNode.hasError()) because it is the only evidence available for
-      // telling an unparseable source apart from a genuine bug on our side when
-      // CodeVisualizer later fails to find the function -- see the
-      // FunctionRangeNotFoundError handler below.
-      let sourceHasParseErrors = false;
+      // MOO-71 Commit 10: byte ranges of every parse error in this file.
+      // Captured here (the symbol index already walks the tree for
+      // tree.rootNode.hasError()) because it is the only evidence available
+      // for telling an unparseable source apart from a genuine bug on our
+      // side when CodeVisualizer later fails to find the function -- see the
+      // FunctionRangeNotFoundError handler below. Kept as ranges rather than
+      // one file-wide boolean so that check can be scoped to the target
+      // function's own byte span, not "anywhere in the file".
+      let errorRanges = [];
       try {
         const indexed = await indexPythonSymbols({ path: resolved.path, content: resolved.content });
-        sourceHasParseErrors = !!indexed.parseErrors;
+        errorRanges = indexed.errorRanges;
         const result = resolveFunctionSymbol(indexed.entries, request.symbolPath);
         if (result.outcome === 'unresolved') {
           log.warn('rejected graph-function request: no matching symbol', { path: request.path, symbolPath: request.symbolPath });
@@ -296,17 +307,19 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable 
           // "Internal conversion error", i.e. we told the user we had a bug
           // when their file simply wasn't valid Python.
           //
-          // `sourceHasParseErrors` (tree.rootNode.hasError(), from the symbol
-          // index that already ran over this same source) is the evidence that
-          // separates them:
-          //   - errors present  -> the source is at fault. parser_failure, the
-          //     same category pyan3's adapter already uses for the same
-          //     situation at the file layer.
-          //   - no errors       -> the file parses fine and our offset
-          //     conversion genuinely disagrees with CodeVisualizer's tree.
-          //     That is our bug, and keeps malformed_analyzer_output.
+          // `errorRanges` (from the symbol index, which already walked the
+          // tree for tree.rootNode.hasError()) is the evidence that separates
+          // them, scoped to this target function's own byte range rather than
+          // the whole file:
+          //   - a parse error inside [startByte, endByte) -> the source is at
+          //     fault. parser_failure, the same category pyan3's adapter
+          //     already uses for the same situation at the file layer.
+          //   - none in range   -> the target function parses fine and our
+          //     offset conversion genuinely disagrees with CodeVisualizer's
+          //     tree. That is our bug, and keeps malformed_analyzer_output --
+          //     even if some *other* function in the file fails to parse.
           const classified = classifyFunctionRangeFailure({
-            sourceHasParseErrors,
+            errorRanges,
             startByte: err.startByte,
             endByte: err.endByte,
           });

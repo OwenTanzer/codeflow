@@ -1548,7 +1548,11 @@ function FunctionLayerPanel(props){
                 graphError.category==='malformed_analyzer_output'&&' This is a bug in the analyzer, not in your code.'
             ),
             React.createElement('div',{style:{display:'flex',gap:8}},
-                React.createElement('button',{className:'top-btn',onClick:function(){setRetryCount(function(c){return c+1;});}},iconLabel('refresh','Retry')),
+                // A parser_failure means the source itself doesn't parse, so
+                // retrying would just repeat the same rejection -- hide the
+                // button rather than leave it inviting a request that cannot
+                // succeed, per the diagnostic message immediately above it.
+                graphError.category!=='parser_failure'&&React.createElement('button',{className:'top-btn',onClick:function(){setRetryCount(function(c){return c+1;});}},iconLabel('refresh','Retry')),
                 React.createElement('button',{className:'top-btn',onClick:onChangeToken},'Change token')
             )
         ),

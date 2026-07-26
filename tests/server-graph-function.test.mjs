@@ -147,9 +147,19 @@ async function verifyAgainstRealParse(fixtureName) {
 }
 
 // --- classifyFunctionRangeFailure (MOO-71 Commit 10) ---
+//
+// errorRanges is target-local, not file-wide: a range that overlaps
+// [startByte, endByte) means *this function's own span* has a parse error,
+// not merely that the file has one somewhere. An earlier version took a
+// single file-wide `sourceHasParseErrors` boolean, which meant an unrelated
+// syntax error anywhere in the file would mislabel every function's failure
+// as parser_failure -- including one whose own range parses cleanly, hiding
+// a real offset-conversion bug behind an unrelated typo elsewhere in the
+// file. See the last two tests below for that exact scenario against a real
+// fixture.
 
-test('classifyFunctionRangeFailure: a file with syntax errors is parser_failure, not an internal error', () => {
-  const result = classifyFunctionRangeFailure({ sourceHasParseErrors: true, startByte: 0, endByte: 10 });
+test('classifyFunctionRangeFailure: a parse error overlapping the target range is parser_failure, not an internal error', () => {
+  const result = classifyFunctionRangeFailure({ errorRanges: [{ startIndex: 0, endIndex: 10 }], startByte: 0, endByte: 10 });
 
   assert.equal(result.category, 'parser_failure');
   assert.equal(result.status, 502);
@@ -157,8 +167,8 @@ test('classifyFunctionRangeFailure: a file with syntax errors is parser_failure,
   assert.doesNotMatch(result.message, /internal/i, 'must not tell the user we have a bug when their file does not parse');
 });
 
-test('classifyFunctionRangeFailure: a cleanly-parsing file means the offset conversion is genuinely our bug', () => {
-  const result = classifyFunctionRangeFailure({ sourceHasParseErrors: false, startByte: 12, endByte: 99 });
+test('classifyFunctionRangeFailure: no error range overlapping the target means the offset conversion is genuinely our bug', () => {
+  const result = classifyFunctionRangeFailure({ errorRanges: [], startByte: 12, endByte: 99 });
 
   assert.equal(result.category, 'malformed_analyzer_output');
   assert.equal(result.status, 502);
@@ -166,9 +176,18 @@ test('classifyFunctionRangeFailure: a cleanly-parsing file means the offset conv
   assert.match(result.message, /\[12, 99\]/, 'the real byte range is retained for debugging');
 });
 
+test('classifyFunctionRangeFailure: a parse error elsewhere in the file, outside the target range, does not count', () => {
+  // The error sits entirely before the target function's own range -- e.g.
+  // an unrelated broken function earlier in the file. This must NOT be
+  // classified as parser_failure just because *some* error range exists.
+  const result = classifyFunctionRangeFailure({ errorRanges: [{ startIndex: 0, endIndex: 10 }], startByte: 50, endByte: 99 });
+
+  assert.equal(result.category, 'malformed_analyzer_output');
+});
+
 test('classifyFunctionRangeFailure: the two situations are distinguishable, which is the whole point', () => {
-  const bad = classifyFunctionRangeFailure({ sourceHasParseErrors: true, startByte: 0, endByte: 1 });
-  const ours = classifyFunctionRangeFailure({ sourceHasParseErrors: false, startByte: 0, endByte: 1 });
+  const bad = classifyFunctionRangeFailure({ errorRanges: [{ startIndex: 0, endIndex: 1 }], startByte: 0, endByte: 1 });
+  const ours = classifyFunctionRangeFailure({ errorRanges: [], startByte: 0, endByte: 1 });
 
   assert.notEqual(bad.category, ours.category);
   assert.notEqual(bad.message, ours.message);
@@ -181,11 +200,12 @@ test('classifyFunctionRangeFailure: the two situations are distinguishable, whic
 // in exactly the handler that now calls classifyFunctionRangeFailure. If
 // upstream ever starts throwing a distinct parse error instead, this fails
 // loudly rather than leaving the branch quietly unreachable.
-test('a real syntax-error file reports parseErrors and makes the analyzer throw FunctionRangeNotFoundError', async () => {
+test('a real syntax-error file reports parseErrors/errorRanges and makes the analyzer throw FunctionRangeNotFoundError', async () => {
   const source = readFileSync(join(FIXTURES, 'syntax_error.py'), 'utf8');
   const indexed = await indexPythonSymbols({ path: 'syntax_error.py', content: source });
 
   assert.equal(indexed.parseErrors, true, 'the symbol index must detect the syntax error');
+  assert.ok(indexed.errorRanges.length > 0, 'errorRanges must be populated when the file has a parse error');
 
   const { initPythonLanguageService, analyzePythonFunction } = require('@codevisualizer/core');
   await initPythonLanguageService();
@@ -197,8 +217,9 @@ test('a real syntax-error file reports parseErrors and makes the analyzer throw 
     }
   );
 
-  // And the classification of that real pairing is the user-facing one.
-  assert.equal(classifyFunctionRangeFailure({ sourceHasParseErrors: indexed.parseErrors, startByte: 0, endByte: 1 }).category, 'parser_failure');
+  // And the classification of that real pairing, scoped to the whole file's
+  // range (which necessarily overlaps the error), is the user-facing one.
+  assert.equal(classifyFunctionRangeFailure({ errorRanges: indexed.errorRanges, startByte: 0, endByte: source.length }).category, 'parser_failure');
 });
 
 test('a cleanly-parsing file reports no parse errors, so a failure there would classify as our bug', async () => {
@@ -206,5 +227,34 @@ test('a cleanly-parsing file reports no parse errors, so a failure there would c
   const indexed = await indexPythonSymbols({ path: 'calls.py', content: source });
 
   assert.equal(indexed.parseErrors, false);
-  assert.equal(classifyFunctionRangeFailure({ sourceHasParseErrors: indexed.parseErrors, startByte: 0, endByte: 1 }).category, 'malformed_analyzer_output');
+  assert.deepEqual(indexed.errorRanges, []);
+  assert.equal(classifyFunctionRangeFailure({ errorRanges: indexed.errorRanges, startByte: 0, endByte: 1 }).category, 'malformed_analyzer_output');
+});
+
+// The exact regression the review caught: syntax_error.py has a broken
+// `broken(` function followed by a fully valid `solo()` function. A
+// file-wide check would label a hypothetical FunctionRangeNotFoundError on
+// `solo` as parser_failure purely because `broken` exists elsewhere in the
+// file -- concealing a genuine bug behind an unrelated typo. Target-local
+// errorRanges must not make that mistake.
+test('a parse error confined to one function does not mislabel a failure in a different, cleanly-parsing function', async () => {
+  const source = readFileSync(join(FIXTURES, 'syntax_error.py'), 'utf8');
+  const indexed = await indexPythonSymbols({ path: 'syntax_error.py', content: source });
+  const solo = indexed.entries.find((e) => e.shortName === 'solo');
+  assert.ok(solo, 'fixture must define solo()');
+
+  const startByte = lineColumnToCodeUnitOffset(source, solo.startLine, solo.startColumn);
+  const endByte = lineColumnToCodeUnitOffset(source, solo.endLine, solo.endColumn);
+
+  // solo()'s own range has no overlapping error range, even though the file
+  // as a whole does.
+  assert.ok(
+    !indexed.errorRanges.some((r) => r.startIndex < endByte && r.endIndex > startByte),
+    'solo() itself must not overlap any error range'
+  );
+  assert.equal(
+    classifyFunctionRangeFailure({ errorRanges: indexed.errorRanges, startByte, endByte }).category,
+    'malformed_analyzer_output',
+    'a failure on solo() is our bug, not miscategorized as the file being unparseable'
+  );
 });
