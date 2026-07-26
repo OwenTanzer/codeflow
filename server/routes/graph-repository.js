@@ -148,6 +148,17 @@ export function createGraphRepositoryHandler({ config }) {
         analyzerName: ANALYZER.name,
         analyzerVersion: ANALYZER.version,
         graphSchemaVersion: GRAPH_IR_SCHEMA_VERSION,
+        // MOO-72 Commit 1A: excludePatterns change what the graph actually
+        // contains (which files are analyzed), so they must be part of the
+        // key now -- not deferred to Commit 2's caching work, which will
+        // consume this key as-is. Uses the already-normalized (trimmed,
+        // deduped) list analyzeGithubRepo produced, not the raw request
+        // value, so two requests differing only in exclude-pattern
+        // formatting/order/case still hash to the same key when they mean
+        // the same thing. Sorted here (not sortKeysDeep's job -- it sorts
+        // object keys, not array element order) so two equivalent exclude
+        // sets supplied in a different order still hash identically.
+        options: { excludePatterns: [...resolved.result.excludePatterns].sort() },
       });
       const durationMs = Date.now() - startedAtMs;
       const adapterResult = buildAdapterResult({

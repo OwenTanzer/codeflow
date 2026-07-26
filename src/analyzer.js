@@ -2345,6 +2345,68 @@ function shouldExcludeFile(path,name,compiledPatterns){
     return !Parser.isIncluded(name)||matchesExcludePattern(compiledPatterns,path,name);
 }
 
+// MOO-72 Commit 1A: moved here from index.html for the same reason
+// normalizeExcludePath/matchesExcludePattern/shouldIgnoreDirectory/
+// shouldExcludeFile were moved in MOO-67 Commit 6 -- the server now
+// accepts client-sent raw exclude-pattern strings for /api/graph/repository
+// and must compile them into the same {raw,lower,regex} shape
+// matchesExcludePattern expects, which previously only existed as a
+// window-global in the browser.
+function parseExcludePatterns(input){
+    var seen=new Set();
+    return (input||'').split(/\r?\n|,/).map(function(item){
+        return normalizeExcludePath(item.trim()).replace(/\/$/,'');
+    }).filter(function(item){
+        if(!item||seen.has(item.toLowerCase()))return false;
+        seen.add(item.toLowerCase());
+        return true;
+    });
+}
+
+function escapeRegexChar(ch){
+    return /[|\\{}()[\]^$+?.]/.test(ch)?'\\'+ch:ch;
+}
+
+function globToRegex(pattern){
+    var normalized=normalizeExcludePath(pattern).toLowerCase();
+    var out='^';
+    for(var i=0;i<normalized.length;i++){
+        var ch=normalized[i];
+        if(ch==='*'){
+            if(normalized[i+1]==='*'){
+                if(normalized[i+2]==='/'){
+                    out+='(?:[^/]+/)*';
+                    i+=2;
+                }else{
+                    out+='.*';
+                    i++;
+                }
+            }else{
+                out+='[^/]*';
+            }
+        }else if(ch==='?'){
+            out+='[^/]';
+        }else{
+            out+=escapeRegexChar(ch);
+        }
+    }
+    out+='$';
+    return new RegExp(out,'i');
+}
+
+function compileExcludePatterns(input){
+    return parseExcludePatterns(input).map(function(pattern){
+        var lower=pattern.toLowerCase();
+        var hasGlob=pattern.includes('*')||pattern.includes('?');
+        var hasPath=pattern.includes('/');
+        return{
+            raw:pattern,
+            lower:lower,
+            regex:(hasGlob||hasPath)?globToRegex(pattern):null
+        };
+    });
+}
+
 var GitHub={
     token:'',
     appId:null,
@@ -4478,4 +4540,4 @@ function runAnalysisData(options){
 // added here or that call site will throw a ReferenceError (see the
 // window-bridge <script type="module"> in index.html, which assigns
 // exactly these exports onto window via Object.assign).
-export { getSecurityScanContent, isSanitizedPreviewRenderer, Parser, escapeHtml, renderTooltipHtml, GitHub, countFiles, getArchitectureGroupOrder, getVisibleArchitectureBlocks, computeArchitectureStats, generateMermaidBlockDiagram, buildArchitectureDiagram, buildAnalysisData, calcBlast, calcHealth, createAnalysisWorkerSource, runAnalysisData, shouldExcludeFile, shouldIgnoreDirectory, matchesExcludePattern, normalizeExcludePath };
+export { getSecurityScanContent, isSanitizedPreviewRenderer, Parser, escapeHtml, renderTooltipHtml, GitHub, countFiles, getArchitectureGroupOrder, getVisibleArchitectureBlocks, computeArchitectureStats, generateMermaidBlockDiagram, buildArchitectureDiagram, buildAnalysisData, calcBlast, calcHealth, createAnalysisWorkerSource, runAnalysisData, shouldExcludeFile, shouldIgnoreDirectory, matchesExcludePattern, normalizeExcludePath, parseExcludePatterns, compileExcludePatterns };

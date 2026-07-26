@@ -169,7 +169,14 @@ test('codeflow architecture diagram can include tests', async () => {
   const diagram = data.architectureDiagram;
   const withTests = blockPaths(diagram, true);
 
-  assert.ok(withTests.some((path) => path === 'tests/codeflow-golden.test.mjs'));
+  // Not a specific hardcoded test file: this repo's own file count grows
+  // over time (MOO-72 Commit 1A alone added six files), and
+  // ARCHITECTURE_MAX_BLOCKS caps the diagram at 64 blocks -- asserting one
+  // exact filename survives that cutoff is exactly the kind of assertion
+  // repo growth breaks without any real regression. The test's actual
+  // subject is "the includeTests flag surfaces test files at all," which
+  // any test-classified path proves.
+  assert.ok(withTests.some((path) => path.startsWith('tests/')), 'at least one tests/ path must be visible with includeTests=true');
   const mermaid = generateMermaidBlockDiagram(diagram, true, false);
   assert.match(mermaid, /Testing/);
 });

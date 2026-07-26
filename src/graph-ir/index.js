@@ -9,3 +9,4 @@ export * from './graphIR.js';
 export * from './adapterResult.js';
 export * from './navigation.js';
 export * from './cacheKey.js';
+export * from './blastRadius.js';

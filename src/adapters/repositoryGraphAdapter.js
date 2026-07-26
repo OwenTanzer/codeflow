@@ -75,10 +75,19 @@ export function adaptRepositoryAnalysis({ analysisData, context, analyzer }) {
         layer: file.layer,
         functionCount: file.functions.length,
         lines: file.lines,
-        churn: file.churn || 0,
+        // MOO-72 Commit 1A: preserve three states -- positive integer
+        // (computed churn), 0 (computed, no recent commits), null (not
+        // computed). `|| 0` previously collapsed null back into a
+        // fabricated zero, silently undoing the bridge's own "don't lie
+        // about churn" fix.
+        churn: file.churn ?? null,
         complexity: file.complexity || null,
         parserProvenance: file.parserProvenance || null,
         dependencies: file.dependencies || [],
+        // MOO-72 Commit 1A: whether Parser actually treated this file as
+        // code (vs. e.g. a non-code asset walked for completeness) --
+        // report export reads this per file.
+        isCode: file.isCode !== false,
       },
     };
   });
@@ -147,6 +156,26 @@ export function adaptRepositoryAnalysis({ analysisData, context, analyzer }) {
       architectureDiagram: analysisData.architectureDiagram,
       suggestions: analysisData.suggestions,
       deadFunctions: analysisData.deadFunctions,
+      // MOO-72 Commit 1A: cheap, deterministic derivatives of the file set
+      // and request options -- not GraphIR-core concerns (the hierarchical
+      // `tree` is a display structure, distinct from `groups[]`'s flat
+      // folder-membership relation), but real data the legacy UI (folder
+      // sidebar, exclude-pattern chips) reads and must not lose during the
+      // server cutover.
+      folders: analysisData.folders,
+      tree: analysisData.tree,
+      excludePatterns: analysisData.excludePatterns,
+      // MOO-72 Commit 1A: the file-detail panel's "Functions" card reads
+      // each file's full function list plus per-function internal/external
+      // call counts (data.fnStats) -- not just a count, unlike everything
+      // else this node's own metadata carries. buildAnalysisData already
+      // computes both (the flat `functions` array and `fnStats`, keyed by
+      // function key/name) for every source; carried forward verbatim
+      // rather than reduced to a summary, since this is a primary,
+      // constantly-used part of the UI, not an optional enrichment like
+      // churn.
+      functions: analysisData.functions,
+      fnStats: analysisData.fnStats,
     },
   });
 }

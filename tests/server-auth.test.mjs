@@ -69,7 +69,7 @@ test('RateLimiter tracks separate keys independently', () => {
 
 test('validateRepoRequest accepts a well-formed owner/repo with no ref/pr', () => {
   const result = validateRepoRequest({ owner: 'octocat', repo: 'Hello-World' });
-  assert.deepEqual(result, { owner: 'octocat', repo: 'Hello-World', ref: null, pr: null });
+  assert.deepEqual(result, { owner: 'octocat', repo: 'Hello-World', ref: null, pr: null, excludePatterns: [] });
 });
 
 test('validateRepoRequest accepts a well-formed ref (branch or commit SHA)', () => {
@@ -122,4 +122,42 @@ test('validateRepoRequest rejects a missing/non-object body', () => {
   assert.throws(() => validateRepoRequest(null), ValidationError);
   assert.throws(() => validateRepoRequest(undefined), ValidationError);
   assert.throws(() => validateRepoRequest('not an object'), ValidationError);
+});
+
+// MOO-72 Commit 1A: exclude patterns are part of the request now (what the
+// user asked to analyze), so they're validated the same way owner/repo/ref
+// already are -- untrusted text that gets compiled into regexes and
+// hashed into the cache key downstream.
+test('validateRepoRequest defaults excludePatterns to an empty array when omitted', () => {
+  assert.deepEqual(validateRepoRequest({ owner: 'octocat', repo: 'x' }).excludePatterns, []);
+});
+
+test('validateRepoRequest accepts a well-formed excludePatterns array', () => {
+  const result = validateRepoRequest({ owner: 'octocat', repo: 'x', excludePatterns: ['node_modules', '*.test.js'] });
+  assert.deepEqual(result.excludePatterns, ['node_modules', '*.test.js']);
+});
+
+test('validateRepoRequest rejects a non-array excludePatterns', () => {
+  assert.throws(() => validateRepoRequest({ owner: 'octocat', repo: 'x', excludePatterns: 'node_modules' }), ValidationError);
+});
+
+test('validateRepoRequest rejects excludePatterns containing a non-string entry', () => {
+  assert.throws(() => validateRepoRequest({ owner: 'octocat', repo: 'x', excludePatterns: ['ok', 42] }), ValidationError);
+});
+
+test('validateRepoRequest rejects more than 50 excludePatterns entries', () => {
+  const many = Array.from({ length: 51 }, (_, i) => `pattern-${i}`);
+  assert.throws(() => validateRepoRequest({ owner: 'octocat', repo: 'x', excludePatterns: many }), ValidationError);
+});
+
+test('validateRepoRequest rejects a single excludePatterns entry over 200 characters', () => {
+  const tooLong = 'a'.repeat(201);
+  assert.throws(() => validateRepoRequest({ owner: 'octocat', repo: 'x', excludePatterns: [tooLong] }), ValidationError);
+});
+
+test('validateRepoRequest rejects excludePatterns whose combined length exceeds 4000 characters', () => {
+  // 50 entries of 100 chars each = 5000, under the per-entry cap but over
+  // the aggregate cap -- proves the two limits are checked independently.
+  const many = Array.from({ length: 50 }, () => 'a'.repeat(100));
+  assert.throws(() => validateRepoRequest({ owner: 'octocat', repo: 'x', excludePatterns: many }), ValidationError);
 });
