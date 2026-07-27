@@ -17,22 +17,40 @@
 // helpers just for this.
 // MOO-72 Commit 1A review (Blocker A): acorn is real, Node-compatible, pure
 // JS with zero native deps -- loading it here (rather than stubbing it to
-// undefined like TreeSitter/Babel) fixes plain .js/.mjs/.cjs function/class
-// discovery and enables AST-based call detection for those files instead of
-// falling back to the unstripped token heuristic. It does NOT parse JSX/TS
-// syntax on its own -- .jsx/.ts/.tsx files still need Babel to strip that
-// syntax first, so TreeSitter/Babel stay stubbed; see docs/baseline.md for
-// the full remaining-gap writeup (Python/JS tree-sitter call detection,
-// JSX/TS AST parsing).
+// undefined like Babel) fixes plain .js/.mjs/.cjs function/class discovery
+// and enables AST-based call detection for those files instead of falling
+// back to the unstripped token heuristic. It does NOT parse JSX/TS syntax
+// on its own -- .jsx/.ts/.tsx files still need Babel to strip that syntax
+// first, so Babel stays stubbed; see docs/baseline.md for the full
+// remaining-gap writeup (JSX/TS AST parsing).
+//
+// MOO-72 Commit 1A review (round 2, Blocker A): the guard below is a value
+// check (`typeof globalThis.acorn === 'undefined'`), not a presence check
+// (`!('acorn' in globalThis)`). server/index.js imports server/routes/
+// analyze.js (and transitively server/lib/analyzer-bridge.js, which stubs
+// `globalThis.acorn = undefined`) before it imports the route that pulls in
+// this file -- so by the time this module runs, `'acorn' in globalThis` is
+// already true even though the *value* is still `undefined`. A presence
+// check would silently never assign the real module regardless of import
+// order; a value check assigns real acorn any time the stub left it
+// `undefined`, independent of which bridge module happened to run first.
 import * as acorn from 'acorn';
 
-if (!('TreeSitter' in globalThis)) globalThis.TreeSitter = undefined;
+if (typeof globalThis.acorn === 'undefined') globalThis.acorn = acorn;
 if (!('Babel' in globalThis)) globalThis.Babel = undefined;
-if (!('acorn' in globalThis)) globalThis.acorn = acorn;
 
 const { GitHub, Parser, shouldExcludeFile, shouldIgnoreDirectory, buildAnalysisData, compileExcludePatterns } = await import(
   '../../src/analyzer.js'
 );
+
+// MOO-72 Commit 1A review (round 2, Blocker B): wires the real Node-native
+// web-tree-sitter runtime (already used by pythonSymbolIndex.js) into
+// `globalThis.TreeSitter`, restoring real tree-sitter CST-based Python
+// call-edge detection instead of the token-heuristic fallback. See
+// node-tree-sitter-shim.js for the two Node-vs-browser incompatibilities
+// this works around.
+import { installNodeTreeSitter } from './node-tree-sitter-shim.js';
+await installNodeTreeSitter(Parser);
 
 const GITHUB_API = 'https://api.github.com';
 
@@ -356,6 +374,11 @@ export async function analyzeGithubRepo(request, config) {
       // unknown here, not "verified zero recent commits."
       churn: null,
       isCode: actualIsCode,
+      // MOO-72 Commit 1A review (round 2): carry forward the real parser
+      // path Parser.extract actually took, so downstream provenance
+      // reporting isn't a post-hoc guess from ambient globals -- see
+      // card/lib/collect.js's identical field for the fuller rationale.
+      parserProvenance: functions.provenance,
     });
     if (actualIsCode) {
       for (const fn of functions) allFns.push({ ...fn, folder: file.folder, layer });

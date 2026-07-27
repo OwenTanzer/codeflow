@@ -17,20 +17,25 @@
 
 import { createRequire } from 'node:module';
 import { normalizePath } from '../../src/graph-ir/sourceCoordinate.js';
+import { getWebTreeSitterParserClass } from './webTreeSitterRuntime.js';
 
 const require = createRequire(import.meta.url);
 
 let parserPromise = null;
 
 function loadParser() {
-  const Parser = require('web-tree-sitter');
-  return Parser.init()
-    .then(() => Parser.Language.load(require.resolve('tree-sitter-wasms/out/tree-sitter-python.wasm')))
-    .then((Lang) => {
+  // MOO-72 Commit 1A review (round 2): the `Parser` class and its one-time
+  // `.init()` call now come from webTreeSitterRuntime.js's shared
+  // singleton, not a private `require('web-tree-sitter')` here -- see that
+  // module's doc comment for why a second, independent require of the same
+  // package in the same process (once node-tree-sitter-shim.js also needs
+  // it) would otherwise break this exact function.
+  return getWebTreeSitterParserClass()
+    .then((Parser) => Parser.Language.load(require.resolve('tree-sitter-wasms/out/tree-sitter-python.wasm')).then((Lang) => {
       const parser = new Parser();
       parser.setLanguage(Lang);
       return parser;
-    });
+    }));
 }
 
 function getParser() {

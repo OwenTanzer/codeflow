@@ -133,6 +133,21 @@ const Parser={
         var cfg=Parser.getTreeSitterConfig(filename);
         return cfg?Parser._tsParsers[cfg.grammar]||null:null;
     },
+    // MOO-72 Commit 1A review (round 2): this is a best-effort *inference*
+    // from ambient state at call time (whether a tree-sitter parser happens
+    // to be loaded, whether acorn exists and the extension matches) -- it
+    // does not know what actually happened for this specific file. It can
+    // be wrong: e.g. it always guesses 'acorn-babel' for a JS/TS extension
+    // whenever acorn is loaded, even on a file where Babel/acorn internally
+    // threw and extract() silently fell back to extractWithRegex. extract()
+    // now records the real, observed path on its return value
+    // (`fns.provenance`) at the one place this matters -- the JS/TS/acorn
+    // branch, where success/failure is a genuine runtime decision, not a
+    // static file-extension fact -- and every caller of extract() carries
+    // that into `f.parserProvenance` before this function is ever
+    // consulted (buildAnalysisData: `f.parserProvenance||Parser.getParserProvenance(...)`).
+    // This function remains only as the fallback for callers that bypass
+    // extract() entirely.
     getParserProvenance:function(filename){
         var lower=(filename||'').toLowerCase();
         var cfg=Parser.getTreeSitterConfig(filename);
@@ -947,6 +962,7 @@ const Parser={
         if((isJS||isTS)&&typeof acorn!=='undefined'){
             var parseContent=scriptContent;
             var parseSuccess=false;
+            var babelSucceeded=false;
 
             // Use Babel (real parser) to handle JSX and TypeScript properly
             // Babel transforms JSX → React.createElement and strips TS types,
@@ -962,6 +978,7 @@ const Parser={
                         retainLines:true
                     });
                     parseContent=babelResult.code;
+                    babelSucceeded=true;
                 }catch(babelErr){
                     // Babel failed, fall back to manual TypeScript stripping
                     if(isTS){
@@ -1130,6 +1147,16 @@ const Parser={
             if(!parseSuccess){
                 Parser.extractWithRegex(scriptContent,filename,scriptOffset,addFn,extractCode);
             }
+            // MOO-72 Commit 1A review (round 2): record what actually ran,
+            // not what `getParserProvenance` would later guess from ambient
+            // globals -- `typeof acorn!=='undefined'` being true doesn't
+            // mean this specific file's AST parse succeeded (Babel can
+            // throw and fall back to manual TS-stripping, and acorn's own
+            // parse can throw entirely, both already handled above by
+            // falling back to extractWithRegex). babelSucceeded tracks
+            // whether Babel's *own* transform succeeded (vs. the isTS
+            // manual-stripping fallback or Babel being absent entirely).
+            fns.provenance=parseSuccess?(babelSucceeded?'acorn-babel':'acorn'):'heuristic-regex';
         }else if(isPython){
             // Python: extract classes, functions, async functions, decorators, and methods
             var currentClass=null;
@@ -2070,26 +2097,36 @@ const Parser={
                     var root=tree.rootNode;
                     var fnSet=new Set(fnNames);
 
-                    // Determine if an identifier node is a definition name (not a usage)
+                    // Determine if an identifier node is a definition name (not a usage).
+                    // MOO-72 Commit 1A review (round 2, Blocker B): every comparison here
+                    // must use SyntaxNode#equals, not `===` -- web-tree-sitter allocates a
+                    // fresh JS wrapper object on every `childForFieldName`/`children[i]`
+                    // access, so two accesses of the "same" underlying node are never
+                    // reference-equal even though `.equals()`/`.id` confirm they're
+                    // identical. `===` here silently never matches, so definition names
+                    // (e.g. `def helper` itself) were being double-counted as calls to
+                    // `helper` -- found and fixed while first exercising this function
+                    // against a real (not stubbed) tree-sitter parser.
+                    function sameNode(a,b){return !!a&&!!b&&a.equals(b);}
                     function isPyDefName(node){
                         var p=node.parent;
                         if(!p)return false;
                         // Function/class definition name: def foo / class Foo
                         if((p.type==='function_definition'||p.type==='class_definition')&&
-                            p.childForFieldName('name')===node)return true;
+                            sameNode(p.childForFieldName('name'),node))return true;
                         // Parameter names in function signatures
                         if(p.type==='parameters'||p.type==='lambda_parameters')return true;
                         if((p.type==='typed_parameter'||p.type==='default_parameter'||
-                            p.type==='typed_default_parameter')&&p.children[0]===node)return true;
+                            p.type==='typed_default_parameter')&&sameNode(p.children[0],node))return true;
                         if(p.type==='list_splat_pattern'||p.type==='dictionary_splat_pattern')return true;
                         // For loop target: for x in ...
-                        if(p.type==='for_statement'&&p.childForFieldName('left')===node)return true;
+                        if(p.type==='for_statement'&&sameNode(p.childForFieldName('left'),node))return true;
                         // With statement target: with x as y
-                        if(p.type==='as_pattern'&&p.childForFieldName('alias')===node)return true;
+                        if(p.type==='as_pattern'&&sameNode(p.childForFieldName('alias'),node))return true;
                         // Exception handler: except E as e
                         if(p.type==='except_clause')return false; // the exception type IS a reference
                         // Comprehension targets: [x for x in ...]
-                        if(p.type==='for_in_clause'&&p.childForFieldName('left')===node)return true;
+                        if(p.type==='for_in_clause'&&sameNode(p.childForFieldName('left'),node))return true;
                         return false;
                     }
 

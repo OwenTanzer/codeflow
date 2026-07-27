@@ -51,7 +51,7 @@ body{font-family:'JetBrains Mono',monospace;background:var(--bg0);color:var(--t0
 .repo-input-group{display:flex;gap:8px;flex:1;min-width:0}
 .repo-input-group>*{min-width:0}
 .repo-input{flex:1;padding:6px 12px;background:var(--bg0);border:1px solid var(--border);border-radius:6px;color:var(--t0);font-family:inherit;font-size:11px;min-width:0}
-.repo-input-group>.repo-input:first-child{min-width:220px}
+.repo-input-group>.repo-url-input{min-width:220px}
 .repo-input-group>.top-btn,.repo-input-group>.refresh-btn,.repo-input-group>.reset-btn,.auth-select,.private-key-btn{flex-shrink:0}
 .repo-input:focus{outline:none;border-color:var(--acc)}
 .topbar-actions{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}
@@ -489,7 +489,7 @@ body{height:100dvh;min-height:100dvh}
 .logo-mark{width:32px;height:32px}
 .logo-text{font-size:15px}
 .repo-input-group{order:2;flex:1 1 100%;max-width:none;flex-wrap:wrap}
-.repo-input-group>.repo-input:first-child{flex:1 1 100%}
+.repo-input-group>.repo-url-input{flex:1 1 100%}
 .repo-input,.auth-select,.private-key-btn,.top-btn,.refresh-btn,.reset-btn,.view-file-btn{min-height:40px;font-size:11px}
 .auth-select{flex:1 1 150px}
 .auth-inputs{display:flex;gap:8px;align-items:stretch;flex:1 1 100%;flex-wrap:wrap}
@@ -2161,7 +2161,7 @@ function App(){
                     var layer=Parser.detectLayer(f.path);
                     var actualIsCode=!Parser.isScriptContainer(f.path)||Parser.hasEmbeddedCode(content,f.path);
                     var fns=actualIsCode?Parser.extract(content,f.path):[];
-                    analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:0,isCode:actualIsCode});
+                    analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:0,isCode:actualIsCode,parserProvenance:fns.provenance});
                     if(actualIsCode){
                         fns.forEach(function(fn){allFns.push(Object.assign({},fn,{folder:f.folder,layer:layer}));});
                     }
@@ -2272,7 +2272,7 @@ function App(){
                     if(isCodeFile){
                         var actualIsCode=!Parser.isScriptContainer(f.path)||Parser.hasEmbeddedCode(content,f.path);
                         var fns=actualIsCode?Parser.extract(content,f.path):[];
-                        analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:0,isCode:actualIsCode});
+                        analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:0,isCode:actualIsCode,parserProvenance:fns.provenance});
                         if(actualIsCode){
                             fns.forEach(function(fn){allFns.push(Object.assign({},fn,{folder:f.folder,layer:layer}));});
                         }
@@ -2371,7 +2371,7 @@ function App(){
                     if(isCodeFile){
                         var actualIsCode=!Parser.isScriptContainer(f.path)||Parser.hasEmbeddedCode(content,f.path);
                         var fns=actualIsCode?Parser.extract(content,f.path):[];
-                        analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:0,isCode:actualIsCode});
+                        analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:0,isCode:actualIsCode,parserProvenance:fns.provenance});
                         if(actualIsCode){
                             fns.forEach(function(fn){allFns.push(Object.assign({},fn,{folder:f.folder,layer:layer}));});
                         }
@@ -2571,8 +2571,21 @@ function App(){
             // rarely. Without pinning to the same revision the analysis
             // actually ran against, the graph can represent commit A while
             // the preview silently shows a later commit B's content.
+            //
+            // MOO-72 Commit 1A review (round 2): repoInfo.owner/repo is
+            // always the *base* repository. For a cross-repository PR, the
+            // analyzed head SHA and its file content live in the PR head's
+            // repo (a contributor's fork) -- repositoryGraph.context's
+            // sourceOwner/sourceRepo (src/graph-ir/githubContext.js's
+            // normalizeContext) carry exactly that distinction, equal to
+            // owner/repo for a same-repo analysis and to the fork for a
+            // cross-repo PR. Fetching from repoInfo.owner/repo with a
+            // fork-only SHA would 404 or (worse) silently return the base
+            // repo's unrelated content at that path.
+            var previewOwner=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceOwner)||repoInfo.owner;
+            var previewRepo=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceRepo)||repoInfo.repo;
             var previewRef=repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha;
-            GitHub.getFile(repoInfo.owner,repoInfo.repo,path,previewRef).then(function(content){
+            GitHub.getFile(previewOwner,previewRepo,path,previewRef).then(function(content){
                 if(content){
                     setFilePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
                 }else{
@@ -4098,7 +4111,7 @@ function App(){
                                 var layer=Parser.detectLayer(f.path);
                                 var actualIsCode=!Parser.isScriptContainer(f.path)||Parser.hasEmbeddedCode(content,f.path);
                                 var fns=actualIsCode?Parser.extract(content,f.path):[];
-                                analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:Array.isArray(commits)?commits.length:0,isCode:actualIsCode});
+                                analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:Array.isArray(commits)?commits.length:0,isCode:actualIsCode,parserProvenance:fns.provenance});
                                 if(actualIsCode){fns.forEach(function(fn){allFns.push(Object.assign({},fn,{folder:f.folder,layer:layer}));});}
                             }
                             processFile(i+1);
@@ -4122,7 +4135,18 @@ function App(){
             });
         }).then(function(dataObj){
             if(!dataObj||!isCurrentAnalysisGeneration(generation))return null;
-            var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:context,analyzer:{name:'codeflow-repository-adapter',version:'1.1.0'}});
+            // MOO-72 Commit 1A review (round 2): this legacy, still-
+            // client-side PR-head path computes real per-file churn (see
+            // GitHub.getCommits above) and runs Parser in the browser
+            // (different parser availability than the server path), so it
+            // must not share 'codeflow-repository-adapter's identity --
+            // that name/version is reserved for the server-authoritative
+            // analyzer (server/routes/graph-repository.js's ANALYZER),
+            // which returns churn:null and a different parser profile.
+            // Conflating the two under one identity would let a cache or
+            // provenance consumer treat a real-churn, client-parsed result
+            // as interchangeable with a server-computed one.
+            var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:context,analyzer:{name:'codeflow-pr-head-adapter',version:'1.1.0'}});
             if(!isCurrentAnalysisGeneration(generation))return null;
             setData(dataObj);
             setRepositoryGraph(graph);
@@ -4347,7 +4371,7 @@ function App(){
                 // "wrong token in the wrong prompt" confusion this cutover
                 // must not create.
                 React.createElement('input',{className:'repo-input',type:'password','aria-label':'CodeFlow Server Token',title:'Required to analyze a repository -- not your GitHub token',placeholder:'CodeFlow Server Token',value:serverAuthToken,onChange:function(e){commitServerAuthToken(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();},style:{minWidth:140,borderColor:serverTokenRejected?'#f87171':undefined}}),
-                React.createElement('input',{className:'repo-input','aria-label':'Repository URL',placeholder:'owner/repo or GitHub URL',value:repoUrl,onChange:function(e){setRepoUrl(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();}}),
+                React.createElement('input',{className:'repo-input repo-url-input','aria-label':'Repository URL',placeholder:'owner/repo or GitHub URL',value:repoUrl,onChange:function(e){setRepoUrl(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();}}),
                 React.createElement('select',{className:'auth-select','aria-label':'Authentication Method',value:authMethod,onChange:function(e){setAuthMethod(e.target.value);}},
                     React.createElement('option',{value:'none'},'No Auth'),
                     React.createElement('option',{value:'pat'},'Token (PAT)'),

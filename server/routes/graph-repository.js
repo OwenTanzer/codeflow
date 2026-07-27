@@ -158,7 +158,17 @@ export function createGraphRepositoryHandler({ config }) {
         // the same thing. Sorted here (not sortKeysDeep's job -- it sorts
         // object keys, not array element order) so two equivalent exclude
         // sets supplied in a different order still hash identically.
-        options: { excludePatterns: [...resolved.result.excludePatterns].sort() },
+        //
+        // MOO-72 Commit 1A review (round 2): lowercased before sorting --
+        // exclude-pattern matching is already case-insensitive end-to-end
+        // (src/analyzer.js's compileExcludePatterns builds a `.lower`
+        // identity and an `'i'`-flagged regex), so `NODE_MODULES` and
+        // `node_modules` produce the identical analyzed graph but were
+        // hashing to different cache keys here, contrary to that identity.
+        // `resolved.result.excludePatterns` stays the raw display strings
+        // (unchanged) for the `excludePatterns` metadata field below --
+        // only the cache-key identity is normalized.
+        options: { excludePatterns: [...resolved.result.excludePatterns].map((p) => p.toLowerCase()).sort() },
       });
       const durationMs = Date.now() - startedAtMs;
       const adapterResult = buildAdapterResult({

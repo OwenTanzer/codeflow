@@ -93,6 +93,14 @@ async function buildAnalyzed(repoRoot, Parser, excludePatterns) {
       layer,
       churn: 0,
       isCode: actualIsCode,
+      // MOO-72 Commit 1A review (round 2): carry forward the real parser
+      // path Parser.extract actually took (set only for the JS/TS/acorn
+      // branch, where success/failure is a runtime decision, not a static
+      // file-extension fact) -- leaves buildAnalysisData's later
+      // `f.parserProvenance||Parser.getParserProvenance(...)` fallback as
+      // a genuine best-effort guess only for files where nothing upstream
+      // observed what actually ran.
+      parserProvenance: functions.provenance,
     });
     if (actualIsCode) {
       for (const fn of functions) {
