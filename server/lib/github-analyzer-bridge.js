@@ -140,6 +140,7 @@ export async function resolveRef({ owner, repo, ref, pr }) {
 export async function resolveCommitSha(owner, repo, ref) {
   const data = await apiRequest(`/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`, {
     404: 'Ref not found (branch, tag, or commit does not exist)',
+    422: 'Ref not found (branch, tag, or commit does not exist)',
   });
   return data.sha;
 }

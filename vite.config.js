@@ -14,4 +14,11 @@ export default defineConfig({
       input: 'index.html',
     },
   },
+  server: {
+    proxy: {
+      '/api': 'http://localhost:3000',
+      '/healthz': 'http://localhost:3000',
+      '/readyz': 'http://localhost:3000',
+    },
+  },
 });
