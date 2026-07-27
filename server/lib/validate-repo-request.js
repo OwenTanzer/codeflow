@@ -9,6 +9,14 @@ const OWNER_PATTERN = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/;
 const REPO_PATTERN = /^[a-zA-Z0-9._-]{1,100}$/;
 const REF_PATTERN = /^[a-zA-Z0-9._\/-]{1,200}$/;
 
+// MOO-72 Commit 1A: exclude patterns are user-supplied, untrusted text that
+// gets compiled into regexes (see src/analyzer.js's compileExcludePatterns)
+// and joined into the cache key -- capped on count and length before any
+// of that happens, same conservative posture as the patterns above.
+const MAX_EXCLUDE_PATTERNS = 50;
+const MAX_EXCLUDE_PATTERN_LENGTH = 200;
+const MAX_EXCLUDE_PATTERNS_AGGREGATE_LENGTH = 4000;
+
 export class ValidationError extends Error {
   constructor(message) {
     super(message);
@@ -40,16 +48,39 @@ function validatePr(pr) {
   }
 }
 
+function validateExcludePatterns(excludePatterns) {
+  if (!Array.isArray(excludePatterns)) {
+    throw new ValidationError('excludePatterns must be an array of strings');
+  }
+  if (excludePatterns.length > MAX_EXCLUDE_PATTERNS) {
+    throw new ValidationError(`excludePatterns must contain at most ${MAX_EXCLUDE_PATTERNS} entries`);
+  }
+  let aggregateLength = 0;
+  for (const pattern of excludePatterns) {
+    if (typeof pattern !== 'string') {
+      throw new ValidationError('excludePatterns must contain only strings');
+    }
+    if (pattern.length > MAX_EXCLUDE_PATTERN_LENGTH) {
+      throw new ValidationError(`each excludePatterns entry must be at most ${MAX_EXCLUDE_PATTERN_LENGTH} characters`);
+    }
+    aggregateLength += pattern.length;
+  }
+  if (aggregateLength > MAX_EXCLUDE_PATTERNS_AGGREGATE_LENGTH) {
+    throw new ValidationError(`excludePatterns' combined length must be at most ${MAX_EXCLUDE_PATTERNS_AGGREGATE_LENGTH} characters`);
+  }
+  return excludePatterns;
+}
+
 /**
  * @param {object} body
- * @returns {{owner: string, repo: string, ref: string|null, pr: number|null}}
+ * @returns {{owner: string, repo: string, ref: string|null, pr: number|null, excludePatterns: string[]}}
  * @throws {ValidationError}
  */
 export function validateRepoRequest(body) {
   if (!body || typeof body !== 'object') {
     throw new ValidationError('request body must be a JSON object');
   }
-  const { owner, repo, ref, pr } = body;
+  const { owner, repo, ref, pr, excludePatterns } = body;
   validateOwner(owner);
   validateRepo(repo);
 
@@ -58,6 +89,7 @@ export function validateRepoRequest(body) {
   }
   if (ref != null) validateRef(ref);
   if (pr != null) validatePr(pr);
+  if (excludePatterns != null) validateExcludePatterns(excludePatterns);
 
-  return { owner, repo, ref: ref ?? null, pr: pr ?? null };
+  return { owner, repo, ref: ref ?? null, pr: pr ?? null, excludePatterns: excludePatterns ?? [] };
 }

@@ -51,7 +51,7 @@ body{font-family:'JetBrains Mono',monospace;background:var(--bg0);color:var(--t0
 .repo-input-group{display:flex;gap:8px;flex:1;min-width:0}
 .repo-input-group>*{min-width:0}
 .repo-input{flex:1;padding:6px 12px;background:var(--bg0);border:1px solid var(--border);border-radius:6px;color:var(--t0);font-family:inherit;font-size:11px;min-width:0}
-.repo-input-group>.repo-input:first-child{min-width:220px}
+.repo-input-group>.repo-url-input{min-width:220px}
 .repo-input-group>.top-btn,.repo-input-group>.refresh-btn,.repo-input-group>.reset-btn,.auth-select,.private-key-btn{flex-shrink:0}
 .repo-input:focus{outline:none;border-color:var(--acc)}
 .topbar-actions{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}
@@ -489,7 +489,7 @@ body{height:100dvh;min-height:100dvh}
 .logo-mark{width:32px;height:32px}
 .logo-text{font-size:15px}
 .repo-input-group{order:2;flex:1 1 100%;max-width:none;flex-wrap:wrap}
-.repo-input-group>.repo-input:first-child{flex:1 1 100%}
+.repo-input-group>.repo-url-input{flex:1 1 100%}
 .repo-input,.auth-select,.private-key-btn,.top-btn,.refresh-btn,.reset-btn,.view-file-btn{min-height:40px;font-size:11px}
 .auth-select{flex:1 1 150px}
 .auth-inputs{display:flex;gap:8px;align-items:stretch;flex:1 1 100%;flex-wrap:wrap}
@@ -646,7 +646,9 @@ import { renderFileGraph } from './src/render/fileGraph.js';
 import { useRepositorySelection } from './src/state/selection.js';
 import { buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute } from './src/state/route.js';
 import { adaptRepositoryAnalysis } from './src/adapters/repositoryGraphAdapter.js';
+import { repositoryGraphToViewModel } from './src/adapters/repositoryGraphToViewModel.js';
 import { normalizeContext } from './src/graph-ir/githubContext.js';
+import { calcBlastFromGraph } from './src/graph-ir/blastRadius.js';
 import {
   tryCreateDrillDown,
   tryCreateDrillDownById,
@@ -657,15 +659,17 @@ import {
 } from './src/state/repositoryDrillDown.js';
 import { useRepositoryDrillDownPanel } from './src/state/repositoryDrillDownPanel.js';
 import { fetchFileGraph, GraphFileClientError } from './src/state/graphFileClient.js';
+import { fetchRepositoryGraph, GraphRepositoryClientError } from './src/state/graphRepositoryClient.js';
 import { renderFunctionGraph } from './src/render/functionGraph.js';
 import { buildFunctionRenderModel } from './src/render/functionRenderModel.js';
 import { fetchFunctionGraph, GraphFunctionClientError } from './src/state/graphFunctionClient.js';
 Object.assign(window, analyzer, {
   renderRepositoryGraph, renderFileGraph, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute,
-  adaptRepositoryAnalysis, normalizeContext,
+  adaptRepositoryAnalysis, repositoryGraphToViewModel, normalizeContext, calcBlastFromGraph,
   tryCreateDrillDown, tryCreateDrillDownById, createSelectionEventForPath, tryCreateOpenSourceEvent, tryCreateOpenSourceEventById, githubBlobUrl,
   useRepositoryDrillDownPanel,
   fetchFileGraph, GraphFileClientError,
+  fetchRepositoryGraph, GraphRepositoryClientError,
   renderFunctionGraph, buildFunctionRenderModel, fetchFunctionGraph, GraphFunctionClientError,
 });
 </script>
@@ -695,61 +699,11 @@ const ANALYSIS_LIMITS={repoSoft:300,repoMax:750,localSoft:500};
 // (bridged onto window, same as the rest of the analyzer) -- GitHub.scan
 // needs them server-side, where window-fallthrough doesn't exist. See
 // docs/baseline.md.
-
-function parseExcludePatterns(input){
-    var seen=new Set();
-    return (input||'').split(/\r?\n|,/).map(function(item){
-        return normalizeExcludePath(item.trim()).replace(/\/$/,'');
-    }).filter(function(item){
-        if(!item||seen.has(item.toLowerCase()))return false;
-        seen.add(item.toLowerCase());
-        return true;
-    });
-}
-
-function escapeRegexChar(ch){
-    return /[|\\{}()[\]^$+?.]/.test(ch)?'\\'+ch:ch;
-}
-
-function globToRegex(pattern){
-    var normalized=normalizeExcludePath(pattern).toLowerCase();
-    var out='^';
-    for(var i=0;i<normalized.length;i++){
-        var ch=normalized[i];
-        if(ch==='*'){
-            if(normalized[i+1]==='*'){
-                if(normalized[i+2]==='/'){
-                    out+='(?:[^/]+/)*';
-                    i+=2;
-                }else{
-                    out+='.*';
-                    i++;
-                }
-            }else{
-                out+='[^/]*';
-            }
-        }else if(ch==='?'){
-            out+='[^/]';
-        }else{
-            out+=escapeRegexChar(ch);
-        }
-    }
-    out+='$';
-    return new RegExp(out,'i');
-}
-
-function compileExcludePatterns(input){
-    return parseExcludePatterns(input).map(function(pattern){
-        var lower=pattern.toLowerCase();
-        var hasGlob=pattern.includes('*')||pattern.includes('?');
-        var hasPath=pattern.includes('/');
-        return{
-            raw:pattern,
-            lower:lower,
-            regex:(hasGlob||hasPath)?globToRegex(pattern):null
-        };
-    });
-}
+//
+// MOO-72 Commit 1A: parseExcludePatterns/compileExcludePatterns (and their
+// escapeRegexChar/globToRegex helpers) moved the same way -- the server now
+// needs to compile the client's raw exclude-pattern strings into the same
+// {raw,lower,regex} shape for /api/graph/repository.
 
 function getArchiveRootPrefix(paths){
     var splitPaths=(paths||[]).map(function(path){return normalizeExcludePath(path).split('/').filter(Boolean);}).filter(function(parts){return parts.length>0;});
@@ -1953,16 +1907,16 @@ function App(){
         if(!p){setError('Invalid URL. Use format: owner/repo');return;}
         var currentExcludePatterns=activeExcludePatterns;
         var generation=beginNewAnalysisGeneration();
-        // MOO-69 PR review: resolved once, here, before any scan/fetch
-        // happens -- not after the fact. Every GitHub.scan/getFile call
-        // below is pinned to this exact commit, so the whole fetch pass
-        // observes one consistent revision instead of "whatever HEAD
-        // happens to be" at each independent request.
-        var resolvedSha=null,analysisContext=null;
 
-        // Validate authentication inputs
-        if(authMethod==='pat'&&!token){
-            setError('Please enter a Personal Access Token');return;
+        // MOO-72 Commit 1A: repository analysis now runs through the
+        // private CodeFlow server, which requires its own AUTH_TOKEN --
+        // gate on that instead of a GitHub credential. The GitHub PAT/App
+        // credential is no longer required to analyze a repository at all;
+        // it remains optional, used only by the still-client-side ownership/
+        // blame and file-preview-fallback features (see analyze()'s own
+        // comment further down).
+        if(!serverAuthToken){
+            setError('Enter the CodeFlow server token before analyzing a repository.');return;
         }
         if(authMethod==='github_app'){
             if(!appId){setError('Please enter the GitHub App ID');return;}
@@ -2003,177 +1957,42 @@ function App(){
             authPromise=Promise.resolve();
         }
         
+        // MOO-72 Commit 1A: repository analysis now runs server-side via
+        // POST /api/graph/repository (the server's own GITHUB_TOKEN, own
+        // file-count/size limits, own rate-limit headroom -- none of the
+        // client-side revision-resolution/rate-limit-check/scan/per-file-
+        // fetch machinery this replaced applies any more). authPromise is
+        // still awaited first since GitHub App auth configures
+        // GitHub.installationToken, which the *legacy, still-client-side*
+        // ownership/blame and file-preview-fallback features use later in
+        // this session -- unrelated to this fetch, kept only for them.
         authPromise.then(function(){
-            setProgress('Loading language parsers...');
-            return Parser.initTreeSitter().catch(function(){return null;});
-        }).then(function(){
-            setProgress('Resolving repository revision...');
-            return GitHub.resolveRepositoryRevision(p.owner,p.repo);
-        }).then(function(revision){
-            if(!revision||!revision.resolvedSha){
-                throw new Error('Could not resolve the repository\'s current commit -- try again');
+            setProgress('Analyzing repository...');
+            return fetchRepositoryGraph({
+                owner:p.owner,
+                repo:p.repo,
+                excludePatterns:currentExcludePatterns.map(function(x){return x.raw;}),
+                serverAuthToken:serverAuthToken
+            });
+        }).then(function(result){
+            if(!isCurrentAnalysisGeneration(generation))return;
+            var graph=result.graph;
+            var viewModel=repositoryGraphToViewModel(graph);
+            setData(viewModel);
+            setRepositoryGraph(graph);
+            setExpandedPaths(new Set(['']));
+            writeRepoRoute(p.owner+'/'+p.repo);
+            setLoading(false);
+        }).catch(function(e){
+            if(e==='cancelled'||!isCurrentAnalysisGeneration(generation))return;
+            setLoading(false);
+            if(e instanceof GraphRepositoryClientError&&e.status===401){
+                setServerAuthToken('');
+                setServerTokenRejected(true);
+                return;
             }
-            resolvedSha=revision.resolvedSha;
-            analysisContext=normalizeContext({owner:p.owner,repo:p.repo,mode:'branch',ref:revision.ref,resolvedSha:resolvedSha});
-            setProgress('Checking rate limit...');
-            return GitHub.getRateLimit();
-        }).then(function(rl){
-            var hasAuth=!!GitHub.token||authMethod==='github_app';
-            var estimatedRequests=50;// Conservative estimate for a small-medium repo
-
-            // Warn if rate limit is very low and no authentication
-            if(!hasAuth&&rl.remaining<estimatedRequests){
-                var resetTime=new Date(rl.reset*1000).toLocaleTimeString();
-                return requestConfirm({
-                    tone:'warning',
-                    icon:'warning',
-                    title:'GitHub API rate limit is low',
-                    message:
-                        'Remaining requests: '+rl.remaining+'/'+rl.limit+'\n'+
-                        'Resets at: '+resetTime+'\n\n'+
-                        'Without authentication, you only get 60 requests per hour.\n'+
-                        'Adding a token or GitHub App raises that to 5,000 requests per hour.\n\n'+
-                        'Token (PAT): GitHub Settings -> Developer Settings -> Personal access tokens\n'+
-                        'GitHub App: use App ID + Private Key for organization access\n\n'+
-                        'Continue anyway with the remaining requests?',
-                    confirmLabel:'Continue anyway'
-                }).then(function(proceed){
-                    if(!proceed){
-                        setLoading(false);
-                        return Promise.reject('cancelled');
-                    }
-                    setProgress('Scanning repository...');
-                    return GitHub.scan(p.owner,p.repo,setProgress,currentExcludePatterns,resolvedSha);
-                });
-            }
-
-            setProgress('Scanning repository...');
-            return GitHub.scan(p.owner,p.repo,setProgress,currentExcludePatterns,resolvedSha);
-        }).then(function(files){
-            if(!files)return;// Cancelled
-            if(!files.length)throw new Error(currentExcludePatterns.length?'No code files found after applying exclude patterns':'No code files found');
-            var SOFT_LIMIT=ANALYSIS_LIMITS.repoSoft,HARD_LIMIT=ANALYSIS_LIMITS.repoMax;
-            function beginRepoAnalysis(){
-                if(files.length>HARD_LIMIT){
-                    showNotification('Found '+files.length+' files. Using a '+HARD_LIMIT+'-file API sample. Use Open ZIP for full analysis.','warning');
-                }
-                var max=Math.min(files.length,HARD_LIMIT);
-                var analyzed=[];
-                var allFns=[];
-
-                function processFile(i){
-                    if(i>=max){finishAnalysis();return;}
-                    var f=files[i];
-                    setProgress('Analyzing '+(i+1)+'/'+max+': '+f.name);
-                    var isCodeFile=f.isCode!==false&&Parser.isCode(f.name);
-                    if(isCodeFile){
-                        Promise.all([
-                            GitHub.getFile(p.owner,p.repo,f.path,resolvedSha),
-                            GitHub.getCommits(p.owner,p.repo,f.path,10).catch(function(){return[];})
-                        ]).then(function(results){
-                            var content=results[0];
-                            var commits=results[1];
-                            if(content){
-                                var layer=Parser.detectLayer(f.path);
-                                var actualIsCode=!Parser.isScriptContainer(f.path)||Parser.hasEmbeddedCode(content,f.path);
-                                var fns=actualIsCode?Parser.extract(content,f.path):[];
-                                analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:Array.isArray(commits)?commits.length:0,isCode:actualIsCode});
-                                if(actualIsCode){
-                                    fns.forEach(function(fn){allFns.push(Object.assign({},fn,{folder:f.folder,layer:layer}));});
-                                }
-                            }
-                            processFile(i+1);
-                        }).catch(function(){processFile(i+1);});
-                    }else{
-                        GitHub.getFile(p.owner,p.repo,f.path,resolvedSha).then(function(content){
-                            var layer=Parser.detectLayer(f.path);
-                            var lines=content?content.split('\n').length:0;
-                            analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content||'',functions:[],lines:lines,layer:layer,churn:0,isCode:false});
-                            processFile(i+1);
-                        }).catch(function(){
-                            analyzed.push({path:f.path,name:f.name,folder:f.folder,content:'',functions:[],lines:0,layer:Parser.detectLayer(f.path),churn:0,isCode:false});
-                            processFile(i+1);
-                        });
-                    }
-                }
-
-                async function finishAnalysis(){
-                    if(!isCurrentAnalysisGeneration(generation))return;
-                    try{
-                        var dataObj=await runAnalysisData({
-                            analyzed:analyzed,
-                            allFns:allFns,
-                            excludePatterns:currentExcludePatterns.map(function(x){return x.raw;}),
-                            progress:setProgress,
-                            yieldFn:yieldToBrowser
-                        });
-                        if(!isCurrentAnalysisGeneration(generation))return;
-                        // MOO-69 PR review: analysisContext was already
-                        // resolved *before* scanning began (see the top of
-                        // analyze()), and every scan/getFile call above was
-                        // pinned to that same resolvedSha -- so the graph is
-                        // built synchronously here, immediately alongside
-                        // dataObj, with no further async resolution step
-                        // that could race against a newer analysis.
-                        var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:analysisContext,analyzer:{name:'codeflow-repository-adapter',version:'1.0.0'}});
-                        if(!isCurrentAnalysisGeneration(generation))return;
-                        setData(dataObj);
-                        setRepositoryGraph(graph);
-                        setExpandedPaths(new Set(['']));
-                        writeRepoRoute(p.owner+'/'+p.repo);
-                        setLoading(false);
-                    }catch(err){
-                        if(!isCurrentAnalysisGeneration(generation))return;
-                        setError('Analysis failed: '+(err.message||err)+'. Try a smaller repository.');
-                        setLoading(false);
-                    }
-                }
-
-                processFile(0);
-                return null;
-            }
-
-            if(files.length>SOFT_LIMIT&&files.length<=HARD_LIMIT){
-                return requestConfirm({
-                    tone:'warning',
-                    icon:'warning',
-                    title:'Analyze a large repository?',
-                    message:
-                        'This repository has '+files.length+' files.\n\n'+
-                        'Analyzing larger repositories can take longer and may hit GitHub API rate limits.\n\n'+
-                        'Tip: add a token or GitHub App for higher limits.',
-                    confirmLabel:'Analyze repository'
-                }).then(function(proceed){
-                    if(!proceed){
-                        setLoading(false);
-                        return Promise.reject('cancelled');
-                    }
-                    return beginRepoAnalysis();
-                });
-            }
-
-            if(files.length>HARD_LIMIT){
-                return requestConfirm({
-                    tone:'warning',
-                    icon:'archive',
-                    title:'Analyze a GitHub API sample?',
-                    message:
-                        'This GitHub repository has '+files.length+' analyzable files.\n\n'+
-                        'The browser cannot read GitHub zipball archives directly because GitHub redirects archive downloads to a CORS-restricted host.\n\n'+
-                        'For full analysis: download the repository ZIP from GitHub, then use Open ZIP in CodeFlow.\n\n'+
-                        'Continue now with a '+HARD_LIMIT+'-file API sample?',
-                    confirmLabel:'Analyze sample'
-                }).then(function(proceed){
-                    if(!proceed){
-                        setLoading(false);
-                        return Promise.reject('cancelled');
-                    }
-                    return beginRepoAnalysis();
-                });
-            }
-
-            return beginRepoAnalysis();
-        }).catch(function(e){if(e!=='cancelled'&&isCurrentAnalysisGeneration(generation)){setError(e.message||e);setLoading(false);}});
+            setError(e.message||e);
+        });
     }
 
     function launchLocalFolderPicker(compiledPatterns){
@@ -2342,7 +2161,7 @@ function App(){
                     var layer=Parser.detectLayer(f.path);
                     var actualIsCode=!Parser.isScriptContainer(f.path)||Parser.hasEmbeddedCode(content,f.path);
                     var fns=actualIsCode?Parser.extract(content,f.path):[];
-                    analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:0,isCode:actualIsCode});
+                    analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:0,isCode:actualIsCode,parserProvenance:fns.provenance});
                     if(actualIsCode){
                         fns.forEach(function(fn){allFns.push(Object.assign({},fn,{folder:f.folder,layer:layer}));});
                     }
@@ -2453,7 +2272,7 @@ function App(){
                     if(isCodeFile){
                         var actualIsCode=!Parser.isScriptContainer(f.path)||Parser.hasEmbeddedCode(content,f.path);
                         var fns=actualIsCode?Parser.extract(content,f.path):[];
-                        analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:0,isCode:actualIsCode});
+                        analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:0,isCode:actualIsCode,parserProvenance:fns.provenance});
                         if(actualIsCode){
                             fns.forEach(function(fn){allFns.push(Object.assign({},fn,{folder:f.folder,layer:layer}));});
                         }
@@ -2552,7 +2371,7 @@ function App(){
                     if(isCodeFile){
                         var actualIsCode=!Parser.isScriptContainer(f.path)||Parser.hasEmbeddedCode(content,f.path);
                         var fns=actualIsCode?Parser.extract(content,f.path):[];
-                        analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:0,isCode:actualIsCode});
+                        analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:0,isCode:actualIsCode,parserProvenance:fns.provenance});
                         if(actualIsCode){
                             fns.forEach(function(fn){allFns.push(Object.assign({},fn,{folder:f.folder,layer:layer}));});
                         }
@@ -2593,7 +2412,13 @@ function App(){
                 setMobilePanel('details');
                 setLegendCollapsed(true);
             }
-            var blast=calcBlast(path,data.connections,data.files);
+            // MOO-72 Commit 1A: server-sourced repository analysis has a
+            // real GraphIR to compute blast radius from directly (no
+            // GitHub.token needed either way); local/folder/ZIP analysis
+            // never builds one (see resetAnalysisState), so it keeps using
+            // the legacy connections/files-array algorithm. Same numbers
+            // either way -- see tests/blast-radius.test.mjs's parity proof.
+            var blast=repositoryGraph?calcBlastFromGraph(path,repositoryGraph):calcBlast(path,data.connections,data.files);
             setBlastRadius(blast);
             setOwnership(null);
             setExpandedFns(new Set());
@@ -2606,7 +2431,7 @@ function App(){
             }
             updateGraphHighlight(path,blast);
         }
-    },[data,repoInfo,localSourceKind,isMobile]);
+    },[data,repositoryGraph,repoInfo,localSourceKind,isMobile]);
     selectFileRef.current=selectFile;
 
     // MOO-69 Commit 4: double-click drill-down. Reads only the already-built
@@ -2740,7 +2565,27 @@ function App(){
             })();
         }else{
             // Fetch from GitHub
-            GitHub.getFile(repoInfo.owner,repoInfo.repo,path).then(function(content){
+            // MOO-72 Commit 1A review: server-sourced repositoryGraph never
+            // ships file content (see repositoryGraphToViewModel.js), so
+            // this fallback now runs for every GitHub-sourced preview, not
+            // rarely. Without pinning to the same revision the analysis
+            // actually ran against, the graph can represent commit A while
+            // the preview silently shows a later commit B's content.
+            //
+            // MOO-72 Commit 1A review (round 2): repoInfo.owner/repo is
+            // always the *base* repository. For a cross-repository PR, the
+            // analyzed head SHA and its file content live in the PR head's
+            // repo (a contributor's fork) -- repositoryGraph.context's
+            // sourceOwner/sourceRepo (src/graph-ir/githubContext.js's
+            // normalizeContext) carry exactly that distinction, equal to
+            // owner/repo for a same-repo analysis and to the fork for a
+            // cross-repo PR. Fetching from repoInfo.owner/repo with a
+            // fork-only SHA would 404 or (worse) silently return the base
+            // repo's unrelated content at that path.
+            var previewOwner=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceOwner)||repoInfo.owner;
+            var previewRepo=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceRepo)||repoInfo.repo;
+            var previewRef=repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha;
+            GitHub.getFile(previewOwner,previewRepo,path,previewRef).then(function(content){
                 if(content){
                     setFilePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
                 }else{
@@ -2768,8 +2613,19 @@ function App(){
         if(colorMode==='folder'){data.folders.forEach(function(f,i){m[f]=COLORS[i%COLORS.length];});m['root']=COLORS[0];}
         else if(colorMode==='layer')data.files.forEach(function(f){m[f.path]=LAYER_COLORS[f.layer]||COLORS[0];});
         else if(colorMode==='churn'){
-            var maxC=Math.max.apply(null,data.files.map(function(f){return f.churn||0;}))||1;
-            data.files.forEach(function(f){var r=(f.churn||0)/maxC;m[f.path]=r>0.7?'#ff5f5f':r>0.4?'#ff9f43':'#22c55e';});
+            // MOO-72 Commit 1A: null means "not computed" (server-sourced
+            // repository analysis doesn't fetch per-file commit history),
+            // distinct from a real 0. Unknown-churn files get a neutral
+            // color rather than being silently plotted as if verified
+            // zero-churn (which would previously have colored them the
+            // same green as a genuinely quiet file).
+            var churnValues=data.files.map(function(f){return f.churn;}).filter(function(c){return c!=null;});
+            var maxC=churnValues.length?Math.max.apply(null,churnValues)||1:1;
+            data.files.forEach(function(f){
+                if(f.churn==null){m[f.path]='#6b7280';return;}
+                var r=f.churn/maxC;
+                m[f.path]=r>0.7?'#ff5f5f':r>0.4?'#ff9f43':'#22c55e';
+            });
         }
         return m;
     },[data,colorMode]);
@@ -4255,7 +4111,7 @@ function App(){
                                 var layer=Parser.detectLayer(f.path);
                                 var actualIsCode=!Parser.isScriptContainer(f.path)||Parser.hasEmbeddedCode(content,f.path);
                                 var fns=actualIsCode?Parser.extract(content,f.path):[];
-                                analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:Array.isArray(commits)?commits.length:0,isCode:actualIsCode});
+                                analyzed.push({path:f.path,name:f.name,folder:f.folder,content:content,functions:fns,lines:content.split('\n').length,layer:layer,churn:Array.isArray(commits)?commits.length:0,isCode:actualIsCode,parserProvenance:fns.provenance});
                                 if(actualIsCode){fns.forEach(function(fn){allFns.push(Object.assign({},fn,{folder:f.folder,layer:layer}));});}
                             }
                             processFile(i+1);
@@ -4279,7 +4135,18 @@ function App(){
             });
         }).then(function(dataObj){
             if(!dataObj||!isCurrentAnalysisGeneration(generation))return null;
-            var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:context,analyzer:{name:'codeflow-repository-adapter',version:'1.0.0'}});
+            // MOO-72 Commit 1A review (round 2): this legacy, still-
+            // client-side PR-head path computes real per-file churn (see
+            // GitHub.getCommits above) and runs Parser in the browser
+            // (different parser availability than the server path), so it
+            // must not share 'codeflow-repository-adapter's identity --
+            // that name/version is reserved for the server-authoritative
+            // analyzer (server/routes/graph-repository.js's ANALYZER),
+            // which returns churn:null and a different parser profile.
+            // Conflating the two under one identity would let a cache or
+            // provenance consumer treat a real-churn, client-parsed result
+            // as interchangeable with a server-computed one.
+            var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:context,analyzer:{name:'codeflow-pr-head-adapter',version:'1.2.0'}});
             if(!isCurrentAnalysisGeneration(generation))return null;
             setData(dataObj);
             setRepositoryGraph(graph);
@@ -4438,9 +4305,14 @@ function App(){
                     )
                 ),
                 React.createElement('div',{className:'mobile-source-controls'},
+                    // MOO-72 Commit 1A: same CodeFlow server token as the
+                    // desktop layout above -- required to analyze a
+                    // repository, distinct from the GitHub Token/App inputs
+                    // in the secondary row below.
+                    React.createElement('input',{className:'repo-input',type:'password','aria-label':'CodeFlow Server Token',title:'Required to analyze a repository -- not your GitHub token',placeholder:'CodeFlow Server Token',value:serverAuthToken,onChange:function(e){commitServerAuthToken(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();},style:{borderColor:serverTokenRejected?'#f87171':undefined}}),
                     React.createElement('div',{className:'mobile-primary-row'},
                         React.createElement('input',{className:'repo-input','aria-label':'Repository URL',placeholder:'owner/repo or GitHub URL',value:repoUrl,onChange:function(e){setRepoUrl(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();}}),
-                        React.createElement('button',{id:'mobile-analyze-btn',className:'top-btn primary mobile-analyze-btn','aria-label':'Analyze repository',title:'Analyze',onClick:analyze,disabled:loading||!repoUrl,type:'button'},
+                        React.createElement('button',{id:'mobile-analyze-btn',className:'top-btn primary mobile-analyze-btn','aria-label':'Analyze repository',title:'Analyze',onClick:analyze,disabled:loading||!repoUrl||!serverAuthToken,type:'button'},
                             React.createElement(Icon,{name:loading?'activity':'search',size:'m'})
                         )
                     ),
@@ -4489,7 +4361,17 @@ function App(){
                 React.createElement('span',{className:'logo-text'},'CODEFLOW')
             ),
             React.createElement('div',{className:'repo-input-group'},
-                React.createElement('input',{className:'repo-input','aria-label':'Repository URL',placeholder:'owner/repo or GitHub URL',value:repoUrl,onChange:function(e){setRepoUrl(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();}}),
+                // MOO-72 Commit 1A: the CodeFlow server's own AUTH_TOKEN,
+                // required for every /api/graph/* request (repository, file,
+                // and function). Deliberately a distinct field from the
+                // GitHub Token/App inputs below, which authenticate a
+                // *different* thing (this browser's own GitHub access, used
+                // only by the legacy ownership/blame and file-preview
+                // fallback features) -- conflating the two is exactly the
+                // "wrong token in the wrong prompt" confusion this cutover
+                // must not create.
+                React.createElement('input',{className:'repo-input',type:'password','aria-label':'CodeFlow Server Token',title:'Required to analyze a repository -- not your GitHub token',placeholder:'CodeFlow Server Token',value:serverAuthToken,onChange:function(e){commitServerAuthToken(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();},style:{minWidth:140,borderColor:serverTokenRejected?'#f87171':undefined}}),
+                React.createElement('input',{className:'repo-input repo-url-input','aria-label':'Repository URL',placeholder:'owner/repo or GitHub URL',value:repoUrl,onChange:function(e){setRepoUrl(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();}}),
                 React.createElement('select',{className:'auth-select','aria-label':'Authentication Method',value:authMethod,onChange:function(e){setAuthMethod(e.target.value);}},
                     React.createElement('option',{value:'none'},'No Auth'),
                     React.createElement('option',{value:'pat'},'Token (PAT)'),
@@ -4510,7 +4392,7 @@ function App(){
                     !data&&'Excludes',
                     (!data&&customExcludeCount>0)?' ('+customExcludeCount+')':''
                 ),
-                React.createElement('button',{id:'analyze-btn',className:'top-btn primary','aria-label':'Analyze repository',title:'Analyze repository',onClick:analyze,disabled:loading||!repoUrl},
+                React.createElement('button',{id:'analyze-btn',className:'top-btn primary','aria-label':'Analyze repository',title:'Analyze repository',onClick:analyze,disabled:loading||!repoUrl||!serverAuthToken},
                     React.createElement(Icon,{name:loading?'activity':'search',size:'m'}),
                     !data&&'Analyze'
                 ),

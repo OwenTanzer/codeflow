@@ -167,7 +167,7 @@ export function renderRepositoryGraph(options) {
         node.call(d3.drag().on('start',function(e,d){if(!e.active)sim.alphaTarget(0.1).restart();d.fx=d.x;d.fy=d.y;}).on('drag',function(e,d){d.fx=e.x;d.fy=e.y;}).on('end',function(e,d){if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
         node.on('click',function(e,d){e.stopPropagation();if(selectFileRef.current)selectFileRef.current(d.id);});
         node.on('dblclick',function(e,d){e.stopPropagation();if(activateFileRef&&activateFileRef.current)activateFileRef.current(d.id);});
-        node.on('mouseenter',function(e,d){var r=svgEl.getBoundingClientRect();onHover({x:e.clientX-r.left+10,y:e.clientY-r.top,title:d.name,content:d.fnCount+' functions\n'+d.layer+' layer\n'+d.churn+' recent commits'});}).on('mouseleave',function(){onHover(null);});
+        node.on('mouseenter',function(e,d){var r=svgEl.getBoundingClientRect();var churnLine=d.churn==null?'Churn not computed':d.churn+' recent commits';onHover({x:e.clientX-r.left+10,y:e.clientY-r.top,title:d.name,content:d.fnCount+' functions\n'+d.layer+' layer\n'+churnLine});}).on('mouseleave',function(){onHover(null);});
         svg.on('click',function(e){if(e.target===svgEl){onBackgroundClick();link.attr('stroke',theme==='light'?'#ccc':'#333').attr('stroke-opacity',0.4);node.selectAll('.nc').attr('opacity',1).attr('fill',getC);}});
         node.append('circle').attr('class','nc').attr('r',getR).attr('fill',getC)
             .attr('stroke',function(d){if(changedPaths&&changedPaths.has(d.id))return'#f59e0b';var c=d3.color(getC(d));return c?c.brighter(0.3):'#fff';})

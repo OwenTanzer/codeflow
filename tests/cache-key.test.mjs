@@ -57,6 +57,31 @@ test('a requested coordinate participates in the key (file/function requests dif
   assert.notEqual(whole, scoped);
 });
 
+// MOO-72 Commit 1A: excludePatterns change which files a repository
+// analysis actually contains, so they must be part of the cache key --
+// these mirror the existing depth/coordinate collision tests above.
+test('different excludePatterns never collide', () => {
+  const a = buildCacheKey(baseInput({ options: { excludePatterns: [] } }));
+  const b = buildCacheKey(baseInput({ options: { excludePatterns: ['node_modules'] } }));
+  assert.notEqual(a, b);
+});
+
+test('excludePatterns lists that only differ in order still collide (caller is expected to sort first)', () => {
+  // buildCacheKey's sortKeysDeep sorts object keys, not array element
+  // order -- server/routes/graph-repository.js sorts the exclude-pattern
+  // array itself before calling buildCacheKey specifically so two
+  // semantically-identical exclude sets supplied in a different order
+  // still hit the same cache entry. This test documents that buildCacheKey
+  // itself does NOT do that sorting -- the caller must.
+  const a = buildCacheKey(baseInput({ options: { excludePatterns: ['a', 'b'] } }));
+  const b = buildCacheKey(baseInput({ options: { excludePatterns: ['b', 'a'] } }));
+  assert.notEqual(a, b, 'unsorted arrays are expected to differ -- proves sorting must happen before calling buildCacheKey');
+
+  const aSorted = buildCacheKey(baseInput({ options: { excludePatterns: ['a', 'b'].sort() } }));
+  const bSorted = buildCacheKey(baseInput({ options: { excludePatterns: ['b', 'a'].sort() } }));
+  assert.equal(aSorted, bSorted, 'once both are sorted the same way, the keys match');
+});
+
 test('buildCacheKey requires context/analyzer identity/schema version', () => {
   assert.throws(() => buildCacheKey({ analyzerName: 'x', analyzerVersion: '1', graphSchemaVersion: 1 }), TypeError);
   assert.throws(() => buildCacheKey({ context: ctx(SHA_A), graphSchemaVersion: 1 }), TypeError);

@@ -133,6 +133,21 @@ const Parser={
         var cfg=Parser.getTreeSitterConfig(filename);
         return cfg?Parser._tsParsers[cfg.grammar]||null:null;
     },
+    // MOO-72 Commit 1A review (round 2): this is a best-effort *inference*
+    // from ambient state at call time (whether a tree-sitter parser happens
+    // to be loaded, whether acorn exists and the extension matches) -- it
+    // does not know what actually happened for this specific file. It can
+    // be wrong: e.g. it always guesses 'acorn-babel' for a JS/TS extension
+    // whenever acorn is loaded, even on a file where Babel/acorn internally
+    // threw and extract() silently fell back to extractWithRegex. extract()
+    // now records the real, observed path on its return value
+    // (`fns.provenance`) at the one place this matters -- the JS/TS/acorn
+    // branch, where success/failure is a genuine runtime decision, not a
+    // static file-extension fact -- and every caller of extract() carries
+    // that into `f.parserProvenance` before this function is ever
+    // consulted (buildAnalysisData: `f.parserProvenance||Parser.getParserProvenance(...)`).
+    // This function remains only as the fallback for callers that bypass
+    // extract() entirely.
     getParserProvenance:function(filename){
         var lower=(filename||'').toLowerCase();
         var cfg=Parser.getTreeSitterConfig(filename);
@@ -905,9 +920,27 @@ const Parser={
             return block.kind==='script';
         });
         if(scriptBlocks.length){
+            // MOO-72 Commit 1A review (round 3): this branch previously
+            // returned without ever setting fns.provenance, so embedded-
+            // script files (HTML/Vue/Svelte) silently fell through to
+            // getParserProvenance()'s unreliable ambient-global guess.
+            // extractJSFunctions() now returns the real label per block;
+            // reduced here to the single worst-case (most-degraded) label
+            // across all of a file's script blocks, since fns.provenance
+            // is file-granularity everywhere else in this codebase (a true
+            // per-function label would need threading the block's label
+            // into each addFn call instead of one file-level scalar --
+            // not done here, matching the granularity every other
+            // provenance consumer already expects).
+            var provenanceRank={'javascript-regex':0,'typescript-regex':0,'acorn-typescript-strip':1,'acorn-babel':2,'acorn':3};
+            var worstProvenance=null;
             scriptBlocks.forEach(function(block){
-                Parser.extractJSFunctions(block.content,filename,block.offset,addFn,extractCode,block.isTS);
+                var provenance=Parser.extractJSFunctions(block.content,filename,block.offset,addFn,extractCode,block.isTS);
+                if(provenance&&(worstProvenance===null||provenanceRank[provenance]<provenanceRank[worstProvenance])){
+                    worstProvenance=provenance;
+                }
             });
+            fns.provenance=worstProvenance;
             return fns;
         }
         if(Parser.isScriptContainer(filename)){
@@ -947,6 +980,8 @@ const Parser={
         if((isJS||isTS)&&typeof acorn!=='undefined'){
             var parseContent=scriptContent;
             var parseSuccess=false;
+            var babelSucceeded=false;
+            var tsStripped=false;
 
             // Use Babel (real parser) to handle JSX and TypeScript properly
             // Babel transforms JSX → React.createElement and strips TS types,
@@ -962,14 +997,17 @@ const Parser={
                         retainLines:true
                     });
                     parseContent=babelResult.code;
+                    babelSucceeded=true;
                 }catch(babelErr){
                     // Babel failed, fall back to manual TypeScript stripping
                     if(isTS){
                         parseContent=Parser.stripTypeScript(scriptContent);
+                        tsStripped=true;
                     }
                 }
             }else if(isTS){
                 parseContent=Parser.stripTypeScript(scriptContent);
+                tsStripped=true;
             }
 
             // Parse clean JS with acorn
@@ -1130,6 +1168,27 @@ const Parser={
             if(!parseSuccess){
                 Parser.extractWithRegex(scriptContent,filename,scriptOffset,addFn,extractCode);
             }
+            // MOO-72 Commit 1A review (round 2): record what actually ran,
+            // not what `getParserProvenance` would later guess from ambient
+            // globals -- `typeof acorn!=='undefined'` being true doesn't
+            // mean this specific file's AST parse succeeded (Babel can
+            // throw and fall back to manual TS-stripping, and acorn's own
+            // parse can throw entirely, both already handled above by
+            // falling back to extractWithRegex). babelSucceeded tracks
+            // whether Babel's *own* transform succeeded (vs. the isTS
+            // manual-stripping fallback or Babel being absent entirely).
+            //
+            // MOO-72 Commit 1A review (round 3): a 5th case was collapsed
+            // into plain 'acorn' -- a TS file whose Babel was absent/failed
+            // still got AST-parsed, but only after Parser.stripTypeScript
+            // ran a manual, less-precise transform. Labeling that the same
+            // as a plain JS file acorn parsed with zero transformation hid
+            // a real difference in how the result was produced. The regex
+            // fallback is also split by isTS now, since a JS regex fallback
+            // and a TS regex fallback are different degraded profiles.
+            fns.provenance=parseSuccess
+                ?(babelSucceeded?'acorn-babel':(tsStripped?'acorn-typescript-strip':'acorn'))
+                :(isTS?'typescript-regex':'javascript-regex');
         }else if(isPython){
             // Python: extract classes, functions, async functions, decorators, and methods
             var currentClass=null;
@@ -1468,11 +1527,21 @@ const Parser={
                 addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,type:'function'});
         });
     },
+    // MOO-72 Commit 1A review (round 3): returns the parser path actually
+    // taken -- 'acorn'/'acorn-babel'/'acorn-typescript-strip'/
+    // 'javascript-regex'/'typescript-regex' -- mirroring extract()'s own
+    // fns.provenance labeling, since this function has the identical
+    // AST-vs-regex-vs-Babel-vs-stripTypeScript decision structure but
+    // previously reported nothing at all, leaving embedded-script (HTML/
+    // Vue/Svelte) files to fall through to the unreliable
+    // getParserProvenance() ambient-global guess.
     extractJSFunctions:function(content,filename,offset,addFn,extractCode,isTS){
-        if(!content||!content.trim())return;
+        if(!content||!content.trim())return undefined;
         if(typeof acorn!=='undefined'){
             var parseContent=content;
             var parseSuccess=false;
+            var babelSucceeded=false;
+            var tsStripped=false;
 
             if(typeof Babel!=='undefined'){
                 try{
@@ -1485,13 +1554,16 @@ const Parser={
                         retainLines:true
                     });
                     parseContent=babelResult.code;
+                    babelSucceeded=true;
                 }catch(babelErr){
                     if(isTS){
                         parseContent=Parser.stripTypeScript(content);
+                        tsStripped=true;
                     }
                 }
             }else if(isTS){
                 parseContent=Parser.stripTypeScript(content);
+                tsStripped=true;
             }
 
             try{
@@ -1637,10 +1709,13 @@ const Parser={
             if(!parseSuccess){
                 Parser.extractWithRegex(content,filename,offset,addFn,extractCode);
             }
-            return;
+            return parseSuccess
+                ?(babelSucceeded?'acorn-babel':(tsStripped?'acorn-typescript-strip':'acorn'))
+                :(isTS?'typescript-regex':'javascript-regex');
         }
 
         Parser.extractWithRegex(content,filename,offset,addFn,extractCode);
+        return isTS?'typescript-regex':'javascript-regex';
     },
     findJSCalls:function(content,fnNames,defLines,options){
         fnNames=Parser.candidateFunctionNames(content,fnNames);
@@ -2070,26 +2145,56 @@ const Parser={
                     var root=tree.rootNode;
                     var fnSet=new Set(fnNames);
 
-                    // Determine if an identifier node is a definition name (not a usage)
+                    // Determine if an identifier node is a definition name (not a usage).
+                    // MOO-72 Commit 1A review (round 2, Blocker B): every comparison here
+                    // must use SyntaxNode#equals, not `===` -- web-tree-sitter allocates a
+                    // fresh JS wrapper object on every `childForFieldName`/`children[i]`
+                    // access, so two accesses of the "same" underlying node are never
+                    // reference-equal even though `.equals()`/`.id` confirm they're
+                    // identical. `===` here silently never matches, so definition names
+                    // (e.g. `def helper` itself) were being double-counted as calls to
+                    // `helper` -- found and fixed while first exercising this function
+                    // against a real (not stubbed) tree-sitter parser.
+                    function sameNode(a,b){return !!a&&!!b&&a.equals(b);}
                     function isPyDefName(node){
                         var p=node.parent;
                         if(!p)return false;
                         // Function/class definition name: def foo / class Foo
                         if((p.type==='function_definition'||p.type==='class_definition')&&
-                            p.childForFieldName('name')===node)return true;
+                            sameNode(p.childForFieldName('name'),node))return true;
                         // Parameter names in function signatures
                         if(p.type==='parameters'||p.type==='lambda_parameters')return true;
                         if((p.type==='typed_parameter'||p.type==='default_parameter'||
-                            p.type==='typed_default_parameter')&&p.children[0]===node)return true;
+                            p.type==='typed_default_parameter')&&sameNode(p.children[0],node))return true;
                         if(p.type==='list_splat_pattern'||p.type==='dictionary_splat_pattern')return true;
                         // For loop target: for x in ...
-                        if(p.type==='for_statement'&&p.childForFieldName('left')===node)return true;
+                        if(p.type==='for_statement'&&sameNode(p.childForFieldName('left'),node))return true;
                         // With statement target: with x as y
-                        if(p.type==='as_pattern'&&p.childForFieldName('alias')===node)return true;
+                        if(p.type==='as_pattern'&&sameNode(p.childForFieldName('alias'),node))return true;
                         // Exception handler: except E as e
                         if(p.type==='except_clause')return false; // the exception type IS a reference
                         // Comprehension targets: [x for x in ...]
-                        if(p.type==='for_in_clause'&&p.childForFieldName('left')===node)return true;
+                        if(p.type==='for_in_clause'&&sameNode(p.childForFieldName('left'),node))return true;
+                        // MOO-72 Commit 1A review (round 3): assignment/rebinding
+                        // targets, destructuring, walrus, keyword-argument labels,
+                        // and global/nonlocal declarations were all missing --
+                        // `def helper(): pass` followed by `helper=None` counted
+                        // the rebinding as a call to `helper`. Confirmed real
+                        // tree-sitter node types/fields by parsing each construct
+                        // with the installed grammar rather than assuming.
+                        // Assignment/augmented-assignment targets: helper=None / helper+=1
+                        if((p.type==='assignment'||p.type==='augmented_assignment')&&
+                            sameNode(p.childForFieldName('left'),node))return true;
+                        // Destructuring targets: a,b=1,2 -- identifiers inside these
+                        // patterns have no field name, so any direct child is a target.
+                        if(p.type==='pattern_list'||p.type==='tuple_pattern'||p.type==='list_pattern')return true;
+                        // Walrus operator: if (n := compute()):
+                        if(p.type==='named_expression'&&sameNode(p.childForFieldName('name'),node))return true;
+                        // Keyword-argument label: foo(name=value) -- `name` is a
+                        // label, not a reference to a function named `name`.
+                        if(p.type==='keyword_argument'&&sameNode(p.childForFieldName('name'),node))return true;
+                        // global helper / nonlocal helper
+                        if(p.type==='global_statement'||p.type==='nonlocal_statement')return true;
                         return false;
                     }
 
@@ -2343,6 +2448,68 @@ function shouldIgnoreDirectory(path,name,compiledPatterns){
 
 function shouldExcludeFile(path,name,compiledPatterns){
     return !Parser.isIncluded(name)||matchesExcludePattern(compiledPatterns,path,name);
+}
+
+// MOO-72 Commit 1A: moved here from index.html for the same reason
+// normalizeExcludePath/matchesExcludePattern/shouldIgnoreDirectory/
+// shouldExcludeFile were moved in MOO-67 Commit 6 -- the server now
+// accepts client-sent raw exclude-pattern strings for /api/graph/repository
+// and must compile them into the same {raw,lower,regex} shape
+// matchesExcludePattern expects, which previously only existed as a
+// window-global in the browser.
+function parseExcludePatterns(input){
+    var seen=new Set();
+    return (input||'').split(/\r?\n|,/).map(function(item){
+        return normalizeExcludePath(item.trim()).replace(/\/$/,'');
+    }).filter(function(item){
+        if(!item||seen.has(item.toLowerCase()))return false;
+        seen.add(item.toLowerCase());
+        return true;
+    });
+}
+
+function escapeRegexChar(ch){
+    return /[|\\{}()[\]^$+?.]/.test(ch)?'\\'+ch:ch;
+}
+
+function globToRegex(pattern){
+    var normalized=normalizeExcludePath(pattern).toLowerCase();
+    var out='^';
+    for(var i=0;i<normalized.length;i++){
+        var ch=normalized[i];
+        if(ch==='*'){
+            if(normalized[i+1]==='*'){
+                if(normalized[i+2]==='/'){
+                    out+='(?:[^/]+/)*';
+                    i+=2;
+                }else{
+                    out+='.*';
+                    i++;
+                }
+            }else{
+                out+='[^/]*';
+            }
+        }else if(ch==='?'){
+            out+='[^/]';
+        }else{
+            out+=escapeRegexChar(ch);
+        }
+    }
+    out+='$';
+    return new RegExp(out,'i');
+}
+
+function compileExcludePatterns(input){
+    return parseExcludePatterns(input).map(function(pattern){
+        var lower=pattern.toLowerCase();
+        var hasGlob=pattern.includes('*')||pattern.includes('?');
+        var hasPath=pattern.includes('/');
+        return{
+            raw:pattern,
+            lower:lower,
+            regex:(hasGlob||hasPath)?globToRegex(pattern):null
+        };
+    });
 }
 
 var GitHub={
@@ -4478,4 +4645,4 @@ function runAnalysisData(options){
 // added here or that call site will throw a ReferenceError (see the
 // window-bridge <script type="module"> in index.html, which assigns
 // exactly these exports onto window via Object.assign).
-export { getSecurityScanContent, isSanitizedPreviewRenderer, Parser, escapeHtml, renderTooltipHtml, GitHub, countFiles, getArchitectureGroupOrder, getVisibleArchitectureBlocks, computeArchitectureStats, generateMermaidBlockDiagram, buildArchitectureDiagram, buildAnalysisData, calcBlast, calcHealth, createAnalysisWorkerSource, runAnalysisData, shouldExcludeFile, shouldIgnoreDirectory, matchesExcludePattern, normalizeExcludePath };
+export { getSecurityScanContent, isSanitizedPreviewRenderer, Parser, escapeHtml, renderTooltipHtml, GitHub, countFiles, getArchitectureGroupOrder, getVisibleArchitectureBlocks, computeArchitectureStats, generateMermaidBlockDiagram, buildArchitectureDiagram, buildAnalysisData, calcBlast, calcHealth, createAnalysisWorkerSource, runAnalysisData, shouldExcludeFile, shouldIgnoreDirectory, matchesExcludePattern, normalizeExcludePath, parseExcludePatterns, compileExcludePatterns };

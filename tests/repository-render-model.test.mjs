@@ -19,7 +19,7 @@ const { normalizeContext } = await import('../src/graph-ir/githubContext.js');
 
 const SHA = 'a'.repeat(40);
 const CONTEXT = normalizeContext({ owner: 'octocat', repo: 'Hello-World', resolvedSha: SHA });
-const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.0.0' };
+const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.2.0' };
 
 async function analyzeFixture(name) {
   const root = join(__dirname, 'fixtures', name);
@@ -30,6 +30,45 @@ async function analyzeFixture(name) {
 test('buildRepositoryRenderModel returns empty arrays for null/undefined input', () => {
   assert.deepEqual(buildRepositoryRenderModel(null), { nodes: [], links: [] });
   assert.deepEqual(buildRepositoryRenderModel(undefined), { nodes: [], links: [] });
+});
+
+// MOO-72 Commit 1A review: a prior fix in repositoryGraphAdapter.js
+// preserved churn:null through the adapter, but two `|| 0` sites
+// downstream (fromGraphIR/fromLegacyAnalysisData in
+// repositoryRenderModel.js) silently coerced it right back into a
+// fabricated zero -- which then rendered as "0 recent commits" in
+// src/render/repositoryGraph.js's node tooltip (that D3/DOM code has no
+// unit test harness in this repo, so this test covers as far as the
+// testable boundary goes: the render model's own `churn` field, which the
+// tooltip's `d.churn==null?'Churn not computed':d.churn+' recent commits'`
+// branch reads directly).
+test('churn: null is preserved through the render model for both GraphIR and legacy input, not coerced to 0', () => {
+  const graph = {
+    layer: 'repository',
+    nodes: [
+      { id: 'file:a.py', coordinate: { path: 'a.py' }, label: 'a.py', metadata: { folder: '', functionCount: 0, layer: 'ui', churn: null } },
+      { id: 'file:b.py', coordinate: { path: 'b.py' }, label: 'b.py', metadata: { folder: '', functionCount: 0, layer: 'ui', churn: 0 } },
+      { id: 'file:c.py', coordinate: { path: 'c.py' }, label: 'c.py', metadata: { folder: '', functionCount: 0, layer: 'ui', churn: 5 } },
+    ],
+    edges: [],
+  };
+  const graphModel = buildRepositoryRenderModel(graph);
+  const churnByPathFromGraph = Object.fromEntries(graphModel.nodes.map((n) => [n.id, n.churn]));
+  assert.equal(churnByPathFromGraph['a.py'], null);
+  assert.equal(churnByPathFromGraph['b.py'], 0);
+  assert.equal(churnByPathFromGraph['c.py'], 5);
+
+  const legacyData = {
+    files: [
+      { path: 'a.py', name: 'a.py', folder: '', functions: [], layer: 'ui', churn: null },
+      { path: 'b.py', name: 'b.py', folder: '', functions: [], layer: 'ui', churn: 0 },
+    ],
+    connections: [],
+  };
+  const legacyModel = buildRepositoryRenderModel(legacyData);
+  const churnByPathFromLegacy = Object.fromEntries(legacyModel.nodes.map((n) => [n.id, n.churn]));
+  assert.equal(churnByPathFromLegacy['a.py'], null);
+  assert.equal(churnByPathFromLegacy['b.py'], 0);
 });
 
 test('the committed repository GraphIR fixture produces a valid render model', () => {

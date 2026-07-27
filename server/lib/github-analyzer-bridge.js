@@ -15,11 +15,42 @@
 // resolved ref's tree) instead of the Contents API's own ref resolution,
 // which also sidesteps needing to export more analyzer-internal URL
 // helpers just for this.
-if (!('TreeSitter' in globalThis)) globalThis.TreeSitter = undefined;
-if (!('Babel' in globalThis)) globalThis.Babel = undefined;
-if (!('acorn' in globalThis)) globalThis.acorn = undefined;
+// MOO-72 Commit 1A review (Blocker A): acorn is real, Node-compatible, pure
+// JS with zero native deps -- loading it here (rather than stubbing it to
+// undefined like Babel) fixes plain .js/.mjs/.cjs function/class discovery
+// and enables AST-based call detection for those files instead of falling
+// back to the unstripped token heuristic. It does NOT parse JSX/TS syntax
+// on its own -- .jsx/.ts/.tsx files still need Babel to strip that syntax
+// first, so Babel stays stubbed; see docs/baseline.md for the full
+// remaining-gap writeup (JSX/TS AST parsing).
+//
+// MOO-72 Commit 1A review (round 2, Blocker A): the guard below is a value
+// check (`typeof globalThis.acorn === 'undefined'`), not a presence check
+// (`!('acorn' in globalThis)`). server/index.js imports server/routes/
+// analyze.js (and transitively server/lib/analyzer-bridge.js, which stubs
+// `globalThis.acorn = undefined`) before it imports the route that pulls in
+// this file -- so by the time this module runs, `'acorn' in globalThis` is
+// already true even though the *value* is still `undefined`. A presence
+// check would silently never assign the real module regardless of import
+// order; a value check assigns real acorn any time the stub left it
+// `undefined`, independent of which bridge module happened to run first.
+import * as acorn from 'acorn';
 
-const { GitHub, Parser, shouldExcludeFile, shouldIgnoreDirectory, buildAnalysisData } = await import('../../src/analyzer.js');
+if (typeof globalThis.acorn === 'undefined') globalThis.acorn = acorn;
+if (!('Babel' in globalThis)) globalThis.Babel = undefined;
+
+const { GitHub, Parser, shouldExcludeFile, shouldIgnoreDirectory, buildAnalysisData, compileExcludePatterns } = await import(
+  '../../src/analyzer.js'
+);
+
+// MOO-72 Commit 1A review (round 2, Blocker B): wires the real Node-native
+// web-tree-sitter runtime (already used by pythonSymbolIndex.js) into
+// `globalThis.TreeSitter`, restoring real tree-sitter CST-based Python
+// call-edge detection instead of the token-heuristic fallback. See
+// node-tree-sitter-shim.js for the two Node-vs-browser incompatibilities
+// this works around.
+import { installNodeTreeSitter } from './node-tree-sitter-shim.js';
+await installNodeTreeSitter(Parser);
 
 const GITHUB_API = 'https://api.github.com';
 
@@ -129,11 +160,11 @@ export async function resolveCommitSha(owner, repo, ref) {
  * analysis runs).
  *
  * @param {Array<{type: string, path: string, sha: string, size?: number}>} treeEntries
- * @param {{maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number}} limits
+ * @param {{maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number, compiledExcludePatterns?: Array}} limits
  * @returns {{files: Array, skippedOversizedFiles: number}}
  * @throws {GithubFetchError} if the aggregate or file-count limit is exceeded
  */
-export function selectAnalyzableFiles(treeEntries, { maxRepoFiles, maxFileBytes, maxRepoBytes }) {
+export function selectAnalyzableFiles(treeEntries, { maxRepoFiles, maxFileBytes, maxRepoBytes, compiledExcludePatterns = [] }) {
   const files = [];
   let skippedOversizedFiles = 0;
   let totalBytes = 0;
@@ -144,10 +175,10 @@ export function selectAnalyzableFiles(treeEntries, { maxRepoFiles, maxFileBytes,
     const pathParts = entry.path.split('/');
     const ignored = pathParts.slice(0, -1).some((part, idx) => {
       const dirPath = pathParts.slice(0, idx + 1).join('/');
-      return shouldIgnoreDirectory(dirPath, part, []);
+      return shouldIgnoreDirectory(dirPath, part, compiledExcludePatterns);
     });
     if (ignored) continue;
-    if (shouldExcludeFile(entry.path, name, [])) continue;
+    if (shouldExcludeFile(entry.path, name, compiledExcludePatterns)) continue;
 
     const size = typeof entry.size === 'number' ? entry.size : 0;
     if (size > maxFileBytes) {
@@ -174,10 +205,10 @@ export function selectAnalyzableFiles(treeEntries, { maxRepoFiles, maxFileBytes,
 }
 
 /**
- * @param {{owner: string, repo: string, resolvedRef: string, maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number}} options
+ * @param {{owner: string, repo: string, resolvedRef: string, maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number, compiledExcludePatterns?: Array}} options
  * @returns {Promise<{files: Array, skippedOversizedFiles: number}>}
  */
-export async function fetchTree({ owner, repo, resolvedRef, maxRepoFiles, maxFileBytes, maxRepoBytes }) {
+export async function fetchTree({ owner, repo, resolvedRef, maxRepoFiles, maxFileBytes, maxRepoBytes, compiledExcludePatterns = [] }) {
   const data = await apiRequest(
     `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`,
     { 404: 'Ref not found (branch, commit, or PR head does not exist)' }
@@ -193,7 +224,7 @@ export async function fetchTree({ owner, repo, resolvedRef, maxRepoFiles, maxFil
         'the repository is too large to analyze as a whole. Point at a narrower ref/folder if this is expected.'
     );
   }
-  return selectAnalyzableFiles(data.tree, { maxRepoFiles, maxFileBytes, maxRepoBytes });
+  return selectAnalyzableFiles(data.tree, { maxRepoFiles, maxFileBytes, maxRepoBytes, compiledExcludePatterns });
 }
 
 /**
@@ -286,11 +317,20 @@ export async function fetchAllContents(owner, repo, files, concurrency = 8) {
 }
 
 /**
- * @param {{owner: string, repo: string, ref: string|null, pr: number|null}} request
+ * @param {{owner: string, repo: string, ref: string|null, pr: number|null, excludePatterns?: string[]}} request
  * @param {{githubToken: string, maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number}} config
  */
 export async function analyzeGithubRepo(request, config) {
   configureGithubClient({ token: config.githubToken });
+
+  // MOO-72 Commit 1A: exclude patterns are part of the request (what the
+  // user asked to analyze), not server config -- validateRepoRequest has
+  // already capped their count/length. compileExcludePatterns expects one
+  // delimited string (it was written for a textarea's raw value); joining
+  // with newlines reuses its existing parse/normalize/regex-compile logic
+  // rather than duplicating it for an array input.
+  const rawExcludePatterns = request.excludePatterns || [];
+  const compiledExcludePatterns = compileExcludePatterns(rawExcludePatterns.join('\n'));
 
   const { owner, repo, ref: resolvedRef } = await resolveRef(request);
   // pr mode already resolves to a real commit SHA (the PR's head.sha); any
@@ -307,6 +347,7 @@ export async function analyzeGithubRepo(request, config) {
     maxRepoFiles: config.maxRepoFiles,
     maxFileBytes: config.maxFileBytes,
     maxRepoBytes: config.maxRepoBytes,
+    compiledExcludePatterns,
   });
   const contents = await fetchAllContents(owner, repo, files);
 
@@ -327,8 +368,17 @@ export async function analyzeGithubRepo(request, config) {
       functions,
       lines: content ? content.split('\n').length : 0,
       layer,
-      churn: 0,
+      // MOO-72 Commit 1A: null, not 0 -- this path never calls
+      // GitHub.getCommits per file (that would double GitHub API usage on
+      // every scan, under one shared server token), so churn is genuinely
+      // unknown here, not "verified zero recent commits."
+      churn: null,
       isCode: actualIsCode,
+      // MOO-72 Commit 1A review (round 2): carry forward the real parser
+      // path Parser.extract actually took, so downstream provenance
+      // reporting isn't a post-hoc guess from ambient globals -- see
+      // card/lib/collect.js's identical field for the fuller rationale.
+      parserProvenance: functions.provenance,
     });
     if (actualIsCode) {
       for (const fn of functions) allFns.push({ ...fn, folder: file.folder, layer });
@@ -338,7 +388,10 @@ export async function analyzeGithubRepo(request, config) {
   const result = await buildAnalysisData({
     analyzed,
     allFns,
-    excludePatterns: [],
+    // The normalized (deduped, trimmed) raw pattern strings, matching what
+    // buildAnalysisData already expects for reporting -- compiledExcludePatterns
+    // above is the regex-bearing form used for actual filtering upstream.
+    excludePatterns: compiledExcludePatterns.map((p) => p.raw),
     progress() {},
     yieldFn: async () => {},
   });

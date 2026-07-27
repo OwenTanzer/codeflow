@@ -78,7 +78,14 @@ export function loadConfig({ repoRoot, env = process.env }) {
     errors.push(`MAX_REQUEST_BODY_BYTES must be a positive integer, got: ${JSON.stringify(env.MAX_REQUEST_BODY_BYTES)}`);
   }
 
-  const maxRepoFiles = env.MAX_REPO_FILES ? Number(env.MAX_REPO_FILES) : 500;
+  // MOO-72 Commit 1A review: 750, not 500 -- matches the ceiling the
+  // now-replaced client-side browser path used (index.html's
+  // ANALYSIS_LIMITS.repoMax). That path sampled down to 750 files with a
+  // warning rather than rejecting; this route rejects outright past the
+  // limit instead (see selectAnalyzableFiles) -- a deliberate, documented
+  // behavior change (explicit rejection over silent truncation), not a
+  // silently smaller supported repository size.
+  const maxRepoFiles = env.MAX_REPO_FILES ? Number(env.MAX_REPO_FILES) : 750;
   if (!Number.isInteger(maxRepoFiles) || maxRepoFiles <= 0) {
     errors.push(`MAX_REPO_FILES must be a positive integer, got: ${JSON.stringify(env.MAX_REPO_FILES)}`);
   }

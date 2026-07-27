@@ -19,10 +19,10 @@ preserved it rather than assert it.
 | Run the app, zero-tooling | `open index.html` — **no longer supported (intentional, decided Commit 3, see below).** Opening the file directly (`file://`) crashes with `ReferenceError: calcHealth is not defined` because the browser blocks the analyzer module's `import` under CORS for the `file://` origin. Use `npm run dev` or `npm run build && npm start` instead. |
 | Run the app, dev server (added Commit 2) | `npm install && npm run dev` — Vite dev server; now genuinely module-based as of Commit 3 (analyzer code lives in `src/analyzer.js`) |
 | Production build (added Commit 2) | `npm run build` — Vite build, output to `dist/` (as of Commit 3: `dist/index.html` ~369KB + a separate hashed `dist/assets/index-*.js` ~117KB carrying the analyzer module, gitignored) |
-| Serve the production build (added Commit 2, expanded Commits 5-6) | `npm run start` (or `node server/index.js`) — serves `dist/` plus `/healthz`, `/readyz` (public, no auth), `POST /api/analyze`, `POST /api/analyze-repo` (both require `Authorization: Bearer <AUTH_TOKEN>`); **required** env vars `AUTH_TOKEN`, `GITHUB_TOKEN`, and at least one of `ALLOWED_REPOS`/`ALLOWED_OWNERS` (comma-separated) — the server now fails fast at startup if any are missing, same fail-fast principle as the pre-existing `dist/index.html`/`PORT`/workspace-writability checks; optional: `PORT` (default `3000`), `WORKSPACE_ROOT` (default `<tmpdir>/codeflow-workspaces`), `NODE_ENV`, `RATE_LIMIT_PER_MINUTE` (default `30`), `MAX_REQUEST_BODY_BYTES` (default `16384`), `MAX_REPO_FILES` (default `500`) |
+| Serve the production build (added Commit 2, expanded Commits 5-6) | `npm run start` (or `node server/index.js`) — serves `dist/` plus `/healthz`, `/readyz` (public, no auth), `POST /api/analyze`, `POST /api/analyze-repo` (both require `Authorization: Bearer <AUTH_TOKEN>`); **required** env vars `AUTH_TOKEN`, `GITHUB_TOKEN`, and at least one of `ALLOWED_REPOS`/`ALLOWED_OWNERS` (comma-separated) — the server now fails fast at startup if any are missing, same fail-fast principle as the pre-existing `dist/index.html`/`PORT`/workspace-writability checks; optional: `PORT` (default `3000`), `WORKSPACE_ROOT` (default `<tmpdir>/codeflow-workspaces`), `NODE_ENV`, `RATE_LIMIT_PER_MINUTE` (default `30`), `MAX_REQUEST_BODY_BYTES` (default `16384`), `MAX_REPO_FILES` (default `750`) |
 | Run the server integration smoke suite (added Commit 5, expanded Commit 6) | `node tests/server-smoke.mjs` — needs `dist/` built first, and a real GitHub credential via `gh auth login` (extracts it with `gh auth token` to verify the GitHub-backed path against real repos, not a mock); spawns the real server on an isolated port/workspace root, not part of `node --test tests/*.test.mjs` for the same reason `codeflow-repo-smoke.mjs`/`ui-smoke.mjs` aren't |
 | Run the browser UI smoke suite against a server (Commit 4A, now requires Commit 6 env vars too) | `AUTH_TOKEN=x GITHUB_TOKEN=x ALLOWED_OWNERS=x node server/index.js` then `node tests/ui-smoke.mjs [url]` — the values don't need to be real for this suite specifically, since it only drives the local-folder (client-side-only) flow, never the server's `/api/*` endpoints; the server just needs to *start*, which now requires these to be set to anything non-empty |
-| Run the full test suite | `node --test tests/*.test.mjs` (132 tests as of the CodeQL fixups; `node --test tests/` alone fails — Node's directory-mode test discovery does not pick up this repo's flat `tests/*.test.mjs` layout) |
+| Run the full test suite | `node --test tests/*.test.mjs` (492 tests as of MOO-72 Commit 1A's review response, round 3; `node --test tests/` alone fails — Node's directory-mode test discovery does not pick up this repo's flat `tests/*.test.mjs` layout) |
 | Run the analyzer against an arbitrary repo | `node tests/codeflow-repo-smoke.mjs [--json] [--limit=<files>] <repo-dir>...` |
 | Run the GitHub Action analyzer locally | `cd card && node index.js` — writes `.github/codeflow-card.svg` and `.github/codeflow-card.json` **relative to `card/`** when `GITHUB_WORKSPACE` is unset (it falls back to `process.cwd()`); do not run this from the repo root without setting `GITHUB_WORKSPACE`, or it will analyze `card/` itself and leave stray output there |
 | `card/` package script | `npm run dry-run` from `card/` (alias for `node index.js`) |
@@ -957,6 +957,118 @@ The full GitHub-backed round trip (real scan → resolved SHA → real
 placeholder panel; the new endpoint's timeout/rate-limit paths) needs a
 live GitHub credential to exercise end-to-end, same manual-precondition
 category as `tests/server-smoke.mjs`'s other GitHub-requiring steps.
+
+## MOO-72 Commit 1A review — parser capability on the GitHub-backed server path
+
+`server/lib/github-analyzer-bridge.js` (the `/api/graph/repository` route's
+backing pipeline) previously stubbed `globalThis.TreeSitter`/`Babel`/`acorn`
+to `undefined` before importing `src/analyzer.js`, same as every other
+Node-side consumer documented above. As of this review (three rounds), it
+loads two of the three for real instead:
+
+- **`acorn`** (pure JS, zero native deps): `globalThis.acorn = acorn` (an
+  `import * as acorn from 'acorn'`, matching the shape `Parser`'s
+  ambient-global reads already expect — `acorn.parse(...)`). The guard is a
+  value check (`typeof globalThis.acorn === 'undefined'`), not a presence
+  check — `server/index.js` imports `server/lib/analyzer-bridge.js` (which
+  stubs `globalThis.acorn = undefined`) before it imports this file, so a
+  presence check would have found the property already existing and never
+  assigned the real module. This was a real bug in round 2's first fix,
+  caught and corrected in round 2's review response.
+- **`globalThis.TreeSitter`**: wired to the real, Node-native
+  `web-tree-sitter` + `tree-sitter-wasms` runtime via
+  `server/lib/node-tree-sitter-shim.js` (which reuses
+  `server/lib/webTreeSitterRuntime.js`'s shared singleton — also used by
+  `server/lib/pythonSymbolIndex.js` — since `web-tree-sitter`'s `Parser.init()`
+  has a load-bearing side effect: it reassigns `module.exports` to the
+  low-level runtime object the first time it's ever called anywhere in the
+  process, so two independent `require('web-tree-sitter')` + `.init()` call
+  sites in the same process silently break each other). This restores real
+  CST-based Python call-edge detection via `Parser.findCalls`'s existing
+  tree-sitter branch — Python call-edge detection is **no longer** on the
+  token-heuristic fallback in the common case.
+
+`Babel` stays stubbed `undefined` — JSX/TS AST parsing remains the one
+confirmed, tracked gap (see below).
+
+This is not a new tradeoff in kind — `server/lib/analyzer-bridge.js`'s
+`/api/analyze` route made the identical TreeSitter/Babel/acorn-stub choice
+starting Commit 6, and the whole Node test suite already ran this way. This
+review narrows that gap for the GitHub-backed repository route specifically,
+rather than inventing a new tradeoff.
+
+**What this fixes**, confirmed via differential tests
+(`tests/parser-capability-acorn.test.mjs`,
+`tests/parser-capability-python-treesitter.test.mjs`,
+`tests/parser-provenance-labels.test.mjs`):
+- Plain `.js`/`.mjs`/`.cjs` function/class discovery moves from a per-line
+  regex to real AST parsing — catches constructs the regex fallback
+  provably cannot (e.g. a multi-line arrow-function parameter list; the line
+  regex requires the whole `(...) =>` shape on one physical line).
+- JS call-edge detection also moves from an unstripped token heuristic to
+  AST-based detection, removing false positives from calls that only appear
+  inside string/comment text.
+- **Python call-edge detection now uses real tree-sitter CST scope-awareness**
+  instead of the token heuristic in the common case (server process with a
+  working `tree-sitter-wasms` install). Fixing this surfaced a genuine,
+  previously-latent bug in `isPyDefName` (`src/analyzer.js`): every
+  `childForFieldName(...)===node` comparison used JS reference equality, but
+  `web-tree-sitter` allocates a fresh wrapper object per accessor call, so
+  two accesses of the same underlying node are never `===`-equal (only
+  `.equals()`/`.id` confirm identity) — meaning a function's own definition
+  was being double-counted as a call to itself. Also missing: assignment/
+  augmented-assignment targets, destructuring, the walrus operator, keyword-
+  argument labels, and `global`/`nonlocal` declarations, each independently
+  over-counted as a call. All fixed, with regression tests per case. This
+  bug was **already live in production for browser-analyzed repos**
+  (local-folder/ZIP analysis) before this review, since the browser has
+  always loaded real `web-tree-sitter` from CDN (`index.html`'s
+  `<script src="https://cdn.jsdelivr.net/npm/web-tree-sitter@0.20.8/...">`)
+  and already called `Parser.initTreeSitter()`/`prepareTreeSitter()` on its
+  own analysis paths — the fix applies everywhere `Parser` runs, not just
+  the new server capability.
+- Incidentally, even for JSX (which acorn cannot parse — see below), having
+  acorn loaded routes `Parser.extract` into the JS-specific `extractWithRegex`
+  fallback instead of the generic multi-language `extractOtherLanguages`
+  bucket. The generic bucket only accidentally catches JS via patterns meant
+  for other languages (e.g. PHP's `function name(`) and has no `isExported`
+  detection at all; the JS-specific fallback does.
+- Parser provenance (`f.parserProvenance`, surfaced per file/node) is now
+  recorded at the point each parsing decision is actually made — `extract()`/
+  `extractJSFunctions()` return one of `acorn`, `acorn-babel`,
+  `acorn-typescript-strip`, `javascript-regex`, or `typescript-regex` —
+  instead of being inferred after the fact from ambient globals (which could
+  claim `acorn-babel` succeeded even when it hadn't). Embedded scripts
+  (HTML/Vue/Svelte, possibly multiple `<script>` blocks per file) aggregate
+  to the single worst-case (most-degraded) label across all of a file's
+  blocks. `Parser.getParserProvenance()` remains only as a best-effort
+  fallback for the rare caller that bypasses `extract()` entirely.
+- Because `installNodeTreeSitter()` can still silently fall back to
+  `globalThis.TreeSitter = undefined` if the real runtime fails to
+  initialize (e.g. a deploy that strips `tree-sitter-wasms`' vendored
+  `.wasm` files), `/api/graph/repository` derives the *effective* Python
+  parser capability from each response's own real per-node
+  `parserProvenance` values (`server/routes/graph-repository.js`'s
+  `derivePythonParserCapability`) and folds it into the cache-key `options`
+  whenever the repo has Python files — so a degraded and a full-capability
+  analysis of the same repo/revision can never collide on one cache key —
+  and pushes a warning into the response when Python files exist but none
+  show real tree-sitter provenance.
+
+**What remains a real, confirmed gap** (tracked as follow-up, not silently
+absorbed by this review):
+- `.jsx`/`.ts`/`.tsx` files still get no true AST parsing on the server
+  path — acorn alone cannot parse JSX or TypeScript syntax, and `Babel` (the
+  classic `@babel/standalone` browser-global shape `Parser` calls,
+  `Babel.transform(code, {presets:['react','typescript'], ...})`) is not
+  loaded. `@babel/core` doesn't have a drop-in equivalent to that call
+  shape; restoring this would mean depending on `@babel/standalone` itself
+  (Node-compatible, heavier) or building a small adapter over
+  `@babel/core` + `@babel/preset-react`/`@babel/preset-typescript`.
+- Every other language's function discovery and call-edge detection was
+  regex/heuristic-based even in the original browser path (tree-sitter
+  grammars for them were listed but never actually loaded) — unaffected by
+  any of this, not a regression.
 
 ## What this baseline does not cover
 
