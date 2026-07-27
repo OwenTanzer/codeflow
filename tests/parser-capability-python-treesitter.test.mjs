@@ -133,3 +133,53 @@ test('real tree-sitter and the token-heuristic fallback agree on a plain, unambi
   assert.equal(withTreeSitter.helper, 1);
   assert.equal(withHeuristic.helper, 1);
 });
+
+// MOO-72 Commit 1A review (round 3): `isPyDefName` was missing six binding
+// contexts -- confirmed by parsing each construct with the real installed
+// grammar (not guessed), each one previously miscounted a rebinding/label as
+// a call. Each test below asserts the false-positive case is 0, plus a
+// control case proving the harness would catch a real call if one existed.
+test('a plain assignment target is not counted as a call to the function it rebinds', () => {
+  const source = 'def helper():\n    pass\n\nhelper = None\n';
+  assert.equal(Parser.findCalls(source, ['helper'], 'a.py').helper, 0);
+});
+
+test('an augmented assignment target is not counted as a call', () => {
+  const source = 'def helper():\n    pass\n\nhelper += 1\n';
+  assert.equal(Parser.findCalls(source, ['helper'], 'a.py').helper, 0);
+});
+
+test('destructuring assignment targets are not counted as calls', () => {
+  const source = 'def helper():\n    pass\ndef other():\n    pass\n\nhelper, other = 1, 2\n';
+  const calls = Parser.findCalls(source, ['helper', 'other'], 'a.py');
+  assert.equal(calls.helper, 0);
+  assert.equal(calls.other, 0);
+});
+
+test('a walrus-operator (named expression) target is not counted as a call', () => {
+  const source = 'def helper():\n    return 1\n\nif (helper := compute()):\n    pass\n';
+  assert.equal(Parser.findCalls(source, ['helper'], 'a.py').helper, 0);
+});
+
+test('a keyword-argument label is not counted as a call to a function with the same name', () => {
+  const source = 'def name():\n    pass\n\nfoo(name=5)\n';
+  assert.equal(Parser.findCalls(source, ['name'], 'a.py').name, 0);
+});
+
+test('global/nonlocal declarations are not counted as calls', () => {
+  const source = [
+    'def helper():',
+    '    pass',
+    '',
+    'def f():',
+    '    global helper',
+    '    helper = 1',
+    '',
+  ].join('\n');
+  assert.equal(Parser.findCalls(source, ['helper'], 'a.py').helper, 0);
+});
+
+test('control: a real call still counts 1, proving the six fixes above did not over-exclude', () => {
+  const source = 'def helper():\n    pass\n\nhelper()\n';
+  assert.equal(Parser.findCalls(source, ['helper'], 'a.py').helper, 1);
+});

@@ -26,7 +26,7 @@ const { calcBlastFromGraph } = await import('../src/graph-ir/blastRadius.js');
 
 const SHA = 'a'.repeat(40);
 const CONTEXT = normalizeContext({ owner: 'octocat', repo: 'Hello-World', resolvedSha: SHA });
-const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.1.0' };
+const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.2.0' };
 
 async function analyzeFixture(name) {
   const root = join(__dirname, 'fixtures', name);

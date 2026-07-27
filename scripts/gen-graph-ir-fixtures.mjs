@@ -26,7 +26,7 @@ const repositoryGraph = makeGraphIR({
   context,
   generatedAt: GENERATED_AT,
   rootCoordinate: null,
-  analyzer: { name: 'codeflow-repository-adapter', version: '1.1.0' },
+  analyzer: { name: 'codeflow-repository-adapter', version: '1.2.0' },
   confidence: 1,
   groups: [{ id: 'grp-src', layer: 'repository', label: 'src', parentGroupId: null }],
   nodes: [

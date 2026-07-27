@@ -920,9 +920,27 @@ const Parser={
             return block.kind==='script';
         });
         if(scriptBlocks.length){
+            // MOO-72 Commit 1A review (round 3): this branch previously
+            // returned without ever setting fns.provenance, so embedded-
+            // script files (HTML/Vue/Svelte) silently fell through to
+            // getParserProvenance()'s unreliable ambient-global guess.
+            // extractJSFunctions() now returns the real label per block;
+            // reduced here to the single worst-case (most-degraded) label
+            // across all of a file's script blocks, since fns.provenance
+            // is file-granularity everywhere else in this codebase (a true
+            // per-function label would need threading the block's label
+            // into each addFn call instead of one file-level scalar --
+            // not done here, matching the granularity every other
+            // provenance consumer already expects).
+            var provenanceRank={'javascript-regex':0,'typescript-regex':0,'acorn-typescript-strip':1,'acorn-babel':2,'acorn':3};
+            var worstProvenance=null;
             scriptBlocks.forEach(function(block){
-                Parser.extractJSFunctions(block.content,filename,block.offset,addFn,extractCode,block.isTS);
+                var provenance=Parser.extractJSFunctions(block.content,filename,block.offset,addFn,extractCode,block.isTS);
+                if(provenance&&(worstProvenance===null||provenanceRank[provenance]<provenanceRank[worstProvenance])){
+                    worstProvenance=provenance;
+                }
             });
+            fns.provenance=worstProvenance;
             return fns;
         }
         if(Parser.isScriptContainer(filename)){
@@ -963,6 +981,7 @@ const Parser={
             var parseContent=scriptContent;
             var parseSuccess=false;
             var babelSucceeded=false;
+            var tsStripped=false;
 
             // Use Babel (real parser) to handle JSX and TypeScript properly
             // Babel transforms JSX → React.createElement and strips TS types,
@@ -983,10 +1002,12 @@ const Parser={
                     // Babel failed, fall back to manual TypeScript stripping
                     if(isTS){
                         parseContent=Parser.stripTypeScript(scriptContent);
+                        tsStripped=true;
                     }
                 }
             }else if(isTS){
                 parseContent=Parser.stripTypeScript(scriptContent);
+                tsStripped=true;
             }
 
             // Parse clean JS with acorn
@@ -1156,7 +1177,18 @@ const Parser={
             // falling back to extractWithRegex). babelSucceeded tracks
             // whether Babel's *own* transform succeeded (vs. the isTS
             // manual-stripping fallback or Babel being absent entirely).
-            fns.provenance=parseSuccess?(babelSucceeded?'acorn-babel':'acorn'):'heuristic-regex';
+            //
+            // MOO-72 Commit 1A review (round 3): a 5th case was collapsed
+            // into plain 'acorn' -- a TS file whose Babel was absent/failed
+            // still got AST-parsed, but only after Parser.stripTypeScript
+            // ran a manual, less-precise transform. Labeling that the same
+            // as a plain JS file acorn parsed with zero transformation hid
+            // a real difference in how the result was produced. The regex
+            // fallback is also split by isTS now, since a JS regex fallback
+            // and a TS regex fallback are different degraded profiles.
+            fns.provenance=parseSuccess
+                ?(babelSucceeded?'acorn-babel':(tsStripped?'acorn-typescript-strip':'acorn'))
+                :(isTS?'typescript-regex':'javascript-regex');
         }else if(isPython){
             // Python: extract classes, functions, async functions, decorators, and methods
             var currentClass=null;
@@ -1495,11 +1527,21 @@ const Parser={
                 addFn({name:m[1],file:filename,line:lineNum,code:extractCode(lineNum),isTopLevel:true,type:'function'});
         });
     },
+    // MOO-72 Commit 1A review (round 3): returns the parser path actually
+    // taken -- 'acorn'/'acorn-babel'/'acorn-typescript-strip'/
+    // 'javascript-regex'/'typescript-regex' -- mirroring extract()'s own
+    // fns.provenance labeling, since this function has the identical
+    // AST-vs-regex-vs-Babel-vs-stripTypeScript decision structure but
+    // previously reported nothing at all, leaving embedded-script (HTML/
+    // Vue/Svelte) files to fall through to the unreliable
+    // getParserProvenance() ambient-global guess.
     extractJSFunctions:function(content,filename,offset,addFn,extractCode,isTS){
-        if(!content||!content.trim())return;
+        if(!content||!content.trim())return undefined;
         if(typeof acorn!=='undefined'){
             var parseContent=content;
             var parseSuccess=false;
+            var babelSucceeded=false;
+            var tsStripped=false;
 
             if(typeof Babel!=='undefined'){
                 try{
@@ -1512,13 +1554,16 @@ const Parser={
                         retainLines:true
                     });
                     parseContent=babelResult.code;
+                    babelSucceeded=true;
                 }catch(babelErr){
                     if(isTS){
                         parseContent=Parser.stripTypeScript(content);
+                        tsStripped=true;
                     }
                 }
             }else if(isTS){
                 parseContent=Parser.stripTypeScript(content);
+                tsStripped=true;
             }
 
             try{
@@ -1664,10 +1709,13 @@ const Parser={
             if(!parseSuccess){
                 Parser.extractWithRegex(content,filename,offset,addFn,extractCode);
             }
-            return;
+            return parseSuccess
+                ?(babelSucceeded?'acorn-babel':(tsStripped?'acorn-typescript-strip':'acorn'))
+                :(isTS?'typescript-regex':'javascript-regex');
         }
 
         Parser.extractWithRegex(content,filename,offset,addFn,extractCode);
+        return isTS?'typescript-regex':'javascript-regex';
     },
     findJSCalls:function(content,fnNames,defLines,options){
         fnNames=Parser.candidateFunctionNames(content,fnNames);
@@ -2127,6 +2175,26 @@ const Parser={
                         if(p.type==='except_clause')return false; // the exception type IS a reference
                         // Comprehension targets: [x for x in ...]
                         if(p.type==='for_in_clause'&&sameNode(p.childForFieldName('left'),node))return true;
+                        // MOO-72 Commit 1A review (round 3): assignment/rebinding
+                        // targets, destructuring, walrus, keyword-argument labels,
+                        // and global/nonlocal declarations were all missing --
+                        // `def helper(): pass` followed by `helper=None` counted
+                        // the rebinding as a call to `helper`. Confirmed real
+                        // tree-sitter node types/fields by parsing each construct
+                        // with the installed grammar rather than assuming.
+                        // Assignment/augmented-assignment targets: helper=None / helper+=1
+                        if((p.type==='assignment'||p.type==='augmented_assignment')&&
+                            sameNode(p.childForFieldName('left'),node))return true;
+                        // Destructuring targets: a,b=1,2 -- identifiers inside these
+                        // patterns have no field name, so any direct child is a target.
+                        if(p.type==='pattern_list'||p.type==='tuple_pattern'||p.type==='list_pattern')return true;
+                        // Walrus operator: if (n := compute()):
+                        if(p.type==='named_expression'&&sameNode(p.childForFieldName('name'),node))return true;
+                        // Keyword-argument label: foo(name=value) -- `name` is a
+                        // label, not a reference to a function named `name`.
+                        if(p.type==='keyword_argument'&&sameNode(p.childForFieldName('name'),node))return true;
+                        // global helper / nonlocal helper
+                        if(p.type==='global_statement'||p.type==='nonlocal_statement')return true;
                         return false;
                     }
 

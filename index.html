@@ -4146,7 +4146,7 @@ function App(){
             // Conflating the two under one identity would let a cache or
             // provenance consumer treat a real-churn, client-parsed result
             // as interchangeable with a server-computed one.
-            var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:context,analyzer:{name:'codeflow-pr-head-adapter',version:'1.1.0'}});
+            var graph=adaptRepositoryAnalysis({analysisData:dataObj,context:context,analyzer:{name:'codeflow-pr-head-adapter',version:'1.2.0'}});
             if(!isCurrentAnalysisGeneration(generation))return null;
             setData(dataObj);
             setRepositoryGraph(graph);

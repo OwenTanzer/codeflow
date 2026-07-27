@@ -6,7 +6,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-const { buildRequestContext, withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN } = await import('../server/routes/graph-repository.js');
+const { buildRequestContext, withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN, derivePythonParserCapability } = await import('../server/routes/graph-repository.js');
+const { buildCacheKey } = await import('../src/graph-ir/cacheKey.js');
+const { normalizeContext } = await import('../src/graph-ir/githubContext.js');
 
 const SHA = 'a'.repeat(40);
 
@@ -66,4 +68,51 @@ test('RATE_LIMIT_PATTERN matches GitHub\'s real rate-limit error text', () => {
   assert.equal(RATE_LIMIT_PATTERN.test('API rate limit exceeded for 1.2.3.4.'), true);
   assert.equal(RATE_LIMIT_PATTERN.test('Ref not found (branch, commit, or PR head does not exist)'), false);
   assert.equal(RATE_LIMIT_PATTERN.test('Repository not found'), false);
+});
+
+// MOO-72 Commit 1A review (round 3): installNodeTreeSitter can silently
+// fall back to an undefined globalThis.TreeSitter, and nothing about that
+// previously changed the cache key -- derivePythonParserCapability derives
+// the *effective* capability from the already-computed per-node
+// parserProvenance (not a fresh ambient-global check), so the route can
+// fold it into the cache key and warn on degradation.
+function pyNode(provenance) {
+  return { coordinate: { path: 'a.py' }, metadata: { parserProvenance: provenance } };
+}
+function jsNode(provenance) {
+  return { coordinate: { path: 'a.js' }, metadata: { parserProvenance: provenance } };
+}
+
+test('derivePythonParserCapability reports active when a Python node used real tree-sitter', () => {
+  const graph = { nodes: [pyNode('tree-sitter:python-calls'), jsNode('acorn')] };
+  const capability = derivePythonParserCapability(graph);
+  assert.equal(capability.pythonFileCount, 1);
+  assert.equal(capability.pythonTreeSitterActive, true);
+});
+
+test('derivePythonParserCapability reports inactive when Python files exist but none show tree-sitter provenance', () => {
+  const graph = { nodes: [pyNode('heuristic-regex'), pyNode(null)] };
+  const capability = derivePythonParserCapability(graph);
+  assert.equal(capability.pythonFileCount, 2);
+  assert.equal(capability.pythonTreeSitterActive, false);
+});
+
+test('derivePythonParserCapability reports zero Python files for a repo with none', () => {
+  const graph = { nodes: [jsNode('acorn'), jsNode('acorn-babel')] };
+  const capability = derivePythonParserCapability(graph);
+  assert.equal(capability.pythonFileCount, 0);
+  assert.equal(capability.pythonTreeSitterActive, false);
+});
+
+test('the same repository/revision/options/analyzer identity produces a different cache key when effective Python parser capability differs', () => {
+  const context = normalizeContext({ owner: 'octocat', repo: 'Hello-World', resolvedSha: SHA });
+  const baseParams = {
+    context,
+    analyzerName: 'codeflow-repository-adapter',
+    analyzerVersion: '1.2.0',
+    graphSchemaVersion: 1,
+  };
+  const keyWithTreeSitter = buildCacheKey({ ...baseParams, options: { excludePatterns: [], pythonTreeSitter: true } });
+  const keyWithoutTreeSitter = buildCacheKey({ ...baseParams, options: { excludePatterns: [], pythonTreeSitter: false } });
+  assert.notEqual(keyWithTreeSitter, keyWithoutTreeSitter, 'a materially different effective analyzer capability must not collide on the same cache key');
 });

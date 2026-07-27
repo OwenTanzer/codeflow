@@ -18,7 +18,41 @@ import { GRAPH_IR_SCHEMA_VERSION } from '../../src/graph-ir/graphIR.js';
 import { AdapterError, buildAdapterResult, AdapterResultError, sanitizeDiagnostic } from '../../src/graph-ir/adapterResult.js';
 import { buildCacheKey } from '../../src/graph-ir/cacheKey.js';
 
-const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.1.0' };
+const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.2.0' };
+
+// MOO-72 Commit 1A review (round 3): server/lib/node-tree-sitter-shim.js's
+// installNodeTreeSitter() silently falls back to an undefined
+// globalThis.TreeSitter on any init failure (a missing/corrupted
+// tree-sitter-wasms install, for example) -- with zero signal and zero
+// effect on this route's cache key. Without this, the identical
+// repository/revision/options/analyzer-version could be served from
+// either a Tree-sitter-backed or a heuristic-fallback analysis depending
+// on unpredictable deploy-time state, and Commit 2's durable cache
+// couldn't tell the two apart.
+//
+// Deliberately NOT a fail-loud startup check (the pyan3Adapter.js
+// precedent) -- acorn-only/regex-fallback is an intentionally accepted,
+// working degraded mode this PR already established in round 1; crashing
+// the whole server over a missing Python-specific grammar file would also
+// kill JS/TS analysis, for no reason. Instead this reuses the per-file
+// `parserProvenance` this same review round already made accurate (see
+// src/analyzer.js's extract()) -- the real, already-computed signal of
+// what happened, rather than re-checking whether some tree-sitter parser
+// object merely exists.
+const PYTHON_PATH_PATTERN = /\.(py|pyw|pyi)$/i;
+
+/**
+ * @param {import('../../src/graph-ir/graphIR.js').GraphIR} graph
+ * @returns {{ pythonFileCount: number, pythonTreeSitterActive: boolean }}
+ */
+export function derivePythonParserCapability(graph) {
+  const pythonNodes = graph.nodes.filter((n) => n.coordinate && PYTHON_PATH_PATTERN.test(n.coordinate.path || ''));
+  const pythonTreeSitterActive = pythonNodes.some((n) => {
+    const provenance = n.metadata && n.metadata.parserProvenance;
+    return typeof provenance === 'string' && provenance.startsWith('tree-sitter:python');
+  });
+  return { pythonFileCount: pythonNodes.length, pythonTreeSitterActive };
+}
 
 function sendJson(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -143,6 +177,16 @@ export function createGraphRepositoryHandler({ config }) {
     try {
       const context = buildRequestContext(request, resolved);
       const graph = adaptRepositoryAnalysis({ analysisData: resolved.result, context, analyzer: ANALYZER });
+      const { pythonFileCount, pythonTreeSitterActive } = derivePythonParserCapability(graph);
+      // MOO-72 Commit 1A review (round 3): only meaningful (and only
+      // included) when the repo actually has Python files -- a repo with
+      // none shouldn't get a different cache identity depending on
+      // whether the (irrelevant to it) Python tree-sitter runtime loaded.
+      if (pythonFileCount > 0 && !pythonTreeSitterActive) {
+        graph.warnings.push(
+          'Python call-graph analysis degraded: tree-sitter runtime unavailable, falling back to heuristic regex parsing.'
+        );
+      }
       const cacheKey = buildCacheKey({
         context,
         analyzerName: ANALYZER.name,
@@ -168,7 +212,17 @@ export function createGraphRepositoryHandler({ config }) {
         // `resolved.result.excludePatterns` stays the raw display strings
         // (unchanged) for the `excludePatterns` metadata field below --
         // only the cache-key identity is normalized.
-        options: { excludePatterns: [...resolved.result.excludePatterns].map((p) => p.toLowerCase()).sort() },
+        //
+        // MOO-72 Commit 1A review (round 3): pythonTreeSitter records the
+        // *effective* parser capability this specific analysis actually
+        // ran with, not a static assumption -- omitted (not `false`) when
+        // the repo has no Python files at all, so a non-Python repo's
+        // cache identity is never affected by a capability that was never
+        // relevant to it.
+        options: {
+          excludePatterns: [...resolved.result.excludePatterns].map((p) => p.toLowerCase()).sort(),
+          ...(pythonFileCount > 0 ? { pythonTreeSitter: pythonTreeSitterActive } : {}),
+        },
       });
       const durationMs = Date.now() - startedAtMs;
       const adapterResult = buildAdapterResult({
