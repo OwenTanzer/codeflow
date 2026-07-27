@@ -141,6 +141,37 @@ export function loadConfig({ repoRoot, env = process.env }) {
     errors.push(`PYAN3_TIMEOUT_MS must be a positive integer, got: ${JSON.stringify(env.PYAN3_TIMEOUT_MS)}`);
   }
 
+  // MOO-72 Commit 2: the centralized cross-layer graph cache. This store is
+  // process-local -- cleared on every restart/deploy and never shared across
+  // replicas -- so these bounds are per-instance, and the whole design
+  // assumes a single running Railway instance.
+  const cacheMaxItems = env.CACHE_MAX_ITEMS ? Number(env.CACHE_MAX_ITEMS) : 200;
+  if (!Number.isInteger(cacheMaxItems) || cacheMaxItems <= 0) {
+    errors.push(`CACHE_MAX_ITEMS must be a positive integer, got: ${JSON.stringify(env.CACHE_MAX_ITEMS)}`);
+  }
+
+  // Bounded by bytes as well as item count: a handful of large repository
+  // graphs can exhaust a Railway container's memory well before 200 entries.
+  const cacheMaxBytes = env.CACHE_MAX_BYTES ? Number(env.CACHE_MAX_BYTES) : 256 * 1024 * 1024;
+  if (!Number.isInteger(cacheMaxBytes) || cacheMaxBytes <= 0) {
+    errors.push(`CACHE_MAX_BYTES must be a positive integer, got: ${JSON.stringify(env.CACHE_MAX_BYTES)}`);
+  }
+
+  const cacheTtlMs = env.CACHE_TTL_MS ? Number(env.CACHE_TTL_MS) : 60 * 60 * 1000;
+  if (!Number.isInteger(cacheTtlMs) || cacheTtlMs <= 0) {
+    errors.push(`CACHE_TTL_MS must be a positive integer, got: ${JSON.stringify(env.CACHE_TTL_MS)}`);
+  }
+
+  // Strictly 'true'/'false': a typo like CACHE_ENABLED=fasle must not
+  // silently leave caching on when the operator's intent was to turn it off
+  // (e.g. to reproduce a stale-result bug).
+  let cacheEnabled = true;
+  if (env.CACHE_ENABLED != null && env.CACHE_ENABLED !== '') {
+    if (env.CACHE_ENABLED === 'true') cacheEnabled = true;
+    else if (env.CACHE_ENABLED === 'false') cacheEnabled = false;
+    else errors.push(`CACHE_ENABLED must be exactly "true" or "false", got: ${JSON.stringify(env.CACHE_ENABLED)}`);
+  }
+
   if (errors.length > 0) {
     throw new ConfigError(errors);
   }
@@ -163,5 +194,9 @@ export function loadConfig({ repoRoot, env = process.env }) {
     graphAnalysisTimeoutMs,
     pythonBin,
     pyan3TimeoutMs,
+    cacheMaxItems,
+    cacheMaxBytes,
+    cacheTtlMs,
+    cacheEnabled,
   };
 }

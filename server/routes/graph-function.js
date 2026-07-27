@@ -33,7 +33,7 @@ import {
   fetchAllContents,
   GithubFetchError,
 } from '../lib/github-analyzer-bridge.js';
-import { buildRequestContext, withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN } from './graph-repository.js';
+import { buildRequestContext, withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN, cacheKeyRequestIdentity } from './graph-repository.js';
 import { assertRevisionStillExpected } from './graph-file.js';
 import { indexPythonSymbols } from '../lib/pythonSymbolIndex.js';
 import { lineColumnToCodeUnitOffset } from '../../src/graph-ir/codeUnitOffset.js';
@@ -43,6 +43,7 @@ import { buildCacheKey } from '../../src/graph-ir/cacheKey.js';
 import { GRAPH_IR_SCHEMA_VERSION } from '../../src/graph-ir/graphIR.js';
 import { AdapterError, buildAdapterResult, AdapterResultError, sanitizeDiagnostic } from '../../src/graph-ir/adapterResult.js';
 import { AnalysisContextError } from '../../src/graph-ir/githubContext.js';
+import { makeCoordinate } from '../../src/graph-ir/sourceCoordinate.js';
 
 const ANALYZER = { name: 'codeflow-codevisualizer-adapter', version: '1.0.0' };
 
@@ -136,8 +137,8 @@ export function resolveFunctionSymbol(entries, symbolPath) {
   return { outcome: 'matched', entry: matches[0] };
 }
 
-/** @param {{config: object, getCodeVisualizerAvailable: () => boolean}} deps */
-export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable }) {
+/** @param {{config: object, getCodeVisualizerAvailable: () => boolean, cache: import('../lib/graph-cache.js').GraphCache}} deps */
+export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable, cache }) {
   return async function handleGraphFunction(req, res, requestId) {
     const log = createRequestLogger(requestId);
 
@@ -283,6 +284,70 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable 
         return sendError(res, 500, 'Analysis failed while indexing the file’s symbols', 'internal_error', requestId);
       }
 
+      // MOO-72 Commit 2: cache lookup sits between symbol resolution (fast
+      // -- one tree-sitter parse of an already-fetched file) and the
+      // CodeVisualizer run below, which is this route's expensive step. The
+      // resolved `entry` is what makes the key exact: the graph's eventual
+      // rootCoordinate is built from that same entry, so the key computed
+      // here and the artifact it stores describe the same function,
+      // including its source range.
+      let cacheKey;
+      let cacheContext;
+      try {
+        cacheContext = buildRequestContext(request, resolved);
+        cacheKey = buildCacheKey({
+          context: cacheContext,
+          analyzerName: ANALYZER.name,
+          analyzerVersion: ANALYZER.version,
+          graphSchemaVersion: GRAPH_IR_SCHEMA_VERSION,
+          // Mirrors functionGraphAdapter.js's own rootCoordinate construction.
+          coordinate: makeCoordinate({
+            repository: { host: 'github.com', owner: cacheContext.sourceOwner, name: cacheContext.sourceRepo },
+            revision: cacheContext.resolvedSha,
+            path: entry.path,
+            symbolPath: entry.symbolPath,
+            symbolKind: entry.symbolKind,
+            range: {
+              startLine: entry.startLine,
+              startColumn: entry.startColumn,
+              endLine: entry.endLine,
+              endColumn: entry.endColumn,
+            },
+          }),
+          options: cacheKeyRequestIdentity(cacheContext),
+        });
+      } catch (err) {
+        if (err instanceof AnalysisContextError) {
+          log.warn('graph-function contract violation while building the cache key', { message: err.message });
+          return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
+        }
+        throw err;
+      }
+
+      const cachedGraph = cache.get(cacheKey);
+      if (cachedGraph) {
+        const durationMs = Date.now() - startedAtMs;
+        log.info('graph-function cache hit', {
+          owner: request.owner,
+          repo: request.repo,
+          path: request.path,
+          symbolPath: request.symbolPath,
+          resolvedSha: resolved.resolvedSha,
+          durationMs,
+          nodeCount: cachedGraph.nodes.length,
+          edgeCount: cachedGraph.edges.length,
+          cacheKey,
+          cacheHit: true,
+        });
+        return sendJson(res, 200, buildAdapterResult({
+          graph: cachedGraph,
+          warnings: cachedGraph.warnings,
+          provenance: { analyzerName: ANALYZER.name, analyzerVersion: ANALYZER.version },
+          timing: { startedAt, durationMs },
+          cache: { key: cacheKey, hit: true },
+        }));
+      }
+
       // CodeVisualizer call: convert the symbol index's line/column
       // range into the flat index @codevisualizer/core expects, then
       // request the exact function by that range (never by position or
@@ -349,10 +414,8 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable 
       // FlowchartIR into GraphIR (MOO-71 Commit 6), mirroring
       // graph-file.js's own phase 2 error handling exactly.
       let graph;
-      let context;
       try {
-        context = buildRequestContext(request, resolved);
-        graph = adaptFunctionAnalysis({ context, entrySymbol: entry, source: resolved.content, flowchartIR, analyzer: ANALYZER });
+        graph = adaptFunctionAnalysis({ context: cacheContext, entrySymbol: entry, source: resolved.content, flowchartIR, analyzer: ANALYZER });
       } catch (err) {
         if (err instanceof AnalysisContextError) {
           log.warn('graph-function contract violation during graph construction', { message: err.message });
@@ -363,13 +426,9 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable 
         return sendError(res, 500, 'Analysis failed while building the function graph', 'internal_error', requestId);
       }
 
-      const cacheKey = buildCacheKey({
-        context,
-        analyzerName: ANALYZER.name,
-        analyzerVersion: ANALYZER.version,
-        graphSchemaVersion: GRAPH_IR_SCHEMA_VERSION,
-        coordinate: graph.rootCoordinate,
-      });
+      // No degraded mode at this layer -- there is no fallback analyzer, so
+      // any graph that reaches here is a full-fidelity result.
+      cache.set(cacheKey, graph);
 
       const durationMs = Date.now() - startedAtMs;
       const adapterResult = buildAdapterResult({
@@ -377,8 +436,6 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable 
         warnings: graph.warnings,
         provenance: { analyzerName: ANALYZER.name, analyzerVersion: ANALYZER.version },
         timing: { startedAt, durationMs },
-        // No durable cache store exists yet (same note as graph-file.js) --
-        // centralized caching is MOO-72's job.
         cache: { key: cacheKey, hit: false },
       });
 

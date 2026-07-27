@@ -18,6 +18,7 @@ import { createStaticHandler } from './lib/static.js';
 import { createHealthHandler, createReadinessHandler } from './lib/health.js';
 import { isAuthorized } from './lib/auth.js';
 import { RateLimiter } from './lib/rate-limit.js';
+import { GraphCache } from './lib/graph-cache.js';
 import { createAnalyzeHandler } from './routes/analyze.js';
 import { createAnalyzeRepoHandler } from './routes/analyze-repo.js';
 import { createGraphRepositoryHandler } from './routes/graph-repository.js';
@@ -112,6 +113,23 @@ async function main() {
   const rateLimitSweep = setInterval(() => rateLimiter.sweep(), 60_000);
   rateLimitSweep.unref();
 
+  // MOO-72 Commit 2: one shared cache across all three graph layers -- the
+  // key format (src/graph-ir/cacheKey.js) already namespaces layers by
+  // analyzer name/version and coordinate, so a single store is correct and
+  // lets one global memory budget cover all of them.
+  //
+  // Process-local by design: every entry is lost on restart or redeploy,
+  // and nothing is shared between replicas. That is only sound because this
+  // is a single-instance Railway deployment; running more than one replica
+  // would give each its own independent cache (correct, but with a lower
+  // hit rate), and a shared store would be a separate piece of work.
+  const graphCache = new GraphCache({
+    maxItems: config.cacheMaxItems,
+    maxBytes: config.cacheMaxBytes,
+    ttlMs: config.cacheTtlMs,
+    enabled: config.cacheEnabled,
+  });
+
   const handleStatic = createStaticHandler(config.distDir);
   const handleHealth = createHealthHandler({ config });
   const handleReadiness = createReadinessHandler({
@@ -121,9 +139,13 @@ async function main() {
   });
   const handleAnalyze = createAnalyzeHandler({ config, workspaceManager });
   const handleAnalyzeRepo = createAnalyzeRepoHandler({ config });
-  const handleGraphRepository = createGraphRepositoryHandler({ config });
-  const handleGraphFile = createGraphFileHandler({ config, workspaceManager });
-  const handleGraphFunction = createGraphFunctionHandler({ config, getCodeVisualizerAvailable: () => codeVisualizerAvailable });
+  const handleGraphRepository = createGraphRepositoryHandler({ config, cache: graphCache });
+  const handleGraphFile = createGraphFileHandler({ config, workspaceManager, cache: graphCache });
+  const handleGraphFunction = createGraphFunctionHandler({
+    config,
+    getCodeVisualizerAvailable: () => codeVisualizerAvailable,
+    cache: graphCache,
+  });
 
   const server = createServer(async (req, res) => {
     const requestId = generateRequestId();
@@ -186,6 +208,14 @@ async function main() {
       rateLimitPerMinute: config.rateLimitPerMinute,
       pyan3Available,
       codeVisualizerAvailable,
+      cacheEnabled: config.cacheEnabled,
+      cacheMaxItems: config.cacheMaxItems,
+      cacheMaxBytes: config.cacheMaxBytes,
+      cacheTtlMs: config.cacheTtlMs,
+      // Stated explicitly in the startup line rather than left to docs: an
+      // operator debugging a stale or missing result needs to know the cache
+      // does not survive a restart and is not shared across replicas.
+      cacheScope: 'process-local (cleared on restart/deploy, not shared across replicas)',
     });
   });
 }
