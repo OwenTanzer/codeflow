@@ -44,6 +44,8 @@ import { GRAPH_IR_SCHEMA_VERSION } from '../../src/graph-ir/graphIR.js';
 import { AdapterError, buildAdapterResult, AdapterResultError, sanitizeDiagnostic } from '../../src/graph-ir/adapterResult.js';
 import { AnalysisContextError } from '../../src/graph-ir/githubContext.js';
 import { makeCoordinate } from '../../src/graph-ir/sourceCoordinate.js';
+import { createRequestAbortSignal, throwIfCancelled, RequestCancelledError } from '../lib/cancellation.js';
+import { isValidSessionId } from '../lib/session-id.js';
 
 const ANALYZER = { name: 'codeflow-codevisualizer-adapter', version: '1.0.0' };
 
@@ -52,9 +54,9 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-function sendError(res, status, message, category, requestId, options) {
+function sendError(res, status, message, category, requestId, options = {}) {
   const diagnostic = sanitizeDiagnostic(new AdapterError(category, message, options));
-  sendJson(res, status, { error: message, diagnostics: [diagnostic], requestId });
+  sendJson(res, status, { error: message, diagnostics: [diagnostic], requestId, sessionId: options.sessionId ?? null });
 }
 
 /**
@@ -140,7 +142,7 @@ export function resolveFunctionSymbol(entries, symbolPath) {
 /** @param {{config: object, getCodeVisualizerAvailable: () => boolean, cache: import('../lib/graph-cache.js').GraphCache, metrics: import('../lib/metrics.js').Metrics}} deps */
 export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable, cache, metrics }) {
   return async function handleGraphFunction(req, res, requestId) {
-    const log = createRequestLogger(requestId, { layer: 'function' });
+    let log = createRequestLogger(requestId, { layer: 'function' });
 
     // Declared before any rejection branch (including the
     // CodeVisualizer-availability check below) so every terminal outcome
@@ -148,10 +150,15 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
 
+    // MOO-72 Commit 1B: see cancellation.js's own doc comment for why this
+    // watches `res`, not `req`, for a disconnect.
+    const { signal, cleanup } = createRequestAbortSignal(req, res);
+
     if (getCodeVisualizerAvailable && !getCodeVisualizerAvailable()) {
       const durationMs = Date.now() - startedAtMs;
       log.warn('rejected graph-function request: CodeVisualizer core unavailable', { durationMs, resultState: 'dependency_unavailable' });
       metrics.record({ layer: 'function', resultState: 'dependency_unavailable', durationMs });
+      cleanup();
       return sendError(
         res,
         502,
@@ -166,14 +173,30 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
       body = await readJsonBody(req, config.maxRequestBodyBytes);
     } catch (err) {
       const durationMs = Date.now() - startedAtMs;
+      // PR review finding: a client disconnecting while the body is still
+      // being read must not be misclassified as validation_error -- see
+      // the matching comment in graph-repository.js.
+      if (signal.aborted) {
+        log.info('graph-function request cancelled (client disconnected)', { durationMs, resultState: 'cancelled' });
+        metrics.record({ layer: 'function', resultState: 'cancelled', durationMs });
+        cleanup();
+        return;
+      }
       metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
+      cleanup();
       if (err instanceof BodyTooLargeError) {
         log.warn('rejected graph-function request: body too large', { durationMs, resultState: 'validation_error' });
-        return sendJson(res, 413, { error: 'Request body too large' });
+        return sendJson(res, 413, { error: 'Request body too large', requestId, sessionId: null });
       }
       log.warn('rejected graph-function request: body not valid JSON', { durationMs, resultState: 'validation_error' });
-      return sendJson(res, 400, { error: 'Request body must be valid JSON' });
+      return sendJson(res, 400, { error: 'Request body must be valid JSON', requestId, sessionId: null });
     }
+
+    // sessionId can only be known once the body has been parsed -- see the
+    // matching comment in graph-repository.js for why this is checked
+    // against the raw body, not a (possibly never-constructed) validated
+    // request object.
+    const rawSessionId = isValidSessionId(body && body.sessionId) ? body.sessionId : null;
 
     let request;
     try {
@@ -183,16 +206,21 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
         const durationMs = Date.now() - startedAtMs;
         log.warn('rejected graph-function request: invalid input', { errorMessage: err.message, durationMs, resultState: 'validation_error' });
         metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
-        return sendError(res, 400, err.message, 'unsupported_input', requestId);
+        cleanup();
+        return sendError(res, 400, err.message, 'unsupported_input', requestId, { sessionId: rawSessionId });
       }
+      cleanup();
       throw err;
     }
+
+    log = createRequestLogger(requestId, { layer: 'function', sessionId: request.sessionId });
 
     if (!isRepoAllowed(request.owner, request.repo, config)) {
       const durationMs = Date.now() - startedAtMs;
       log.warn('rejected graph-function request: repository not allowlisted', { owner: request.owner, repo: request.repo, durationMs, resultState: 'not_allowlisted' });
       metrics.record({ layer: 'function', resultState: 'not_allowlisted', durationMs });
-      return sendError(res, 403, 'This repository is not on the allowlist', 'unsupported_input', requestId);
+      cleanup();
+      return sendError(res, 403, 'This repository is not on the allowlist', 'unsupported_input', requestId, { sessionId: request.sessionId });
     }
 
     log.info('graph-function request accepted', {
@@ -230,20 +258,28 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
             const [content] = await fetchAllContents(owner, repo, [entry]);
             return { sourceOwner: owner, sourceRepo: repo, resolvedSha, path: entry.path, content: content || '' };
           })(),
-          config.graphAnalysisTimeoutMs,
-          `Function analysis did not complete within ${config.graphAnalysisTimeoutMs}ms`
+          {
+            timeoutMs: config.graphAnalysisTimeoutMs,
+            signal,
+            timeoutMessage: `Function analysis did not complete within ${config.graphAnalysisTimeoutMs}ms`,
+          }
         );
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
+        if (err instanceof RequestCancelledError) {
+          log.info('graph-function request cancelled (client disconnected)', { durationMs, resultState: 'cancelled' });
+          metrics.record({ layer: 'function', resultState: 'cancelled', durationMs });
+          return;
+        }
         if (err instanceof GraphAnalysisTimeoutError) {
           log.warn('graph-function analysis timed out', { path: request.path, durationMs, resultState: 'timeout' });
           metrics.record({ layer: 'function', resultState: 'timeout', durationMs });
-          return sendError(res, 504, err.message, 'timeout', requestId);
+          return sendError(res, 504, err.message, 'timeout', requestId, { sessionId: request.sessionId });
         }
         if (err instanceof ValidationError) {
           log.warn('rejected graph-function request: path resolution failed', { errorMessage: err.message, durationMs, resultState: 'validation_error' });
           metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
-          return sendError(res, 400, err.message, 'unsupported_input', requestId);
+          return sendError(res, 400, err.message, 'unsupported_input', requestId, { sessionId: request.sessionId });
         }
         if (err instanceof AnalysisContextError) {
           log.warn('rejected graph-function request: PR revision changed since the parent graph was loaded', { errorMessage: err.message, durationMs, resultState: 'validation_error' });
@@ -253,18 +289,19 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
             409,
             'The pull request has changed since the file graph was loaded. Refresh the file graph and try again.',
             'unsupported_input',
-            requestId
+            requestId,
+            { sessionId: request.sessionId }
           );
         }
         if (err instanceof GithubFetchError) {
           const rateLimited = RATE_LIMIT_PATTERN.test(err.message);
           log.warn('github fetch failed', { errorMessage: err.message, rateLimited, durationMs, resultState: 'github_error' });
           metrics.record({ layer: 'function', resultState: 'github_error', durationMs });
-          return sendError(res, rateLimited ? 429 : 502, err.message, 'github_access', requestId, { retryable: rateLimited });
+          return sendError(res, rateLimited ? 429 : 502, err.message, 'github_access', requestId, { retryable: rateLimited, sessionId: request.sessionId });
         }
         log.error('function source retrieval failed', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
         metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
-        return sendError(res, 502, 'Function analysis failed while retrieving its source', 'github_access', requestId);
+        return sendError(res, 502, 'Function analysis failed while retrieving its source', 'github_access', requestId, { sessionId: request.sessionId });
       }
 
       // Symbol resolution: identify the exact function via MOO-70's
@@ -287,26 +324,26 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
           const durationMs = Date.now() - startedAtMs;
           log.warn('rejected graph-function request: no matching symbol', { path: request.path, symbolPath: request.symbolPath, durationMs, resultState: 'validation_error' });
           metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
-          return sendError(res, 404, 'No function found at this path/symbolPath in this revision.', 'unsupported_input', requestId);
+          return sendError(res, 404, 'No function found at this path/symbolPath in this revision.', 'unsupported_input', requestId, { sessionId: request.sessionId });
         }
         if (result.outcome === 'ambiguous') {
           const durationMs = Date.now() - startedAtMs;
           log.warn('rejected graph-function request: ambiguous symbol', { path: request.path, symbolPath: request.symbolPath, count: result.count, durationMs, resultState: 'validation_error' });
           metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
-          return sendError(res, 400, 'Multiple symbols match this coordinate; cannot resolve unambiguously.', 'unsupported_input', requestId);
+          return sendError(res, 400, 'Multiple symbols match this coordinate; cannot resolve unambiguously.', 'unsupported_input', requestId, { sessionId: request.sessionId });
         }
         entry = result.entry;
         if (entry.symbolKind !== 'function' && entry.symbolKind !== 'method') {
           const durationMs = Date.now() - startedAtMs;
           log.warn('rejected graph-function request: symbol is not a function/method', { symbolKind: entry.symbolKind, durationMs, resultState: 'validation_error' });
           metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
-          return sendError(res, 400, `Target symbol is a ${entry.symbolKind}, not a function or method.`, 'unsupported_input', requestId);
+          return sendError(res, 400, `Target symbol is a ${entry.symbolKind}, not a function or method.`, 'unsupported_input', requestId, { sessionId: request.sessionId });
         }
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
         log.error('symbol indexing failed', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
         metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
-        return sendError(res, 500, 'Analysis failed while indexing the file’s symbols', 'internal_error', requestId);
+        return sendError(res, 500, 'Analysis failed while indexing the file’s symbols', 'internal_error', requestId, { sessionId: request.sessionId });
       }
 
       // MOO-72 Commit 2: cache lookup sits between symbol resolution (fast
@@ -346,10 +383,12 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
         if (err instanceof AnalysisContextError) {
           log.warn('graph-function contract violation while building the cache key', { errorMessage: err.message, durationMs, resultState: 'contract_violation' });
           metrics.record({ layer: 'function', resultState: 'contract_violation', durationMs });
-          return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
+          return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId, { sessionId: request.sessionId });
         }
         throw err;
       }
+
+      throwIfCancelled(signal);
 
       const cachedGraph = cache.get(cacheKey);
       if (cachedGraph) {
@@ -376,6 +415,8 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
           provenance: { analyzerName: ANALYZER.name, analyzerVersion: ANALYZER.version },
           timing: { startedAt, durationMs },
           cache: { key: cacheKey, hit: true },
+          requestId,
+          sessionId: request.sessionId,
         }));
       }
 
@@ -384,13 +425,26 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
       // request the exact function by that range (never by position or
       // name, for the same "no guessing" reason as symbol resolution
       // above).
+      //
+      // MOO-72 Commit 1B: only a preflight check, not a race -- this parse
+      // is synchronous/CPU-bound (tree-sitter runs in-process), so Node's
+      // single-threaded event loop cannot deliver a disconnect signal or
+      // fire a timer until the parse itself returns control. This can
+      // refuse to *start* the parse if the client is already gone; it
+      // cannot observe or react to a disconnect *during* it.
       let flowchartIR;
       try {
+        throwIfCancelled(signal);
         const startByte = lineColumnToCodeUnitOffset(resolved.content, entry.startLine, entry.startColumn);
         const endByte = lineColumnToCodeUnitOffset(resolved.content, entry.endLine, entry.endColumn);
         flowchartIR = await analyzePythonFunction(resolved.content, { startByte, endByte });
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
+        if (err instanceof RequestCancelledError) {
+          log.info('graph-function request cancelled (client disconnected)', { durationMs, resultState: 'cancelled' });
+          metrics.record({ layer: 'function', resultState: 'cancelled', durationMs });
+          return;
+        }
         if (err.name === 'FunctionRangeNotFoundError') {
           // This one error covers two genuinely different situations, and
           // reporting them identically was actively misleading.
@@ -439,11 +493,11 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
             });
             metrics.record({ layer: 'function', resultState: 'contract_violation', durationMs });
           }
-          return sendError(res, classified.status, classified.message, classified.category, requestId);
+          return sendError(res, classified.status, classified.message, classified.category, requestId, { sessionId: request.sessionId });
         }
         log.error('CodeVisualizer analysis failed', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
         metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
-        return sendError(res, 500, 'Analysis failed while generating the function flowchart', 'internal_error', requestId);
+        return sendError(res, 500, 'Analysis failed while generating the function flowchart', 'internal_error', requestId, { sessionId: request.sessionId });
       }
 
       // Phase 2: pure glue, no more network/subprocess calls -- convert
@@ -457,12 +511,14 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
         if (err instanceof AnalysisContextError) {
           log.warn('graph-function contract violation during graph construction', { errorMessage: err.message, durationMs, resultState: 'contract_violation' });
           metrics.record({ layer: 'function', resultState: 'contract_violation', durationMs });
-          return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
+          return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId, { sessionId: request.sessionId });
         }
         log.error('graph construction failed (GraphIR conversion)', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
         metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
-        return sendError(res, 500, 'Analysis failed while building the function graph', 'internal_error', requestId);
+        return sendError(res, 500, 'Analysis failed while building the function graph', 'internal_error', requestId, { sessionId: request.sessionId });
       }
+
+      throwIfCancelled(signal); // checkpoint: don't cache or respond into a torn-down connection
 
       // No degraded mode at this layer -- there is no fallback analyzer, so
       // any graph that reaches here is a full-fidelity result.
@@ -475,6 +531,8 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
         provenance: { analyzerName: ANALYZER.name, analyzerVersion: ANALYZER.version },
         timing: { startedAt, durationMs },
         cache: { key: cacheKey, hit: false },
+        requestId,
+        sessionId: request.sessionId,
       });
 
       log.info('graph-function analysis complete', {
@@ -499,14 +557,21 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
       sendJson(res, 200, adapterResult);
     } catch (err) {
       const durationMs = Date.now() - startedAtMs;
+      if (err instanceof RequestCancelledError) {
+        log.info('graph-function request cancelled (client disconnected)', { durationMs, resultState: 'cancelled' });
+        metrics.record({ layer: 'function', resultState: 'cancelled', durationMs });
+        return;
+      }
       if (err instanceof AnalysisContextError || err instanceof AdapterResultError) {
         log.warn('graph-function contract violation', { errorMessage: err.message, durationMs, resultState: 'contract_violation' });
         metrics.record({ layer: 'function', resultState: 'contract_violation', durationMs });
-        return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
+        return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId, { sessionId: request.sessionId });
       }
       log.error('graph-function internal error', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
       metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
-      sendError(res, 500, 'Analysis failed', 'internal_error', requestId);
+      sendError(res, 500, 'Analysis failed', 'internal_error', requestId, { sessionId: request.sessionId });
+    } finally {
+      cleanup();
     }
   };
 }

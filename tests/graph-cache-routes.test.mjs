@@ -16,6 +16,7 @@
 //     happen before any GitHub call.
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
 import { GraphCache } from '../server/lib/graph-cache.js';
@@ -291,13 +292,17 @@ function fakeRequest(body) {
   return Readable.from([Buffer.from(JSON.stringify(body), 'utf8')]);
 }
 
+// MOO-72 Commit 1B: a real EventEmitter (not a plain object) -- the route
+// handlers' cancellation wiring calls res.once('close', ...)/res.off(...),
+// which a plain object doesn't have.
 function fakeResponse() {
-  return {
-    statusCode: 0,
-    body: null,
-    writeHead(status) { this.statusCode = status; },
-    end(payload) { this.body = payload ? JSON.parse(payload) : null; },
-  };
+  const res = new EventEmitter();
+  res.statusCode = 0;
+  res.body = null;
+  res.writableEnded = false;
+  res.writeHead = function (status) { this.statusCode = status; };
+  res.end = function (payload) { this.body = payload ? JSON.parse(payload) : null; this.writableEnded = true; };
+  return res;
 }
 
 const HANDLER_CONFIG = {

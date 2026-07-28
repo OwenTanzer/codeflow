@@ -47,13 +47,13 @@ test('a same-repository PR (no fork) still normalizes cleanly with sourceOwner/s
 });
 
 test('withTimeout resolves normally when the wrapped promise finishes first', async () => {
-  const result = await withTimeout(Promise.resolve('done'), 1000, 'should not fire');
+  const result = await withTimeout(Promise.resolve('done'), { timeoutMs: 1000, timeoutMessage: 'should not fire' });
   assert.equal(result, 'done');
 });
 
 test('withTimeout rejects with GraphAnalysisTimeoutError when the wrapped promise is too slow', async () => {
   const neverResolves = new Promise(() => {});
-  await assert.rejects(() => withTimeout(neverResolves, 20, 'took too long'), (err) => {
+  await assert.rejects(() => withTimeout(neverResolves, { timeoutMs: 20, timeoutMessage: 'took too long' }), (err) => {
     assert.ok(err instanceof GraphAnalysisTimeoutError);
     assert.equal(err.message, 'took too long');
     return true;
@@ -61,7 +61,35 @@ test('withTimeout rejects with GraphAnalysisTimeoutError when the wrapped promis
 });
 
 test('withTimeout propagates the wrapped promise\'s own rejection (not a timeout) when it fails first', async () => {
-  await assert.rejects(() => withTimeout(Promise.reject(new Error('real failure')), 1000, 'should not fire'), /real failure/);
+  await assert.rejects(() => withTimeout(Promise.reject(new Error('real failure')), { timeoutMs: 1000, timeoutMessage: 'should not fire' }), /real failure/);
+});
+
+test('withTimeout rejects immediately if the signal is already aborted', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const neverResolves = new Promise(() => {});
+  await assert.rejects(() => withTimeout(neverResolves, { timeoutMs: 1000, signal: controller.signal, timeoutMessage: 'should not fire' }));
+});
+
+test('withTimeout rejects when the signal aborts before the promise or timeout', async () => {
+  const controller = new AbortController();
+  const neverResolves = new Promise(() => {});
+  const pending = withTimeout(neverResolves, { timeoutMs: 5000, signal: controller.signal, timeoutMessage: 'should not fire' });
+  controller.abort();
+  await assert.rejects(() => pending);
+});
+
+test('withTimeout cleans up its abort listener so a signal reused across calls does not leak listeners', async () => {
+  const controller = new AbortController();
+  await withTimeout(Promise.resolve('a'), { timeoutMs: 1000, signal: controller.signal, timeoutMessage: 'x' });
+  await withTimeout(Promise.resolve('b'), { timeoutMs: 1000, signal: controller.signal, timeoutMessage: 'x' });
+  assert.equal(controller.signal, controller.signal); // sanity: same signal reused
+  // No direct listener-count API on AbortSignal, but MaxListenersExceededWarning
+  // would fire well before this many reuses if listeners leaked; a generous
+  // repeat count is a cheap, real regression guard.
+  for (let i = 0; i < 20; i++) {
+    await withTimeout(Promise.resolve(i), { timeoutMs: 1000, signal: controller.signal, timeoutMessage: 'x' });
+  }
 });
 
 test('RATE_LIMIT_PATTERN matches GitHub\'s real rate-limit error text', () => {

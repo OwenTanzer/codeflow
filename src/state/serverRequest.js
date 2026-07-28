@@ -45,9 +45,10 @@ export class ServerRequestError extends Error {
  * @param {string} input.path - server route path, e.g. '/api/graph/file'
  * @param {object} input.body - the endpoint-specific request body
  * @param {string} input.serverAuthToken - the private server's AUTH_TOKEN, held only in React memory
+ * @param {AbortSignal} [input.signal] - MOO-72 Commit 1B: optional, threaded straight into fetch's RequestInit; undefined is a no-op
  * @returns {{url: string, init: RequestInit}}
  */
-export function buildServerJsonRequest({ path, body, serverAuthToken }) {
+export function buildServerJsonRequest({ path, body, serverAuthToken, signal }) {
   return {
     url: path,
     init: {
@@ -57,6 +58,7 @@ export function buildServerJsonRequest({ path, body, serverAuthToken }) {
         Authorization: 'Bearer ' + serverAuthToken,
       },
       body: JSON.stringify(body),
+      signal,
     },
   };
 }

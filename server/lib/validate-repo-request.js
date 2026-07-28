@@ -5,6 +5,8 @@
 // are deliberately conservative (narrower than GitHub actually allows in
 // some cases) since the cost of rejecting a rare valid name is low and the
 // cost of building a URL from an unvalidated string is not.
+import { isValidSessionId } from './session-id.js';
+
 const OWNER_PATTERN = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/;
 const REPO_PATTERN = /^[a-zA-Z0-9._-]{1,100}$/;
 const REF_PATTERN = /^[a-zA-Z0-9._\/-]{1,200}$/;
@@ -73,14 +75,14 @@ function validateExcludePatterns(excludePatterns) {
 
 /**
  * @param {object} body
- * @returns {{owner: string, repo: string, ref: string|null, pr: number|null, excludePatterns: string[]}}
+ * @returns {{owner: string, repo: string, ref: string|null, pr: number|null, excludePatterns: string[], sessionId: string|null}}
  * @throws {ValidationError}
  */
 export function validateRepoRequest(body) {
   if (!body || typeof body !== 'object') {
     throw new ValidationError('request body must be a JSON object');
   }
-  const { owner, repo, ref, pr, excludePatterns } = body;
+  const { owner, repo, ref, pr, excludePatterns, sessionId } = body;
   validateOwner(owner);
   validateRepo(repo);
 
@@ -91,5 +93,16 @@ export function validateRepoRequest(body) {
   if (pr != null) validatePr(pr);
   if (excludePatterns != null) validateExcludePatterns(excludePatterns);
 
-  return { owner, repo, ref: ref ?? null, pr: pr ?? null, excludePatterns: excludePatterns ?? [] };
+  // MOO-72 Commit 1B: sessionId is optional, diagnostic-only (log/response
+  // correlation across a client's drill-down chain) -- a malformed value
+  // is never a hard validation failure, just normalized to null, so a
+  // typo'd/garbage client-sent id can never block real analysis work.
+  return {
+    owner,
+    repo,
+    ref: ref ?? null,
+    pr: pr ?? null,
+    excludePatterns: excludePatterns ?? [],
+    sessionId: isValidSessionId(sessionId) ? sessionId : null,
+  };
 }
