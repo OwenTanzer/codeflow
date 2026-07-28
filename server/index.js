@@ -55,8 +55,17 @@ async function main() {
     if (err instanceof ConfigError) {
       // Actionable, not a stack trace: this is meant to be read by whoever
       // just ran `npm start`/deployed to Railway.
+      //
+      // exitCode, not exit(1): an immediate process.exit() can truncate a
+      // write still sitting in a pipe's buffer (Railway's log collector
+      // reads stdout/stderr through a pipe, which is exactly the case
+      // Node's own docs warn can drop output under exit()). Setting
+      // exitCode and returning lets the event loop drain -- with nothing
+      // else keeping it alive at this point, the process exits on its own
+      // once that write actually flushes.
       process.stderr.write('[codeflow-server] ' + err.message + '\n');
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
     throw err;
   }
@@ -75,7 +84,9 @@ async function main() {
     await workspaceManager.ensureRoot();
   } catch (err) {
     log('error', 'workspace root is not writable', { workspaceRoot: config.workspaceRoot, errorMessage: err.message });
-    process.exit(1);
+    // exitCode, not exit(1) -- see the ConfigError branch above for why.
+    process.exitCode = 1;
+    return;
   }
 
   // MOO-70 Commit 7/9: check pyan3 availability once at startup so it's
@@ -254,5 +265,6 @@ main().catch((err) => {
   // So this can safely go through the structured/redacted logger rather
   // than an unstructured, unredacted stderr write.
   log('error', 'fatal startup error', { errorMessage: err && err.message, stack: err && err.stack });
-  process.exit(1);
+  // exitCode, not exit(1) -- see the ConfigError branch in main() for why.
+  process.exitCode = 1;
 });
