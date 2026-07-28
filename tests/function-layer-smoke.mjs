@@ -61,13 +61,21 @@ await page.goto(url, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(2000);
 
 // --- repository layer -------------------------------------------------------
-await step('select PAT auth and enter credentials', async () => {
+await step('select PAT auth, enter credentials, and the CodeFlow server token', async () => {
   const authSelect = page.locator('select[aria-label="Authentication Method"]:visible').first();
   await authSelect.selectOption('pat');
   const pat = page.locator('input[aria-label="GitHub Token"]:visible').first();
   await pat.waitFor({ state: 'visible', timeout: 5000 });
   await pat.fill(githubPat);
   await page.locator('input[aria-label="Repository URL"]:visible').first().fill(REPO);
+  // MOO-72 Commit 1A moved repository analysis onto the server, which gates
+  // it behind this same private-server token the file/function panels
+  // already prompted for -- without filling it here too, analyze() just
+  // calls setError('Enter the CodeFlow server token...') and returns, so
+  // pressing Enter below silently no-ops (no console error, no network
+  // request -- this bug hid for a while because the failure has no signal
+  // this script was checking for).
+  await page.locator('input[aria-label="CodeFlow Server Token"]:visible').first().fill(serverToken);
 });
 
 await step('repository analysis completes and the graph renders', async () => {
@@ -87,13 +95,15 @@ await step(`double-click ${FILE_LABEL} to drill into the file layer`, async () =
   const node = page.locator(`svg g:has(> text:text-is("${FILE_LABEL}"))`).first();
   await node.waitFor({ timeout: 20000 });
   await node.dblclick();
-  await page.waitForSelector('input[aria-label="Server Auth Token"]', { timeout: 15000 });
 });
 
-await step('one server-token prompt serves the drill-down path', async () => {
-  await page.locator('input[aria-label="Server Auth Token"]').fill(serverToken);
-  await page.locator('button:has-text("Load")').click();
-  await page.waitForFunction(() => !document.querySelector('input[aria-label="Server Auth Token"]'), { timeout: 120000 });
+// The panel's own ServerTokenPrompt no longer appears here: the server
+// token is already committed at the toolbar (filled above, before
+// analysis), and it's App()-level state shared with every panel -- if
+// this prompt reappears, something about that sharing has regressed.
+await step('no second server-token prompt appears -- the toolbar-committed token already serves the drill-down', async () => {
+  const promptStillGone = await page.locator('input[aria-label="Server Auth Token"]').count();
+  if (promptStillGone > 0) throw new Error('FileLayerPanel showed its own token prompt despite an already-committed toolbar token');
 });
 
 await step('file graph renders', async () => {
