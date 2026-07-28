@@ -172,6 +172,11 @@ test('exclude patterns differing only in case, order, or whitespace hit the same
   assert.equal(a.cache.key, b.cache.key);
   assert.equal(a.cache.hit, false);
   assert.equal(b.cache.hit, true, 'the equivalent request was served from the first one\'s entry');
+
+  // Sharing a cache entry must not mean sharing a's exact casing/order in b's
+  // response: each request's returned metadata should reflect what *it* sent.
+  assert.deepEqual(a.graph.metadata.excludePatterns, ['DIST', 'node_modules']);
+  assert.deepEqual(b.graph.metadata.excludePatterns, ['node_modules', 'dist']);
 });
 
 test('genuinely different exclude patterns do not share an entry', async (t) => {

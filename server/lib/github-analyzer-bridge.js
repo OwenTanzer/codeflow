@@ -343,6 +343,23 @@ export function normalizeExcludePatterns(patterns) {
 }
 
 /**
+ * Rebuild the display form of a request's exclude patterns -- trimmed and
+ * deduped like normalizeExcludePatterns, but preserving this request's own
+ * casing and order rather than canonicalizing it. Cache identity and display
+ * metadata must not diverge: normalizeExcludePatterns collapses
+ * `['DIST', 'node_modules']` and `['node_modules', 'dist']` onto the same
+ * cache entry, so `graph.metadata.excludePatterns` can never be read off
+ * whichever request happened to populate that entry -- it has to be rebuilt
+ * from *this* request on every response, hit or miss. Pure and cheap (no
+ * I/O), so recomputing it per-response costs nothing.
+ * @param {string[]} [patterns]
+ * @returns {string[]}
+ */
+export function displayExcludePatterns(patterns) {
+  return compileExcludePatterns((patterns || []).join('\n')).map((p) => p.raw);
+}
+
+/**
  * Resolve which commit a request actually points at, without fetching any
  * repository content. Split out from analyzeGithubRepo for MOO-72 Commit 2:
  * the resolved SHA is the one input the repository layer's cache key needs

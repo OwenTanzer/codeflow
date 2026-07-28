@@ -13,6 +13,7 @@ import {
   resolveGithubRef,
   fetchAndAnalyzeRepo,
   normalizeExcludePatterns,
+  displayExcludePatterns,
   PYTHON_TREE_SITTER_CAPABLE,
   GithubFetchError,
 } from '../lib/github-analyzer-bridge.js';
@@ -251,10 +252,18 @@ export function createGraphRepositoryHandler({ config, cache }) {
       });
       // Built fresh rather than stored/replayed, so timing reflects *this*
       // request and the stored graph is never mutated to carry per-request
-      // response metadata.
+      // response metadata. excludePatterns is rebuilt from *this* request
+      // for the same reason: normalizeExcludePatterns collapses requests
+      // differing only in case/order/whitespace onto one cache entry, so the
+      // entry's own metadata.excludePatterns reflects whichever request
+      // happened to populate it, not necessarily this one.
+      const responseGraph = {
+        ...cachedGraph,
+        metadata: { ...cachedGraph.metadata, excludePatterns: displayExcludePatterns(request.excludePatterns) },
+      };
       return sendJson(res, 200, buildAdapterResult({
-        graph: cachedGraph,
-        warnings: cachedGraph.warnings,
+        graph: responseGraph,
+        warnings: responseGraph.warnings,
         provenance: { analyzerName: ANALYZER.name, analyzerVersion: ANALYZER.version },
         timing: { startedAt, durationMs },
         cache: { key: cacheKey, hit: true },
