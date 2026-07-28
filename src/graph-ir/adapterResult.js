@@ -31,13 +31,35 @@ const CATEGORY_SET = new Set(ERROR_CATEGORIES);
 // consistent rule rather than two independently-maintained ones.
 const SECRET_KEY_PATTERN = /token|authorization|secret|password|api[_-]?key|cookie/i;
 
+// MOO-72 Commit 4: default retryability by category, consulted only when a
+// call site doesn't pass an explicit `retryable` (e.g. the github rate-limit
+// paths, pyan3's timeout branch). Most categories default to false because
+// they describe a deterministic outcome given the same input (a file that
+// won't parse, a repo that isn't allowlisted) -- retrying without the input
+// changing just repeats the same failure. `timeout` defaults true because
+// it's inherently load/environment-dependent. `subprocess_failure` also
+// defaults false: a crash/bad-args/missing-binary is far more often
+// deterministic than transient; genuinely transient subprocess failures
+// (resource pressure) opt in explicitly at their call site instead of
+// relying on this default.
+export const RETRYABLE_BY_CATEGORY = Object.freeze({
+  github_access: false,
+  unsupported_input: false,
+  parser_failure: false,
+  subprocess_failure: false,
+  malformed_analyzer_output: false,
+  timeout: true,
+  renderer_failure: false,
+  internal_error: false,
+});
+
 export class AdapterError extends Error {
   /**
    * @param {ErrorCategory} category
    * @param {string} message
    * @param {object} [options]
    * @param {object} [options.details] - structured, non-secret context (e.g. {owner, repo, ref})
-   * @param {boolean} [options.retryable]
+   * @param {boolean} [options.retryable] - defaults to RETRYABLE_BY_CATEGORY[category] when omitted
    * @param {Error} [options.cause]
    */
   constructor(category, message, options = {}) {
@@ -48,7 +70,7 @@ export class AdapterError extends Error {
     this.name = 'AdapterError';
     this.category = category;
     this.details = options.details || {};
-    this.retryable = !!options.retryable;
+    this.retryable = options.retryable !== undefined ? !!options.retryable : (RETRYABLE_BY_CATEGORY[category] ?? false);
   }
 }
 
@@ -67,6 +89,7 @@ export function sanitizeDiagnostic(diagnostic) {
       message: diagnostic.message,
       category: diagnostic.category,
       details: diagnostic.details,
+      retryable: diagnostic.retryable,
     };
   }
   return sanitizeValue(diagnostic);

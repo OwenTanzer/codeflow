@@ -20,6 +20,7 @@ import { isAuthorized } from './lib/auth.js';
 import { RateLimiter } from './lib/rate-limit.js';
 import { GraphCache } from './lib/graph-cache.js';
 import { Metrics } from './lib/metrics.js';
+import { InFlightRegistry } from './lib/inflight-registry.js';
 import { createAnalyzeHandler } from './routes/analyze.js';
 import { createAnalyzeRepoHandler } from './routes/analyze-repo.js';
 import { createGraphRepositoryHandler } from './routes/graph-repository.js';
@@ -156,6 +157,15 @@ async function main() {
   // would hide exactly the kind of production wiring mistake this is
   // meant to prevent.
   const metrics = new Metrics();
+
+  // MOO-72 Commit 4: de-duplicates concurrent pyan3 subprocess work for
+  // the same file/package@revision. Scoped to the file layer only -- the
+  // function layer's CodeVisualizer analysis is synchronous/CPU-bound, so
+  // it blocks the event loop while running and never has real concurrent
+  // in-flight work to collapse (see graph-function.js's docs for why it
+  // isn't wired here too).
+  const fileInflightRegistry = new InFlightRegistry();
+
   const metricsSummaryInterval = setInterval(() => {
     // Logged at 'info' -- LOG_LEVEL=warn or error suppresses this line,
     // same as any other info log. That's expected, not a sign metrics
@@ -174,7 +184,7 @@ async function main() {
   const handleAnalyze = createAnalyzeHandler({ config, workspaceManager });
   const handleAnalyzeRepo = createAnalyzeRepoHandler({ config });
   const handleGraphRepository = createGraphRepositoryHandler({ config, cache: graphCache, metrics });
-  const handleGraphFile = createGraphFileHandler({ config, workspaceManager, cache: graphCache, metrics });
+  const handleGraphFile = createGraphFileHandler({ config, workspaceManager, cache: graphCache, metrics, inflightRegistry: fileInflightRegistry });
   const handleGraphFunction = createGraphFunctionHandler({
     config,
     getCodeVisualizerAvailable: () => codeVisualizerAvailable,

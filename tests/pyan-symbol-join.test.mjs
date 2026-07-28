@@ -13,11 +13,13 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { relative } from 'node:path';
 import { WorkspaceManager } from '../server/lib/workspace.js';
 import { stagePythonFiles, runPyan3 } from '../server/lib/pyan3Adapter.js';
 import { parseDotGraph, extractPyanNodes, extractPyanEdges } from '../server/lib/dotGraph.js';
 import { indexPythonSymbols } from '../server/lib/pythonSymbolIndex.js';
 import { joinPyanToSymbols } from '../server/lib/pyanSymbolJoin.js';
+import { normalizePath } from '../src/graph-ir/sourceCoordinate.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(__dirname, 'fixtures/python-symbols');
@@ -51,6 +53,47 @@ async function runPipeline(files) {
 function fileOf(name) {
   return { path: name, content: readFileSync(join(FIXTURES, name), 'utf8') };
 }
+
+// MOO-72 Commit 4: the shared in-flight pyan3 registry (server/routes/graph-file.js's
+// runSharedPyan3Analysis) converts pyanNodes' workspace-absolute paths to
+// repo-relative before its shared workspace is torn down, then joins with
+// no workspaceDir at all. This proves that pre-relativized join is
+// identical to the existing workspaceDir-based join, not a silent behavior
+// change for the (still fully supported) per-caller workspace path.
+test('joinPyanToSymbols: pre-relativized paths + no workspaceDir match the workspaceDir-based join exactly', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codeflow-join-relative-test-'));
+  try {
+    const manager = new WorkspaceManager(root);
+    await manager.ensureRoot();
+    const ws = await manager.createRequestWorkspace('req-1');
+    const files = [fileOf('nested.py')];
+    const absolutePaths = await stagePythonFiles(ws, files);
+    const result = await runPyan3({ pythonBin: PYTHON_BIN, workspace: ws, absolutePaths, timeoutMs: 15_000 });
+    const digraph = parseDotGraph(result.dot);
+    const pyanNodes = extractPyanNodes(digraph);
+    const pyanEdges = extractPyanEdges(digraph);
+    const symbolEntries = [];
+    for (const file of files) {
+      const indexed = await indexPythonSymbols({ path: file.path, content: file.content });
+      symbolEntries.push(...indexed.entries);
+    }
+
+    const viaWorkspaceDir = joinPyanToSymbols({ pyanNodes, pyanEdges, symbolEntries, workspaceDir: ws.dir });
+
+    const relativized = pyanNodes.map((n) => (n.path ? { ...n, path: normalizePath(relative(ws.dir, n.path)) } : n));
+    const viaPreRelativized = joinPyanToSymbols({ pyanNodes: relativized, pyanEdges, symbolEntries });
+
+    assert.equal(viaPreRelativized.stats.matchedCount, viaWorkspaceDir.stats.matchedCount);
+    assert.equal(viaPreRelativized.stats.unresolvedCount, viaWorkspaceDir.stats.unresolvedCount);
+    assert.equal(viaPreRelativized.stats.ambiguousCount, viaWorkspaceDir.stats.ambiguousCount);
+    assert.deepEqual(
+      viaPreRelativized.resolved.map((r) => r.matchState),
+      viaWorkspaceDir.resolved.map((r) => r.matchState)
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('nested.py: every symbol matches, no unresolved/ambiguous entries', async () => {
   const joined = await runPipeline([fileOf('nested.py')]);

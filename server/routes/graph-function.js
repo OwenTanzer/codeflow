@@ -164,7 +164,12 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
         502,
         'Function analysis is currently unavailable (the CodeVisualizer core failed to initialize).',
         'subprocess_failure',
-        requestId
+        requestId,
+        // MOO-72 Commit 4: explicit even though this now matches the
+        // category default -- this condition persists until an operator
+        // restarts the deployment, so it must never depend on the default
+        // staying false to be correct.
+        { retryable: false }
       );
     }
 

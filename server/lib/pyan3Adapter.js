@@ -28,7 +28,13 @@ let verifyPromise = null;
 
 function runExecFile(pythonBin, args, options) {
   return new Promise((resolvePromise) => {
-    execFile(pythonBin, args, { timeout: options.timeoutMs, maxBuffer: options.maxBuffer }, (error, stdout, stderr) => {
+    // MOO-72 Commit 4: `signal` (when provided) is the InFlightRegistry's
+    // internal AbortController -- distinct from the per-request
+    // cancellation signal in server/lib/cancellation.js. execFile kills the
+    // subprocess itself when it fires, which is what makes the registry's
+    // "cancel the subprocess only when the last waiter leaves" guarantee
+    // real rather than just an in-Node promise race.
+    execFile(pythonBin, args, { timeout: options.timeoutMs, maxBuffer: options.maxBuffer, signal: options.signal }, (error, stdout, stderr) => {
       resolvePromise({ error, stdout, stderr });
     });
   });
@@ -91,6 +97,19 @@ export async function stagePythonFiles(workspace, files) {
   return written;
 }
 
+// MOO-72 Commit 4: subprocess_failure defaults to non-retryable (see
+// RETRYABLE_BY_CATEGORY in adapterResult.js) because most causes here --
+// bad arguments, a deterministic pyan3 crash, a missing interpreter -- won't
+// change on retry. Only recognized transient signals (a resource-pressure
+// errno, or the process being killed by a signal rather than exiting
+// cleanly) opt in explicitly.
+export function isTransientSubprocessFailure(error) {
+  if (!error) return false;
+  if (error.code === 'EAGAIN' || error.code === 'ENOMEM') return true;
+  if (error.signal) return true;
+  return false;
+}
+
 function categorizeFailure({ error, stderr }) {
   if (error && error.killed) {
     return new AdapterError('timeout', 'pyan3 subprocess timed out', { details: { stderr: truncate(stderr) }, retryable: true });
@@ -98,7 +117,10 @@ function categorizeFailure({ error, stderr }) {
   if (/SyntaxError/.test(stderr)) {
     return new AdapterError('parser_failure', 'pyan3 could not parse the given Python source (SyntaxError)', { details: { stderr: truncate(stderr) } });
   }
-  return new AdapterError('subprocess_failure', `pyan3 exited with an error: ${error ? error.message : 'unknown'}`, { details: { stderr: truncate(stderr) } });
+  return new AdapterError('subprocess_failure', `pyan3 exited with an error: ${error ? error.message : 'unknown'}`, {
+    details: { stderr: truncate(stderr) },
+    retryable: isTransientSubprocessFailure(error),
+  });
 }
 
 function truncate(text, max = 4000) {
@@ -118,9 +140,10 @@ function truncate(text, max = 4000) {
  * @param {string[]} input.absolutePaths - files already staged via stagePythonFiles
  * @param {number} input.timeoutMs
  * @param {number} [input.maxBuffer]
+ * @param {AbortSignal} [input.signal] - MOO-72 Commit 4: kills the subprocess if it fires
  * @returns {Promise<{dot: string, stderrDiagnostic: string, durationMs: number}>}
  */
-export async function runPyan3({ pythonBin, workspace, absolutePaths, timeoutMs, maxBuffer = 20 * 1024 * 1024 }) {
+export async function runPyan3({ pythonBin, workspace, absolutePaths, timeoutMs, maxBuffer = 20 * 1024 * 1024, signal }) {
   const args = [
     '-m', 'pyan',
     ...absolutePaths,
@@ -128,7 +151,7 @@ export async function runPyan3({ pythonBin, workspace, absolutePaths, timeoutMs,
     '--root', workspace.dir,
   ];
   const startedAt = Date.now();
-  const { error, stdout, stderr } = await runExecFile(pythonBin, args, { timeoutMs, maxBuffer });
+  const { error, stdout, stderr } = await runExecFile(pythonBin, args, { timeoutMs, maxBuffer, signal });
   const durationMs = Date.now() - startedAt;
   if (error) {
     throw categorizeFailure({ error, stderr });

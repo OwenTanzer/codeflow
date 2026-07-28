@@ -18,6 +18,7 @@ import {
   verifyPyan3Available,
   stagePythonFiles,
   runPyan3,
+  isTransientSubprocessFailure,
   _resetVerifyCacheForTests,
 } from '../server/lib/pyan3Adapter.js';
 
@@ -102,6 +103,19 @@ test('runPyan3: a syntax-error file is categorized parser_failure, not subproces
       }
     );
   });
+});
+
+// MOO-72 Commit 4: unit-level, no real subprocess needed.
+test('isTransientSubprocessFailure: recognized transient signals return true', () => {
+  assert.equal(isTransientSubprocessFailure({ code: 'EAGAIN' }), true);
+  assert.equal(isTransientSubprocessFailure({ code: 'ENOMEM' }), true);
+  assert.equal(isTransientSubprocessFailure({ signal: 'SIGSEGV' }), true);
+});
+
+test('isTransientSubprocessFailure: a deterministic failure returns false', () => {
+  assert.equal(isTransientSubprocessFailure({ code: 'ENOENT' }), false);
+  assert.equal(isTransientSubprocessFailure({ message: 'exit code 1' }), false);
+  assert.equal(isTransientSubprocessFailure(null), false);
 });
 
 test('runPyan3: an artificially tiny timeout is categorized timeout', async () => {

@@ -1111,6 +1111,32 @@ class ErrorBoundary extends React.Component{
     }
 }
 
+// MOO-72 Commit 4: a lightweight, panel-scoped counterpart to ErrorBoundary
+// above. Not a reuse of that class -- its fallback is height:'100vh' with
+// copy specific to a whole repository analysis being too large, which
+// would break layout and show the wrong message nested inside a much
+// smaller file/function/repository *canvas* (the render-only child that
+// owns just the svgRef + render effect, not the whole panel's fetch state/
+// diagnostics/Retry button). A reset here only remounts that small canvas
+// child -- normalized graph data, diagnostics, and Retry stay intact in
+// the still-mounted parent panel, since the fetch itself never re-runs.
+class PanelErrorBoundary extends React.Component{
+    constructor(props){super(props);this.state={hasError:false,error:null};}
+    static getDerivedStateFromError(error){return{hasError:true,error:error};}
+    componentDidCatch(error,info){console.error('CodeFlow panel render crashed:',error,info);}
+    render(){
+        if(this.state.hasError){
+            var self=this;
+            return React.createElement('div',{style:{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:120,padding:16,border:'1px solid var(--bd)',borderRadius:8,background:'var(--bg2)',textAlign:'center'}},
+                React.createElement('p',{style:{color:'var(--t2)',fontSize:12,marginBottom:8}},'This panel ran into an issue while rendering.'),
+                React.createElement('p',{style:{color:'var(--t3)',fontSize:10,marginBottom:12}},String(this.state.error)),
+                React.createElement('button',{className:'top-btn',onClick:function(){self.setState({hasError:false,error:null});}},'Reset')
+            );
+        }
+        return this.props.children;
+    }
+}
+
 function TreeNode(props){
     var node=props.node,selected=props.selected,onSelect=props.onSelect,expanded=props.expanded,toggle=props.toggle,filterFolder=props.filterFolder,activeFilter=props.activeFilter;
     var isOpen=expanded.has(node.path);
@@ -1174,6 +1200,42 @@ function ServerTokenPrompt(props){
     );
 }
 
+// MOO-72 Commit 4: render-only child extracted out of FileLayerPanel so a
+// PanelErrorBoundary can wrap just this -- svgRef, the interaction refs,
+// and the render effect -- without also swallowing the parent's fetch
+// state, diagnostics, or Retry control on a render crash. Owns nothing
+// about fetching; `fileGraph` arrives fully resolved as a prop.
+function FileGraphCanvas(props){
+    var fileGraph=props.fileGraph,theme=props.theme,openFileDrillDown=props.openFileDrillDown,
+        showNotification=props.showNotification,onHover=props.onHover;
+    var svgRef=useRef(null);
+    var zoomRef=useRef(null),simRef=useRef(null);
+    var selectSymbolRef=useRef(null);
+    var activateSymbolRef=useRef(null);
+
+    selectSymbolRef.current=function(){}; // MOO-70 Commit 8: selection highlighting deferred, matching this pass's minimal scope
+    activateSymbolRef.current=function(nodeId){
+        var result=tryCreateDrillDownById(fileGraph,nodeId);
+        if(result.eligible){
+            openFileDrillDown(result.event);
+        }else{
+            showNotification(result.reason||'This symbol cannot be drilled into.','warning');
+        }
+    };
+
+    useEffect(function(){
+        if(!fileGraph||!svgRef.current)return;
+        return renderFileGraph({
+            svgEl:svgRef.current,graph:fileGraph,theme:theme,
+            zoomRef:zoomRef,simRef:simRef,
+            selectSymbolRef:selectSymbolRef,activateSymbolRef:activateSymbolRef,
+            onHover:onHover,onBackgroundClick:function(){},
+        });
+    },[fileGraph,theme]);
+
+    return React.createElement('svg',{ref:svgRef,style:{width:'100%',height:320,background:'var(--bg2)',borderRadius:8}});
+}
+
 // MOO-70 Commit 8: the file-layer view. A separate component (not inlined
 // into App()) since it owns its own fetch/render lifecycle (hooks can't be
 // called conditionally inline in the parent for a panel that only exists
@@ -1210,14 +1272,23 @@ function FileLayerPanel(props){
     var _fgl=useState(false),fileGraphLoading=_fgl[0],setFileGraphLoading=_fgl[1];
     var _fge=useState(null),fileGraphError=_fge[0],setFileGraphError=_fge[1];
     var _fgeStatus=useState(null),fileGraphErrorStatus=_fgeStatus[0],setFileGraphErrorStatus=_fgeStatus[1];
-    var svgRef=useRef(null);
-    var zoomRef=useRef(null),simRef=useRef(null);
-    var selectSymbolRef=useRef(null);
-    var activateSymbolRef=useRef(null);
+    var _fgeRetryable=useState(false),fileGraphErrorRetryable=_fgeRetryable[0],setFileGraphErrorRetryable=_fgeRetryable[1];
     var path=navPanel.coordinate?navPanel.coordinate.path:null;
-    // MOO-70 Commit 9: "add user-facing retry" -- included in the fetch
-    // effect's dependency array purely to force a re-run on demand.
-    var _retry=useState(0),retryCount=_retry[0],setRetryCount=_retry[1];
+    // MOO-72 Commit 4: retryState.count is only meaningful for the target it
+    // was recorded against. targetKey is derived from session identity +
+    // path, not navPanel.graphCacheKey -- graphCacheKey is only populated
+    // *after* a successful fetch (recordPanelState), so it stays undefined
+    // for the whole lifetime of a target that never succeeds, which would
+    // make two different never-succeeded targets indistinguishable. session
+    // .repositoryEpoch increments on every repository (re)adoption, so this
+    // key changes correctly across revisions of the same path, not just
+    // across paths -- available synchronously at render time, before any
+    // fetch runs, so no separate reset effect (and its double-fetch risk)
+    // is needed the way a bare useState(0) counter would require.
+    var retryTargetKey=session?session.sessionId+':'+session.repositoryEpoch+':'+path:null;
+    var _retry=useState({targetKey:null,count:0}),retryState=_retry[0],setRetryState=_retry[1];
+    var retryEffectiveCount=retryState.targetKey===retryTargetKey?retryState.count:0;
+    var RETRY_LIMIT=3;
 
     useEffect(function(){
         if(!path||!repositoryGraph||!session)return;
@@ -1230,12 +1301,14 @@ function FileLayerPanel(props){
             setFileGraphLoading(false);
             setFileGraphError(null);
             setFileGraphErrorStatus(null);
+            setFileGraphErrorRetryable(false);
             return;
         }
         if(!committedToken)return;
         setFileGraphLoading(true);
         setFileGraphError(null);
         setFileGraphErrorStatus(null);
+        setFileGraphErrorRetryable(false);
         setFileGraph(null);
         // MOO-72 Commit 1B: describeFileRequest derives owner/repo/pr/
         // sourceOwner/sourceRepo/resolvedSha from the session's adopted
@@ -1270,29 +1343,17 @@ function FileLayerPanel(props){
             if(status===401){onTokenRejected();return;}
             setFileGraphError((err instanceof GraphFileClientError?err.message:'Failed to load file graph')||'Failed to load file graph');
             setFileGraphErrorStatus(status);
+            // MOO-72 Commit 4: err.retryable now comes from the real server
+            // signal (adapterResult.js's RETRYABLE_BY_CATEGORY, threaded
+            // through sanitizeDiagnostic -> mapServerJsonResponse), not a
+            // hardcoded category check. sendServerJsonRequest normalizes a
+            // plain network failure (fetch itself rejecting) into a
+            // GraphFileClientError too, with retryable:true, so this one
+            // check covers both structured and transport-level failures.
+            setFileGraphErrorRetryable(err instanceof GraphFileClientError?err.retryable===true:false);
         });
         return function(){session.abortCurrent('file');};
-    },[path,repositoryGraph,session,committedToken,retryCount,navPanel.graphCacheKey]);
-
-    selectSymbolRef.current=function(){}; // MOO-70 Commit 8: selection highlighting deferred, matching this pass's minimal scope
-    activateSymbolRef.current=function(nodeId){
-        var result=tryCreateDrillDownById(fileGraph,nodeId);
-        if(result.eligible){
-            openFileDrillDown(result.event);
-        }else{
-            showNotification(result.reason||'This symbol cannot be drilled into.','warning');
-        }
-    };
-
-    useEffect(function(){
-        if(!fileGraph||!svgRef.current)return;
-        return renderFileGraph({
-            svgEl:svgRef.current,graph:fileGraph,theme:theme,
-            zoomRef:zoomRef,simRef:simRef,
-            selectSymbolRef:selectSymbolRef,activateSymbolRef:activateSymbolRef,
-            onHover:onHover,onBackgroundClick:function(){},
-        });
-    },[fileGraph,theme]);
+    },[path,repositoryGraph,session,committedToken,retryEffectiveCount,navPanel.graphCacheKey]);
 
     if(!committedToken){
         return React.createElement(ServerTokenPrompt,{
@@ -1312,7 +1373,13 @@ function FileLayerPanel(props){
                 fileGraphErrorStatus===401&&' — the server token was rejected.'
             ),
             React.createElement('div',{style:{display:'flex',gap:8}},
-                React.createElement('button',{className:'top-btn',onClick:function(){setRetryCount(function(c){return c+1;});}},iconLabel('refresh','Retry')),
+                // MOO-72 Commit 4: gated on fileGraphErrorRetryable (the real
+                // server signal) and capped at RETRY_LIMIT per target --
+                // navigating to a different file/revision (retryTargetKey
+                // changing) resets the effective count without a separate
+                // reset effect, per retryTargetKey's derivation above.
+                fileGraphErrorRetryable&&retryEffectiveCount<RETRY_LIMIT&&React.createElement('button',{className:'top-btn',onClick:function(){setRetryState({targetKey:retryTargetKey,count:retryEffectiveCount+1});}},iconLabel('refresh','Retry')),
+                fileGraphErrorRetryable&&retryEffectiveCount>=RETRY_LIMIT&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',alignSelf:'center'}},'Retry limit reached'),
                 // MOO-70 Commit 9 PR review: "offer a way to replace the
                 // stored token rather than only retrying the same invalid
                 // one" -- always available, not just on a detected 401,
@@ -1321,10 +1388,51 @@ function FileLayerPanel(props){
                 React.createElement('button',{className:'top-btn',onClick:onChangeToken},'Change token')
             )
         ),
-        fileGraph&&React.createElement('svg',{ref:svgRef,style:{width:'100%',height:320,background:'var(--bg2)',borderRadius:8}}),
+        // MOO-72 Commit 4: PanelErrorBoundary+key=retryTargetKey wraps only
+        // the render-only FileGraphCanvas child, not this whole panel -- a
+        // render crash resets/remounts just the canvas (rerunning only
+        // rendering), while fileGraph/fileGraphError/warnings/Retry/"View on
+        // GitHub" all stay intact here since the fetch itself never re-runs.
+        fileGraph&&React.createElement(PanelErrorBoundary,{key:retryTargetKey},
+            React.createElement(FileGraphCanvas,{
+                fileGraph:fileGraph,theme:theme,
+                openFileDrillDown:openFileDrillDown,showNotification:showNotification,onHover:onHover,
+            })
+        ),
         fileGraph&&fileGraph.warnings&&fileGraph.warnings.length>0&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',marginTop:6}},fileGraph.warnings.length+' analysis warning(s) -- confidence '+Math.round(fileGraph.confidence*100)+'%'),
         navPanel.coordinate&&React.createElement('button',{className:'top-btn',style:{marginTop:8},onClick:function(){window.open(githubBlobUrl(navPanel.coordinate),'_blank','noopener');}},iconLabel('eye','View on GitHub'))
     );
+}
+
+// MOO-72 Commit 4: render-only child extracted out of FunctionLayerPanel,
+// same rationale as FileGraphCanvas above. handleRef is owned by the
+// parent (its search-highlighting effect needs to reach
+// handleRef.current.applySearch) -- this component only writes into it.
+function FunctionGraphCanvas(props){
+    var functionGraph=props.functionGraph,theme=props.theme,onHover=props.onHover,
+        onSelectNode=props.onSelectNode,onActivateNode=props.onActivateNode,
+        onBackgroundClick=props.onBackgroundClick,handleRef=props.handleRef;
+    var svgRef=useRef(null);
+    var zoomRef=useRef(null);
+    var selectSymbolRef=useRef(null);
+    var activateSymbolRef=useRef(null);
+
+    selectSymbolRef.current=function(nodeId){onSelectNode(nodeId);};
+    activateSymbolRef.current=function(){onActivateNode();};
+
+    useEffect(function(){
+        if(!functionGraph||!svgRef.current)return;
+        var handle=renderFunctionGraph({
+            svgEl:svgRef.current,graph:functionGraph,theme:theme,
+            zoomRef:zoomRef,
+            selectSymbolRef:selectSymbolRef,activateSymbolRef:activateSymbolRef,
+            onHover:onHover,onBackgroundClick:onBackgroundClick,
+        });
+        handleRef.current=handle;
+        return function(){handleRef.current=null;handle();};
+    },[functionGraph,theme]);
+
+    return React.createElement('svg',{ref:svgRef,style:{width:'100%',height:420,background:'var(--bg2)',borderRadius:8}});
 }
 
 // MOO-71 Commit 7: the function-layer view -- the real replacement for the
@@ -1361,15 +1469,12 @@ function FunctionLayerPanel(props){
     var _e=useState(null),graphError=_e[0],setGraphError=_e[1];
     var _sel=useState(null),selectedNodeId=_sel[0],setSelectedNodeId=_sel[1];
     var _q=useState(''),searchQuery=_q[0],setSearchQuery=_q[1];
-    var _retry=useState(0),retryCount=_retry[0],setRetryCount=_retry[1];
 
-    var svgRef=useRef(null);
-    var zoomRef=useRef(null);
-    var selectSymbolRef=useRef(null);
-    var activateSymbolRef=useRef(null);
-    // The renderer's cleanup function, which also carries applySearch/
-    // applySelection so highlighting doesn't require re-rendering the whole
-    // SVG (and throwing away the user's zoom/pan) on every keystroke.
+    // MOO-72 Commit 4: handleRef is still owned here (not inside
+    // FunctionGraphCanvas below) because the search-highlighting effect
+    // further down, which reacts to searchQuery changes in this parent,
+    // needs to call handleRef.current.applySearch -- the canvas child
+    // just writes into this same ref object rather than owning it.
     var handleRef=useRef(null);
 
     var coordinate=navPanel.coordinate;
@@ -1378,6 +1483,14 @@ function FunctionLayerPanel(props){
     // render would re-fire the fetch forever, and this value is exactly what
     // identifies the requested function.
     var symbolKey=coordinate&&coordinate.symbolPath?coordinate.symbolPath.join('.'):null;
+    // MOO-72 Commit 4: see FileLayerPanel's matching comment -- same
+    // rationale (session identity + repositoryEpoch, not graphCacheKey,
+    // not a resetting effect), extended with symbolKey since path alone
+    // doesn't identify a function target.
+    var retryTargetKey=session?session.sessionId+':'+session.repositoryEpoch+':'+path+':'+symbolKey:null;
+    var _retry=useState({targetKey:null,count:0}),retryState=_retry[0],setRetryState=_retry[1];
+    var retryEffectiveCount=retryState.targetKey===retryTargetKey?retryState.count:0;
+    var RETRY_LIMIT=3;
 
     useEffect(function(){
         if(!path||!symbolKey||!repositoryGraph||!session)return;
@@ -1430,31 +1543,22 @@ function FunctionLayerPanel(props){
                 message:(err instanceof GraphFunctionClientError?err.message:'Failed to load function graph')||'Failed to load function graph',
                 status:status,
                 category:err instanceof GraphFunctionClientError?err.category:null,
+                // MOO-72 Commit 4: the real server signal, replacing the old
+                // hardcoded category!=='parser_failure' gate below.
+                retryable:err instanceof GraphFunctionClientError?err.retryable===true:false,
             });
         });
         return function(){session.abortCurrent('function');};
-    },[path,symbolKey,repositoryGraph,session,committedToken,retryCount,navPanel.graphCacheKey]);
+    },[path,symbolKey,repositoryGraph,session,committedToken,retryEffectiveCount,navPanel.graphCacheKey]);
 
-    selectSymbolRef.current=function(nodeId){
+    function handleSelectNode(nodeId){
         setSelectedNodeId(nodeId);
         // Selection is part of "prior state" for back/forward restore.
         recordPanelState({selectedNodeId:nodeId});
-    };
-    activateSymbolRef.current=function(){
+    }
+    function handleActivateNode(){
         showNotification('Following a call needs the callee’s own coordinate, which this layer does not yet resolve — use View on GitHub instead.','warning');
-    };
-
-    useEffect(function(){
-        if(!functionGraph||!svgRef.current)return;
-        var handle=renderFunctionGraph({
-            svgEl:svgRef.current,graph:functionGraph,theme:theme,
-            zoomRef:zoomRef,
-            selectSymbolRef:selectSymbolRef,activateSymbolRef:activateSymbolRef,
-            onHover:onHover,onBackgroundClick:function(){setSelectedNodeId(null);},
-        });
-        handleRef.current=handle;
-        return function(){handleRef.current=null;handle();};
-    },[functionGraph,theme]);
+    }
 
     // Search highlighting is pushed imperatively rather than by re-rendering,
     // preserving zoom/pan while typing.
@@ -1493,11 +1597,12 @@ function FunctionLayerPanel(props){
                 graphError.category==='malformed_analyzer_output'&&' This is a bug in the analyzer, not in your code.'
             ),
             React.createElement('div',{style:{display:'flex',gap:8}},
-                // A parser_failure means the source itself doesn't parse, so
-                // retrying would just repeat the same rejection -- hide the
-                // button rather than leave it inviting a request that cannot
-                // succeed, per the diagnostic message immediately above it.
-                graphError.category!=='parser_failure'&&React.createElement('button',{className:'top-btn',onClick:function(){setRetryCount(function(c){return c+1;});}},iconLabel('refresh','Retry')),
+                // MOO-72 Commit 4: gated on graphError.retryable (the real
+                // server signal, per RETRYABLE_BY_CATEGORY -- parser_failure
+                // still defaults non-retryable, so the diagnostic copy above
+                // stays accurate) and capped at RETRY_LIMIT per target.
+                graphError.retryable&&retryEffectiveCount<RETRY_LIMIT&&React.createElement('button',{className:'top-btn',onClick:function(){setRetryState({targetKey:retryTargetKey,count:retryEffectiveCount+1});}},iconLabel('refresh','Retry')),
+                graphError.retryable&&retryEffectiveCount>=RETRY_LIMIT&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',alignSelf:'center'}},'Retry limit reached'),
                 React.createElement('button',{className:'top-btn',onClick:onChangeToken},'Change token')
             )
         ),
@@ -1505,7 +1610,16 @@ function FunctionLayerPanel(props){
             React.createElement('input',{className:'repo-input',style:{fontSize:11,padding:'4px 8px'},'aria-label':'Search control-flow nodes',placeholder:'Search nodes…',value:searchQuery,onChange:function(e){setSearchQuery(e.target.value);}}),
             matchCount!==null&&React.createElement('span',{style:{fontSize:11,color:'var(--t3)',whiteSpace:'nowrap'}},matchCount+' match'+(matchCount===1?'':'es'))
         ),
-        functionGraph&&React.createElement('svg',{ref:svgRef,style:{width:'100%',height:420,background:'var(--bg2)',borderRadius:8}}),
+        // MOO-72 Commit 4: see FileLayerPanel's matching comment -- a render
+        // crash inside FunctionGraphCanvas resets/remounts just the canvas,
+        // not this whole panel's fetch state/selection/search/diagnostics.
+        functionGraph&&React.createElement(PanelErrorBoundary,{key:retryTargetKey},
+            React.createElement(FunctionGraphCanvas,{
+                functionGraph:functionGraph,theme:theme,onHover:onHover,handleRef:handleRef,
+                onSelectNode:handleSelectNode,onActivateNode:handleActivateNode,
+                onBackgroundClick:function(){setSelectedNodeId(null);},
+            })
+        ),
         // Metadata inspection: the selected node's own semantics, including
         // the original CodeVisualizer NodeType the adapter may have collapsed
         // into a coarser GraphIR kind, plus its real source range.
@@ -1519,6 +1633,42 @@ function FunctionLayerPanel(props){
         functionGraph&&functionGraph.warnings&&functionGraph.warnings.length>0&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',marginTop:6}},functionGraph.warnings.length+' analysis warning(s)'),
         coordinate&&React.createElement('button',{className:'top-btn',style:{marginTop:8},onClick:function(){window.open(githubBlobUrl(coordinate),'_blank','noopener');}},iconLabel('eye','View on GitHub'))
     );
+}
+
+// MOO-72 Commit 4: unlike FileGraphCanvas/FunctionGraphCanvas, this does NOT
+// also own the <svg> element or its refs -- svgRef/zoomRef/simRef are
+// threaded through many other App()-level controls (zoom in/out, PNG/PDF
+// export, fit-to-screen), so relocating them here would ripple into all of
+// those call sites for no benefit. This renders nothing (null) and exists
+// only so the effect that can throw (renderRepositoryGraph, called from a
+// parent-level effect in the original design) runs as *this* component's
+// own effect instead -- an error boundary only catches errors from its own
+// descendants' render/lifecycle, not a sibling's, so the effect itself had
+// to move, not just get wrapped in place. Mounted as a sibling of the real
+// <svg> element (not a wrapper around it), so a crash here can't even
+// affect the <svg>/toolbar's own mounted state, only this effect.
+function RepositoryGraphRenderEffect(props){
+    var svgRef=props.svgRef,data=props.data,repositoryGraph=props.repositoryGraph,colorMap=props.colorMap,
+        colorMode=props.colorMode,theme=props.theme,folderFilter=props.folderFilter,graphConfig=props.graphConfig,
+        changedPaths=props.changedPaths,zoomRef=props.zoomRef,simRef=props.simRef,linksRef=props.linksRef,
+        nodesRef=props.nodesRef,selectFileRef=props.selectFileRef,activateFileRef=props.activateFileRef,
+        onHover=props.onHover,onBackgroundClick=props.onBackgroundClick;
+    useEffect(function(){
+        if(!data||!svgRef.current)return;
+        // MOO-69 Commit 3/4: prefer the repository-layer GraphIR once it's
+        // resolved (GitHub-backed analysis) -- renderRepositoryGraph/
+        // buildRepositoryRenderModel accept either shape identically (see
+        // src/render/repositoryRenderModel.js). Falls back to the legacy
+        // `data` object for local-folder/zip analysis, which never gets a
+        // repositoryGraph at all.
+        return renderRepositoryGraph({
+            svgEl:svgRef.current,data:repositoryGraph||data,colorMap,colorMode,theme,folderFilter,graphConfig,
+            COLORS,LAYER_COLORS,changedPaths,
+            zoomRef,simRef,linksRef,nodesRef,selectFileRef,activateFileRef,
+            onHover,onBackgroundClick,
+        });
+    },[data,repositoryGraph,colorMap,colorMode,theme,folderFilter,graphConfig,changedPaths]);
+    return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -2680,22 +2830,12 @@ function App(){
         if(!prData||!prData.files)return null;
         return new Set(prData.files.map(function(f){return f.filename;}));
     },[prData]);
-    useEffect(function(){
-        if(!data||!svgRef.current)return;
-        // MOO-69 Commit 3/4: prefer the repository-layer GraphIR once it's
-        // resolved (GitHub-backed analysis) -- renderRepositoryGraph/
-        // buildRepositoryRenderModel accept either shape identically (see
-        // src/render/repositoryRenderModel.js). Falls back to the legacy
-        // `data` object for local-folder/zip analysis, which never gets a
-        // repositoryGraph at all.
-        return renderRepositoryGraph({
-            svgEl:svgRef.current,data:repositoryGraph||data,colorMap,colorMode,theme,folderFilter,graphConfig,
-            COLORS,LAYER_COLORS,changedPaths,
-            zoomRef,simRef,linksRef,nodesRef,selectFileRef,activateFileRef,
-            onHover:setTooltip,
-            onBackgroundClick:function(){setSelected(null);setBlastRadius(null);}
-        });
-    },[data,repositoryGraph,colorMap,colorMode,theme,folderFilter,graphConfig,changedPaths]);
+    // MOO-72 Commit 4: the render effect itself moved into
+    // RepositoryGraphRenderEffect (mounted, boundary-wrapped, near the real
+    // <svg> element below) so a render crash can be caught without an error
+    // boundary needing to be an ancestor of a sibling's effect, which isn't
+    // how error boundaries work. changedPaths (computed above) is passed
+    // down as a prop.
 
     // 3D Force Graph Hook
     useEffect(function(){
@@ -4560,6 +4700,21 @@ function App(){
                         )
                     ),
                     graphConfig.vizType==='graph'&&React.createElement('svg',{ref:svgRef}),
+                    // MOO-72 Commit 4: sibling of the <svg>, not a wrapper --
+                    // see RepositoryGraphRenderEffect's own doc comment for
+                    // why. Keyed by the resolved revision so a genuinely new
+                    // repository/revision remounts cleanly; local-folder/zip
+                    // analysis (no repositoryGraph) shares one stable key.
+                    graphConfig.vizType==='graph'&&React.createElement(PanelErrorBoundary,{key:(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha)||'local'},
+                        React.createElement(RepositoryGraphRenderEffect,{
+                            svgRef:svgRef,data:data,repositoryGraph:repositoryGraph,colorMap:colorMap,
+                            colorMode:colorMode,theme:theme,folderFilter:folderFilter,graphConfig:graphConfig,
+                            changedPaths:changedPaths,zoomRef:zoomRef,simRef:simRef,linksRef:linksRef,
+                            nodesRef:nodesRef,selectFileRef:selectFileRef,activateFileRef:activateFileRef,
+                            onHover:setTooltip,
+                            onBackgroundClick:function(){setSelected(null);setBlastRadius(null);},
+                        })
+                    ),
                     graphConfig.vizType==='graph3d'&&React.createElement('div',{ref:graph3dRef,className:'graph3d-container',style:{width:'100%',height:'100%'}}),
                     graphConfig.vizType==='treemap'&&React.createElement('div',{ref:treemapRef,className:'treemap-container'}),
                     graphConfig.vizType==='matrix'&&React.createElement('div',{ref:matrixRef,className:'matrix-container',style:{width:'100%',height:'100%',overflow:'auto',display:'flex',alignItems:'center',justifyContent:'center'}}),
@@ -4673,7 +4828,14 @@ function App(){
                         React.createElement('div',{style:{fontSize:11,color:'var(--t3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}},navTrail.map(function(entry){return entry.label;}).join(' / ')),
                         // MOO-69 Commit 5: make the resolved revision visible
                         // in the UI, not just carried invisibly in context.
-                        repositoryGraph&&React.createElement('div',{title:repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha,style:{fontSize:10,color:'var(--t3)',fontFamily:'JetBrains Mono',whiteSpace:'nowrap'}},repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha.slice(0,7))
+                        repositoryGraph&&React.createElement('div',{title:repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha,style:{fontSize:10,color:'var(--t3)',fontFamily:'JetBrains Mono',whiteSpace:'nowrap'}},repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha.slice(0,7)),
+                        // MOO-72 Commit 4: repositoryGraph.warnings is computed
+                        // server-side (partial-success degradation) but was
+                        // never surfaced here, unlike the file/function panels'
+                        // own warnings rendering (same convention, matched here)
+                        // -- data lives on the raw repositoryGraph, not the
+                        // view-model (`data`), which has no warnings field at all.
+                        repositoryGraph&&repositoryGraph.warnings&&repositoryGraph.warnings.length>0&&React.createElement('div',{title:repositoryGraph.warnings.join('\n'),style:{fontSize:10,color:'var(--t3)',whiteSpace:'nowrap'}},repositoryGraph.warnings.length+' analysis warning(s)')
                     ),
                     // MOO-71 Commit 7: 'file' and 'function' now both have real
                     // views (FileLayerPanel / FunctionLayerPanel above), which

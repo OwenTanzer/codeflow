@@ -42,9 +42,11 @@ import { buildCacheKey } from '../../src/graph-ir/cacheKey.js';
 import { GRAPH_IR_SCHEMA_VERSION } from '../../src/graph-ir/graphIR.js';
 import { AdapterError, buildAdapterResult, AdapterResultError, sanitizeDiagnostic } from '../../src/graph-ir/adapterResult.js';
 import { AnalysisContextError, assertContextPropagation } from '../../src/graph-ir/githubContext.js';
-import { makeCoordinate } from '../../src/graph-ir/sourceCoordinate.js';
-import { createRequestAbortSignal, throwIfCancelled, raceWithAbort, RequestCancelledError } from '../lib/cancellation.js';
+import { makeCoordinate, normalizePath } from '../../src/graph-ir/sourceCoordinate.js';
+import { createRequestAbortSignal, throwIfCancelled, RequestCancelledError } from '../lib/cancellation.js';
 import { isValidSessionId } from '../lib/session-id.js';
+import { relative } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 const ANALYZER = { name: 'codeflow-pyan3-adapter', version: '1.0.0' };
 
@@ -73,11 +75,12 @@ function sendError(res, status, message, category, requestId, options = {}) {
  * @param {{dir: string}} input.workspace
  * @param {string[]} input.absolutePaths
  * @param {number} input.timeoutMs
+ * @param {AbortSignal} [input.signal] - MOO-72 Commit 4: threaded straight into execFile; undefined is a no-op
  * @returns {Promise<{pyanNodes: object[], pyanEdges: object[], warnings: string[], failedCategory: string|null}>}
  */
-export async function runPyan3ForFile({ pythonBin, workspace, absolutePaths, timeoutMs }) {
+export async function runPyan3ForFile({ pythonBin, workspace, absolutePaths, timeoutMs, signal }) {
   try {
-    const pyanResult = await runPyan3({ pythonBin, workspace, absolutePaths, timeoutMs });
+    const pyanResult = await runPyan3({ pythonBin, workspace, absolutePaths, timeoutMs, signal });
     const digraph = parseDotGraph(pyanResult.dot);
     return {
       pyanNodes: extractPyanNodes(digraph),
@@ -93,6 +96,49 @@ export async function runPyan3ForFile({ pythonBin, workspace, absolutePaths, tim
       warnings: [`pyan3 analysis failed (${category}): ${err.message}`],
       failedCategory: category,
     };
+  }
+}
+
+/**
+ * Run pyan3 for a set of already-fetched files as one shared operation
+ * usable by every concurrent caller requesting the same file/package@revision
+ * — MOO-72 Commit 4's InFlightRegistry factory. Unlike runPyan3ForFile
+ * (which takes a caller-owned workspace), this function owns the *entire*
+ * workspace-dependent phase itself: it creates its own workspace (keyed by
+ * a fresh id independent of any caller's requestId, since concurrent
+ * callers share this one operation), stages `files`, runs pyan3, and tears
+ * the workspace down in a `finally` that only runs once the shared
+ * operation itself settles — never gated on any individual caller's
+ * request lifecycle. `files` is safe to reuse across every co-arriving
+ * caller because they only ever share an in-flight slot when their
+ * resolved file contents are identical by construction (they share a
+ * cache key).
+ *
+ * The returned pyanNodes are converted from workspace-absolute to
+ * repository-relative paths before this function returns, specifically so
+ * every waiter can join them against its own symbolEntries with
+ * `joinPyanToSymbols({..., workspaceDir: undefined})` — none of them has
+ * (or should need) access to a workspace that may already be torn down by
+ * the time they receive this result.
+ * @param {object} input
+ * @param {string} input.pythonBin
+ * @param {import('../lib/workspace.js').WorkspaceManager} input.workspaceManager
+ * @param {{path: string, content: string}[]} input.files
+ * @param {number} input.timeoutMs
+ * @param {AbortSignal} input.internalSignal - the InFlightRegistry's own controller signal, fires only once every waiter has detached
+ * @returns {Promise<{pyanNodes: object[], pyanEdges: object[], warnings: string[], failedCategory: string|null}>}
+ */
+export async function runSharedPyan3Analysis({ pythonBin, workspaceManager, files, timeoutMs, internalSignal }) {
+  const workspace = await workspaceManager.createRequestWorkspace(randomUUID());
+  try {
+    const absolutePaths = await stagePythonFiles(workspace, files);
+    const outcome = await runPyan3ForFile({ pythonBin, workspace, absolutePaths, timeoutMs, signal: internalSignal });
+    const pyanNodes = outcome.pyanNodes.map((node) =>
+      node.path ? { ...node, path: normalizePath(relative(workspace.dir, node.path)) } : node
+    );
+    return { ...outcome, pyanNodes };
+  } finally {
+    await workspace.cleanup();
   }
 }
 
@@ -209,8 +255,8 @@ export function resolveFileTarget({ treeFiles, requestedPath }) {
   throw new ValidationError(`"${requestedPath}" was not found in this revision`);
 }
 
-/** @param {{config: object, workspaceManager: import('../lib/workspace.js').WorkspaceManager, cache: import('../lib/graph-cache.js').GraphCache, metrics: import('../lib/metrics.js').Metrics}} deps */
-export function createGraphFileHandler({ config, workspaceManager, cache, metrics }) {
+/** @param {{config: object, workspaceManager: import('../lib/workspace.js').WorkspaceManager, cache: import('../lib/graph-cache.js').GraphCache, metrics: import('../lib/metrics.js').Metrics, inflightRegistry: import('../lib/inflight-registry.js').InFlightRegistry}} deps */
+export function createGraphFileHandler({ config, workspaceManager, cache, metrics, inflightRegistry }) {
   return async function handleGraphFile(req, res, requestId) {
     let log = createRequestLogger(requestId, { layer: 'file' });
 
@@ -219,7 +265,6 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
     // record a metric.
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
-    let workspace = null;
 
     // MOO-72 Commit 1B: see cancellation.js's own doc comment for why this
     // watches `res`, not `req`, for a disconnect.
@@ -473,21 +518,15 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
         }));
       }
 
-      // Stage into a fresh request workspace -- always cleaned up below,
-      // regardless of what happens next. Diagnosed as its own stage
-      // ("workspace preparation") rather than falling into the generic
-      // catch-all, per the Commit 9 diagnostics requirement.
-      let absolutePaths;
-      try {
-        workspace = await workspaceManager.createRequestWorkspace(requestId);
-        absolutePaths = await stagePythonFiles(workspace, resolved.files);
-      } catch (err) {
-        const durationMs = Date.now() - startedAtMs;
-        log.error('workspace preparation failed', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
-        metrics.record({ layer: 'file', resultState: 'internal_error', durationMs });
-        return sendError(res, 500, 'Failed to prepare the analysis workspace', 'internal_error', requestId, { sessionId: request.sessionId });
-      }
-
+      // MOO-72 Commit 4: pyan3 runs as one shared operation per cacheKey --
+      // a second concurrent request for the same file/package@revision
+      // joins this one instead of staging its own workspace and running
+      // its own subprocess. The registry itself owns per-caller abort
+      // handling (this caller's own `signal` detaches it without affecting
+      // other waiters; the underlying subprocess is only cancelled once
+      // every waiter has left), so no separate raceWithAbort wrapping is
+      // needed here the way the old per-request call required.
+      //
       // pyan3 failing does not fail the request -- degrade to a
       // tree-sitter-only graph (Commit 5's symbolOnly path) rather than a
       // 5xx, matching the resilience Commit 2's plan flagged needing. This
@@ -502,23 +541,20 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
       // terminal outcome (success or partial_success) is recorded once,
       // at the completion log, with the real joined.stats -- not
       // fabricated placeholder counts at this earlier point.
-      //
-      // raceWithAbort, not withTimeout: runPyan3ForFile already owns
-      // PYAN3_TIMEOUT_MS and degrades internally on its own schedule --
-      // racing it against a second, separately-timed deadline here would
-      // make that internal degradation's outcome timing-dependent between
-      // the two competing timeouts. This only lets a client disconnect
-      // interrupt the wait (a real async subprocess wait, genuinely
-      // interruptible), without introducing a second deadline.
-      const pyanOutcome = await raceWithAbort(
-        runPyan3ForFile({
-          pythonBin: config.pythonBin,
-          workspace,
-          absolutePaths,
-          timeoutMs: config.pyan3TimeoutMs,
-        }),
+      const inflightBefore = inflightRegistry.has(cacheKey);
+      const pyanOutcome = await inflightRegistry.subscribe(
+        cacheKey,
+        (internalSignal) =>
+          runSharedPyan3Analysis({
+            pythonBin: config.pythonBin,
+            workspaceManager,
+            files: resolved.files,
+            timeoutMs: config.pyan3TimeoutMs,
+            internalSignal,
+          }),
         signal
       );
+      const inflightStatus = inflightBefore ? 'coalesced' : 'executed';
       if (pyanOutcome.failedCategory) {
         log.warn('pyan3 analysis degraded; falling back to tree-sitter-only graph', {
           component: 'pyan3',
@@ -541,7 +577,11 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
           symbolEntries.push(...indexed.entries);
         }
 
-        joined = joinPyanToSymbols({ pyanNodes: pyanOutcome.pyanNodes, pyanEdges: pyanOutcome.pyanEdges, symbolEntries, workspaceDir: workspace.dir });
+        // MOO-72 Commit 4: no workspaceDir -- runSharedPyan3Analysis already
+        // converted pyanOutcome.pyanNodes' paths to repository-relative
+        // before its own (possibly shared, possibly already torn down)
+        // workspace went away.
+        joined = joinPyanToSymbols({ pyanNodes: pyanOutcome.pyanNodes, pyanEdges: pyanOutcome.pyanEdges, symbolEntries });
         joined.stats.warnings.push(...pyanOutcome.warnings);
         const fullGraph = adaptFileAnalysis({ context: cacheContext, requestPath: request.path, joined, analyzer: ANALYZER });
 
@@ -610,6 +650,12 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
         resultState,
         cacheKey,
         cacheStatus: 'miss',
+        // MOO-72 Commit 4: distinct from cacheStatus (GraphCache) --
+        // 'coalesced' means this request's pyan3 work was shared with an
+        // already-running request for the same cacheKey rather than
+        // starting its own subprocess. This request still records exactly
+        // one terminal resultState of its own either way.
+        inflightStatus,
       });
       metrics.record({ layer: 'file', resultState, durationMs, cacheStatus: 'miss' });
       sendJson(res, 200, adapterResult);
@@ -629,7 +675,11 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
       metrics.record({ layer: 'file', resultState: 'internal_error', durationMs });
       sendError(res, 500, 'Analysis failed', 'internal_error', requestId, { sessionId: request.sessionId });
     } finally {
-      if (workspace) await workspace.cleanup();
+      // MOO-72 Commit 4: no per-request workspace to clean up here anymore
+      // -- runSharedPyan3Analysis owns its own shared workspace's full
+      // lifecycle (created, staged, and torn down inside that function,
+      // gated on the shared operation itself settling, not on any one
+      // caller's request lifecycle).
       cleanup();
     }
   };
