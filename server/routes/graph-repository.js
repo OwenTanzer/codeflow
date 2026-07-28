@@ -186,13 +186,23 @@ export function createGraphRepositoryHandler({ config, cache, metrics }) {
         body = await readJsonBody(req, config.maxRequestBodyBytes);
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
+        // PR review finding: a client disconnecting *while the body is
+        // still being read* must not be misclassified as validation_error
+        // -- readJsonBody's own stream error looks the same as a genuinely
+        // malformed body from here, but signal is already aborted by then.
+        // Checked first, before any other interpretation of the error.
+        if (signal.aborted) {
+          log.info('graph-repository request cancelled (client disconnected)', { durationMs, resultState: 'cancelled' });
+          metrics.record({ layer: 'repository', resultState: 'cancelled', durationMs });
+          return;
+        }
         metrics.record({ layer: 'repository', resultState: 'validation_error', durationMs });
         if (err instanceof BodyTooLargeError) {
           log.warn('rejected graph-repository request: body too large', { durationMs, resultState: 'validation_error' });
-          return sendJson(res, 413, { error: 'Request body too large' });
+          return sendJson(res, 413, { error: 'Request body too large', requestId, sessionId: null });
         }
         log.warn('rejected graph-repository request: body not valid JSON', { durationMs, resultState: 'validation_error' });
-        return sendJson(res, 400, { error: 'Request body must be valid JSON' });
+        return sendJson(res, 400, { error: 'Request body must be valid JSON', requestId, sessionId: null });
       }
 
       // sessionId can only be known once the body has been parsed --

@@ -230,14 +230,23 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
       body = await readJsonBody(req, config.maxRequestBodyBytes);
     } catch (err) {
       const durationMs = Date.now() - startedAtMs;
+      // PR review finding: a client disconnecting while the body is still
+      // being read must not be misclassified as validation_error -- see
+      // the matching comment in graph-repository.js.
+      if (signal.aborted) {
+        log.info('graph-file request cancelled (client disconnected)', { durationMs, resultState: 'cancelled' });
+        metrics.record({ layer: 'file', resultState: 'cancelled', durationMs });
+        cleanup();
+        return;
+      }
       metrics.record({ layer: 'file', resultState: 'validation_error', durationMs });
       cleanup();
       if (err instanceof BodyTooLargeError) {
         log.warn('rejected graph-file request: body too large', { durationMs, resultState: 'validation_error' });
-        return sendJson(res, 413, { error: 'Request body too large' });
+        return sendJson(res, 413, { error: 'Request body too large', requestId, sessionId: null });
       }
       log.warn('rejected graph-file request: body not valid JSON', { durationMs, resultState: 'validation_error' });
-      return sendJson(res, 400, { error: 'Request body must be valid JSON' });
+      return sendJson(res, 400, { error: 'Request body must be valid JSON', requestId, sessionId: null });
     }
 
     // sessionId can only be known once the body has been parsed -- see the

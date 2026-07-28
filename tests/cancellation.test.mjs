@@ -130,7 +130,48 @@ test('a real client abort during the GitHub-fetch phase is classified cancelled 
   assert.equal(buckets[0].layer, 'repository');
   assert.equal(buckets[0].resultState, 'cancelled');
   assert.equal(buckets[0].count, 1);
-  assert.equal(cache.get('anything-would-do'), null, 'no cache entry can exist -- the request never reached cache.set()');
+  // PR review finding: looking up an arbitrary unrelated key always
+  // returns null regardless of whether the handler wrote under its real
+  // key -- that proves nothing. `cache.size` (the Map's actual entry
+  // count) is the real assertion that no write happened.
+  assert.equal(cache.size, 0, 'no cache entry can exist -- the request never reached cache.set()');
+});
+
+// PR review finding: the abort test above sends its complete (tiny) JSON
+// body before aborting, so it never exercises a disconnect *while
+// readJsonBody() is still reading* -- a distinct code path (the body-parse
+// catch block, not the withTimeout-wrapped GitHub phase) that an earlier
+// version of this fix misclassified as validation_error.
+test('destroying the socket mid-body-read is classified cancelled, not validation_error', async (t) => {
+  const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled: true });
+  const metrics = new Metrics();
+  const handler = createGraphRepositoryHandler({ config: CONFIG, cache, metrics });
+  const server = await startServer(handler);
+  t.after(() => server.close());
+
+  const { port } = server.address();
+  const fullBody = JSON.stringify({ owner: 'octocat', repo: 'Hello-World' });
+  await new Promise((resolve, reject) => {
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/graph/repository',
+      method: 'POST',
+      // Declare more bytes than will actually be sent, so the server is
+      // still awaiting the rest of the body when the socket dies.
+      headers: { 'Content-Type': 'application/json', 'Content-Length': fullBody.length + 100 },
+    });
+    req.on('error', () => resolve()); // the client side sees a reset -- expected, not the assertion under test
+    req.write(fullBody.slice(0, Math.floor(fullBody.length / 2)));
+    setTimeout(() => { req.destroy(); resolve(); }, 30);
+  });
+
+  await delay(50);
+
+  const buckets = metrics.snapshot().buckets;
+  assert.equal(buckets.length, 1, `expected exactly one bucket, got ${JSON.stringify(buckets)}`);
+  assert.equal(buckets[0].resultState, 'cancelled', 'a mid-body-read disconnect must not be misclassified as validation_error');
+  assert.equal(cache.size, 0);
 });
 
 test('a normal, fully-completed request is never misclassified as cancelled', async (t) => {
