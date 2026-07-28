@@ -150,7 +150,7 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
 
     if (getCodeVisualizerAvailable && !getCodeVisualizerAvailable()) {
       const durationMs = Date.now() - startedAtMs;
-      log.warn('rejected graph-function request: CodeVisualizer core unavailable', { durationMs });
+      log.warn('rejected graph-function request: CodeVisualizer core unavailable', { durationMs, resultState: 'dependency_unavailable' });
       metrics.record({ layer: 'function', resultState: 'dependency_unavailable', durationMs });
       return sendError(
         res,
@@ -168,10 +168,10 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
       const durationMs = Date.now() - startedAtMs;
       metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
       if (err instanceof BodyTooLargeError) {
-        log.warn('rejected graph-function request: body too large', { durationMs });
+        log.warn('rejected graph-function request: body too large', { durationMs, resultState: 'validation_error' });
         return sendJson(res, 413, { error: 'Request body too large' });
       }
-      log.warn('rejected graph-function request: body not valid JSON', { durationMs });
+      log.warn('rejected graph-function request: body not valid JSON', { durationMs, resultState: 'validation_error' });
       return sendJson(res, 400, { error: 'Request body must be valid JSON' });
     }
 
@@ -181,7 +181,7 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
     } catch (err) {
       if (err instanceof ValidationError) {
         const durationMs = Date.now() - startedAtMs;
-        log.warn('rejected graph-function request: invalid input', { errorMessage: err.message, durationMs });
+        log.warn('rejected graph-function request: invalid input', { errorMessage: err.message, durationMs, resultState: 'validation_error' });
         metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
         return sendError(res, 400, err.message, 'unsupported_input', requestId);
       }
@@ -190,7 +190,7 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
 
     if (!isRepoAllowed(request.owner, request.repo, config)) {
       const durationMs = Date.now() - startedAtMs;
-      log.warn('rejected graph-function request: repository not allowlisted', { owner: request.owner, repo: request.repo, durationMs });
+      log.warn('rejected graph-function request: repository not allowlisted', { owner: request.owner, repo: request.repo, durationMs, resultState: 'not_allowlisted' });
       metrics.record({ layer: 'function', resultState: 'not_allowlisted', durationMs });
       return sendError(res, 403, 'This repository is not on the allowlist', 'unsupported_input', requestId);
     }
@@ -236,17 +236,17 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
         if (err instanceof GraphAnalysisTimeoutError) {
-          log.warn('graph-function analysis timed out', { path: request.path, durationMs });
+          log.warn('graph-function analysis timed out', { path: request.path, durationMs, resultState: 'timeout' });
           metrics.record({ layer: 'function', resultState: 'timeout', durationMs });
           return sendError(res, 504, err.message, 'timeout', requestId);
         }
         if (err instanceof ValidationError) {
-          log.warn('rejected graph-function request: path resolution failed', { errorMessage: err.message, durationMs });
+          log.warn('rejected graph-function request: path resolution failed', { errorMessage: err.message, durationMs, resultState: 'validation_error' });
           metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
           return sendError(res, 400, err.message, 'unsupported_input', requestId);
         }
         if (err instanceof AnalysisContextError) {
-          log.warn('rejected graph-function request: PR revision changed since the parent graph was loaded', { errorMessage: err.message, durationMs });
+          log.warn('rejected graph-function request: PR revision changed since the parent graph was loaded', { errorMessage: err.message, durationMs, resultState: 'validation_error' });
           metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
           return sendError(
             res,
@@ -258,11 +258,11 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
         }
         if (err instanceof GithubFetchError) {
           const rateLimited = RATE_LIMIT_PATTERN.test(err.message);
-          log.warn('github fetch failed', { errorMessage: err.message, rateLimited, durationMs });
+          log.warn('github fetch failed', { errorMessage: err.message, rateLimited, durationMs, resultState: 'github_error' });
           metrics.record({ layer: 'function', resultState: 'github_error', durationMs });
           return sendError(res, rateLimited ? 429 : 502, err.message, 'github_access', requestId, { retryable: rateLimited });
         }
-        log.error('function source retrieval failed', { errorMessage: err && err.message, durationMs });
+        log.error('function source retrieval failed', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
         metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
         return sendError(res, 502, 'Function analysis failed while retrieving its source', 'github_access', requestId);
       }
@@ -285,26 +285,26 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
         const result = resolveFunctionSymbol(indexed.entries, request.symbolPath);
         if (result.outcome === 'unresolved') {
           const durationMs = Date.now() - startedAtMs;
-          log.warn('rejected graph-function request: no matching symbol', { path: request.path, symbolPath: request.symbolPath, durationMs });
+          log.warn('rejected graph-function request: no matching symbol', { path: request.path, symbolPath: request.symbolPath, durationMs, resultState: 'validation_error' });
           metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
           return sendError(res, 404, 'No function found at this path/symbolPath in this revision.', 'unsupported_input', requestId);
         }
         if (result.outcome === 'ambiguous') {
           const durationMs = Date.now() - startedAtMs;
-          log.warn('rejected graph-function request: ambiguous symbol', { path: request.path, symbolPath: request.symbolPath, count: result.count, durationMs });
+          log.warn('rejected graph-function request: ambiguous symbol', { path: request.path, symbolPath: request.symbolPath, count: result.count, durationMs, resultState: 'validation_error' });
           metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
           return sendError(res, 400, 'Multiple symbols match this coordinate; cannot resolve unambiguously.', 'unsupported_input', requestId);
         }
         entry = result.entry;
         if (entry.symbolKind !== 'function' && entry.symbolKind !== 'method') {
           const durationMs = Date.now() - startedAtMs;
-          log.warn('rejected graph-function request: symbol is not a function/method', { symbolKind: entry.symbolKind, durationMs });
+          log.warn('rejected graph-function request: symbol is not a function/method', { symbolKind: entry.symbolKind, durationMs, resultState: 'validation_error' });
           metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
           return sendError(res, 400, `Target symbol is a ${entry.symbolKind}, not a function or method.`, 'unsupported_input', requestId);
         }
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
-        log.error('symbol indexing failed', { errorMessage: err && err.message, durationMs });
+        log.error('symbol indexing failed', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
         metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
         return sendError(res, 500, 'Analysis failed while indexing the file’s symbols', 'internal_error', requestId);
       }
@@ -344,7 +344,7 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
         if (err instanceof AnalysisContextError) {
-          log.warn('graph-function contract violation while building the cache key', { errorMessage: err.message, durationMs });
+          log.warn('graph-function contract violation while building the cache key', { errorMessage: err.message, durationMs, resultState: 'contract_violation' });
           metrics.record({ layer: 'function', resultState: 'contract_violation', durationMs });
           return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
         }
@@ -354,6 +354,8 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
       const cachedGraph = cache.get(cacheKey);
       if (cachedGraph) {
         const durationMs = Date.now() - startedAtMs;
+        // No degraded mode at this layer -- there is no fallback analyzer,
+        // so any cached graph is a full-fidelity 'success', same as a miss.
         log.info('graph-function cache hit', {
           owner: request.owner,
           repo: request.repo,
@@ -364,9 +366,10 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
           nodeCount: cachedGraph.nodes.length,
           edgeCount: cachedGraph.edges.length,
           cacheKey,
-          cacheHit: true,
+          resultState: 'success',
+          cacheStatus: 'hit',
         });
-        metrics.record({ layer: 'function', resultState: 'cache_hit', durationMs });
+        metrics.record({ layer: 'function', resultState: 'success', durationMs, cacheStatus: 'hit' });
         return sendJson(res, 200, buildAdapterResult({
           graph: cachedGraph,
           warnings: cachedGraph.warnings,
@@ -423,6 +426,7 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
               startByte: err.startByte,
               endByte: err.endByte,
               durationMs,
+              resultState: 'parser_failure',
             });
             metrics.record({ layer: 'function', resultState: 'parser_failure', durationMs });
           } else {
@@ -431,12 +435,13 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
               startByte: err.startByte,
               endByte: err.endByte,
               durationMs,
+              resultState: 'contract_violation',
             });
             metrics.record({ layer: 'function', resultState: 'contract_violation', durationMs });
           }
           return sendError(res, classified.status, classified.message, classified.category, requestId);
         }
-        log.error('CodeVisualizer analysis failed', { errorMessage: err && err.message, durationMs });
+        log.error('CodeVisualizer analysis failed', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
         metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
         return sendError(res, 500, 'Analysis failed while generating the function flowchart', 'internal_error', requestId);
       }
@@ -450,11 +455,11 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
         if (err instanceof AnalysisContextError) {
-          log.warn('graph-function contract violation during graph construction', { errorMessage: err.message, durationMs });
+          log.warn('graph-function contract violation during graph construction', { errorMessage: err.message, durationMs, resultState: 'contract_violation' });
           metrics.record({ layer: 'function', resultState: 'contract_violation', durationMs });
           return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
         }
-        log.error('graph construction failed (GraphIR conversion)', { errorMessage: err && err.message, durationMs });
+        log.error('graph construction failed (GraphIR conversion)', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
         metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
         return sendError(res, 500, 'Analysis failed while building the function graph', 'internal_error', requestId);
       }
@@ -488,18 +493,18 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
         warningCount: graph.warnings.length,
         resultState: 'success',
         cacheKey,
-        cacheHit: false,
+        cacheStatus: 'miss',
       });
-      metrics.record({ layer: 'function', resultState: 'success', durationMs });
+      metrics.record({ layer: 'function', resultState: 'success', durationMs, cacheStatus: 'miss' });
       sendJson(res, 200, adapterResult);
     } catch (err) {
       const durationMs = Date.now() - startedAtMs;
       if (err instanceof AnalysisContextError || err instanceof AdapterResultError) {
-        log.warn('graph-function contract violation', { errorMessage: err.message, durationMs });
+        log.warn('graph-function contract violation', { errorMessage: err.message, durationMs, resultState: 'contract_violation' });
         metrics.record({ layer: 'function', resultState: 'contract_violation', durationMs });
         return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
       }
-      log.error('graph-function internal error', { errorMessage: err && err.message, durationMs });
+      log.error('graph-function internal error', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
       metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
       sendError(res, 500, 'Analysis failed', 'internal_error', requestId);
     }

@@ -246,6 +246,13 @@ async function main() {
 }
 
 main().catch((err) => {
-  process.stderr.write('[codeflow-server] fatal startup error: ' + (err.stack || err.message) + '\n');
+  // PR review finding: by the time anything can bubble out to this
+  // catch-all, configureLogger() (called immediately after loadConfig
+  // succeeds, near the top of main()) has always already run -- the only
+  // failure that can happen before that point is loadConfig's own
+  // ConfigError, which is caught and exits inline, never reaching here.
+  // So this can safely go through the structured/redacted logger rather
+  // than an unstructured, unredacted stderr write.
+  log('error', 'fatal startup error', { errorMessage: err && err.message, stack: err && err.stack });
   process.exit(1);
 });

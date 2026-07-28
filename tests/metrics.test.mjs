@@ -62,10 +62,35 @@ test('a negative or non-finite durationMs is dropped', () => {
 
 test('a durationMs of exactly 0 is valid', () => {
   const metrics = new Metrics();
-  metrics.record({ layer: 'function', resultState: 'cache_hit', durationMs: 0 });
-  const bucket = metrics.snapshot().buckets.find((b) => b.layer === 'function' && b.resultState === 'cache_hit');
+  metrics.record({ layer: 'function', resultState: 'success', durationMs: 0 });
+  const bucket = metrics.snapshot().buckets.find((b) => b.layer === 'function' && b.resultState === 'success');
   assert.equal(bucket.count, 1);
   assert.equal(bucket.avgDurationMs, 0);
+});
+
+test('cacheStatus is a separate dimension from resultState -- a cached partial_success stays partial_success', () => {
+  const metrics = new Metrics();
+  metrics.record({ layer: 'repository', resultState: 'partial_success', durationMs: 5, cacheStatus: 'hit' });
+  metrics.record({ layer: 'repository', resultState: 'success', durationMs: 5, cacheStatus: 'miss' });
+
+  const buckets = metrics.snapshot().buckets;
+  assert.equal(buckets.length, 2);
+  const cachedPartial = buckets.find((b) => b.resultState === 'partial_success');
+  assert.equal(cachedPartial.cacheStatus, 'hit');
+  assert.equal(cachedPartial.count, 1, 'a degraded response served from cache is not silently reclassified as a plain hit');
+});
+
+test('an invalid cacheStatus is dropped rather than creating a stray bucket', () => {
+  const metrics = new Metrics();
+  metrics.record({ layer: 'repository', resultState: 'success', durationMs: 5, cacheStatus: 'HIT' }); // wrong case
+  assert.equal(metrics.snapshot().buckets.length, 0);
+});
+
+test('omitted cacheStatus (states that never touch the cache) is recorded as null, not a stray bucket', () => {
+  const metrics = new Metrics();
+  metrics.record({ layer: 'repository', resultState: 'timeout', durationMs: 5 });
+  const bucket = metrics.snapshot().buckets.find((b) => b.resultState === 'timeout');
+  assert.equal(bucket.cacheStatus, null);
 });
 
 test('snapshot() shape includes scope, windowStartedAt, and snapshotAt', () => {
@@ -81,7 +106,7 @@ test('all closed-vocabulary layers and resultStates are individually accepted', 
   const metrics = new Metrics();
   const layers = ['repository', 'file', 'function'];
   const resultStates = [
-    'success', 'partial_success', 'cache_hit', 'timeout', 'validation_error',
+    'success', 'partial_success', 'timeout', 'validation_error',
     'not_allowlisted', 'github_error', 'parser_failure', 'contract_violation',
     'dependency_unavailable', 'internal_error',
   ];

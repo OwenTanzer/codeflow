@@ -226,10 +226,10 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
       const durationMs = Date.now() - startedAtMs;
       metrics.record({ layer: 'file', resultState: 'validation_error', durationMs });
       if (err instanceof BodyTooLargeError) {
-        log.warn('rejected graph-file request: body too large', { durationMs });
+        log.warn('rejected graph-file request: body too large', { durationMs, resultState: 'validation_error' });
         return sendJson(res, 413, { error: 'Request body too large' });
       }
-      log.warn('rejected graph-file request: body not valid JSON', { durationMs });
+      log.warn('rejected graph-file request: body not valid JSON', { durationMs, resultState: 'validation_error' });
       return sendJson(res, 400, { error: 'Request body must be valid JSON' });
     }
 
@@ -239,7 +239,7 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
     } catch (err) {
       if (err instanceof ValidationError) {
         const durationMs = Date.now() - startedAtMs;
-        log.warn('rejected graph-file request: invalid input', { errorMessage: err.message, durationMs });
+        log.warn('rejected graph-file request: invalid input', { errorMessage: err.message, durationMs, resultState: 'validation_error' });
         metrics.record({ layer: 'file', resultState: 'validation_error', durationMs });
         return sendError(res, 400, err.message, 'unsupported_input', requestId);
       }
@@ -248,7 +248,7 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
 
     if (!isRepoAllowed(request.owner, request.repo, config)) {
       const durationMs = Date.now() - startedAtMs;
-      log.warn('rejected graph-file request: repository not allowlisted', { owner: request.owner, repo: request.repo, durationMs });
+      log.warn('rejected graph-file request: repository not allowlisted', { owner: request.owner, repo: request.repo, durationMs, resultState: 'not_allowlisted' });
       metrics.record({ layer: 'file', resultState: 'not_allowlisted', durationMs });
       return sendError(res, 403, 'This repository is not on the allowlist', 'unsupported_input', requestId);
     }
@@ -326,17 +326,17 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
         if (err instanceof GraphAnalysisTimeoutError) {
-          log.warn('graph-file analysis timed out', { path: request.path, durationMs });
+          log.warn('graph-file analysis timed out', { path: request.path, durationMs, resultState: 'timeout' });
           metrics.record({ layer: 'file', resultState: 'timeout', durationMs });
           return sendError(res, 504, err.message, 'timeout', requestId);
         }
         if (err instanceof ValidationError) {
-          log.warn('rejected graph-file request: path resolution failed', { errorMessage: err.message, durationMs });
+          log.warn('rejected graph-file request: path resolution failed', { errorMessage: err.message, durationMs, resultState: 'validation_error' });
           metrics.record({ layer: 'file', resultState: 'validation_error', durationMs });
           return sendError(res, 400, err.message, 'unsupported_input', requestId);
         }
         if (err instanceof AnalysisContextError) {
-          log.warn('rejected graph-file request: PR revision changed since the parent graph was loaded', { errorMessage: err.message, durationMs });
+          log.warn('rejected graph-file request: PR revision changed since the parent graph was loaded', { errorMessage: err.message, durationMs, resultState: 'validation_error' });
           metrics.record({ layer: 'file', resultState: 'validation_error', durationMs });
           return sendError(
             res,
@@ -348,11 +348,11 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
         }
         if (err instanceof GithubFetchError) {
           const rateLimited = RATE_LIMIT_PATTERN.test(err.message);
-          log.warn('github fetch failed', { errorMessage: err.message, rateLimited, durationMs });
+          log.warn('github fetch failed', { errorMessage: err.message, rateLimited, durationMs, resultState: 'github_error' });
           metrics.record({ layer: 'file', resultState: 'github_error', durationMs });
           return sendError(res, rateLimited ? 429 : 502, err.message, 'github_access', requestId, { retryable: rateLimited });
         }
-        log.error('file source retrieval failed', { errorMessage: err && err.message, durationMs });
+        log.error('file source retrieval failed', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
         metrics.record({ layer: 'file', resultState: 'internal_error', durationMs });
         return sendError(res, 502, 'File analysis failed while retrieving its source', 'github_access', requestId);
       }
@@ -395,7 +395,7 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
         if (err instanceof AnalysisContextError) {
-          log.warn('graph-file contract violation while building the cache key', { errorMessage: err.message, durationMs });
+          log.warn('graph-file contract violation while building the cache key', { errorMessage: err.message, durationMs, resultState: 'contract_violation' });
           metrics.record({ layer: 'file', resultState: 'contract_violation', durationMs });
           return sendError(res, 502, 'The analyzed file state could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
         }
@@ -405,6 +405,12 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
       const cachedGraph = cache.get(cacheKey);
       if (cachedGraph) {
         const durationMs = Date.now() - startedAtMs;
+        // Unlike the repository layer, a file-layer cache entry is never
+        // degraded: cache.set() below only stores a graph when
+        // pyanOutcome.failedCategory is null, precisely so a transient
+        // pyan3 failure can never get baked into an hour-long cached
+        // partial result. So every hit here is a real 'success', not
+        // something that needs re-deriving from the cached graph.
         log.info('graph-file cache hit', {
           owner: request.owner,
           repo: request.repo,
@@ -414,9 +420,10 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
           nodeCount: cachedGraph.nodes.length,
           edgeCount: cachedGraph.edges.length,
           cacheKey,
-          cacheHit: true,
+          resultState: 'success',
+          cacheStatus: 'hit',
         });
-        metrics.record({ layer: 'file', resultState: 'cache_hit', durationMs });
+        metrics.record({ layer: 'file', resultState: 'success', durationMs, cacheStatus: 'hit' });
         return sendJson(res, 200, buildAdapterResult({
           graph: cachedGraph,
           warnings: cachedGraph.warnings,
@@ -436,7 +443,7 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
         absolutePaths = await stagePythonFiles(workspace, resolved.files);
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
-        log.error('workspace preparation failed', { errorMessage: err && err.message, durationMs });
+        log.error('workspace preparation failed', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
         metrics.record({ layer: 'file', resultState: 'internal_error', durationMs });
         return sendError(res, 500, 'Failed to prepare the analysis workspace', 'internal_error', requestId);
       }
@@ -496,11 +503,11 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
         if (err instanceof AnalysisContextError) {
-          log.warn('graph-file contract violation during graph construction', { errorMessage: err.message, durationMs });
+          log.warn('graph-file contract violation during graph construction', { errorMessage: err.message, durationMs, resultState: 'contract_violation' });
           metrics.record({ layer: 'file', resultState: 'contract_violation', durationMs });
           return sendError(res, 502, 'The analyzed file state could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
         }
-        log.error('graph construction failed (symbol indexing, join, or GraphIR conversion)', { errorMessage: err && err.message, durationMs });
+        log.error('graph construction failed (symbol indexing, join, or GraphIR conversion)', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
         metrics.record({ layer: 'file', resultState: 'internal_error', durationMs });
         return sendError(res, 500, 'Analysis failed while building the file graph', 'internal_error', requestId);
       }
@@ -547,18 +554,18 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
         pyanFailedCategory: pyanOutcome.failedCategory,
         resultState,
         cacheKey,
-        cacheHit: false,
+        cacheStatus: 'miss',
       });
-      metrics.record({ layer: 'file', resultState, durationMs });
+      metrics.record({ layer: 'file', resultState, durationMs, cacheStatus: 'miss' });
       sendJson(res, 200, adapterResult);
     } catch (err) {
       const durationMs = Date.now() - startedAtMs;
       if (err instanceof AnalysisContextError || err instanceof AdapterResultError) {
-        log.warn('graph-file contract violation', { errorMessage: err.message, durationMs });
+        log.warn('graph-file contract violation', { errorMessage: err.message, durationMs, resultState: 'contract_violation' });
         metrics.record({ layer: 'file', resultState: 'contract_violation', durationMs });
         return sendError(res, 502, 'The analyzed file state could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
       }
-      log.error('graph-file internal error', { errorMessage: err && err.message, durationMs });
+      log.error('graph-file internal error', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
       metrics.record({ layer: 'file', resultState: 'internal_error', durationMs });
       sendError(res, 500, 'Analysis failed', 'internal_error', requestId);
     } finally {
