@@ -17,6 +17,7 @@ import { Readable } from 'node:stream';
 import test from 'node:test';
 
 import { GraphCache } from '../server/lib/graph-cache.js';
+import { Metrics } from '../server/lib/metrics.js';
 import { createGraphRepositoryHandler } from '../server/routes/graph-repository.js';
 
 const SHA = 'c'.repeat(40);
@@ -86,11 +87,13 @@ function fakeResponse() {
 
 function makeHarness({ enabled = true } = {}) {
   const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled });
-  const handler = createGraphRepositoryHandler({ config: CONFIG, cache });
+  const metrics = new Metrics();
+  const handler = createGraphRepositoryHandler({ config: CONFIG, cache, metrics });
   const github = stubGitHub();
 
   return {
     cache,
+    metrics,
     github,
     async request(body, requestId = 'test') {
       github.calls = 0;
@@ -228,7 +231,7 @@ test('CACHE_ENABLED=false leaves every request a miss and stores nothing', async
 
 test('an expired entry re-runs the analysis instead of serving stale content', async (t) => {
   const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 1000, enabled: true });
-  const handler = createGraphRepositoryHandler({ config: CONFIG, cache });
+  const handler = createGraphRepositoryHandler({ config: CONFIG, cache, metrics: new Metrics() });
   const github = stubGitHub();
   t.after(github.restore);
 

@@ -137,13 +137,21 @@ export function resolveFunctionSymbol(entries, symbolPath) {
   return { outcome: 'matched', entry: matches[0] };
 }
 
-/** @param {{config: object, getCodeVisualizerAvailable: () => boolean, cache: import('../lib/graph-cache.js').GraphCache}} deps */
-export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable, cache }) {
+/** @param {{config: object, getCodeVisualizerAvailable: () => boolean, cache: import('../lib/graph-cache.js').GraphCache, metrics: import('../lib/metrics.js').Metrics}} deps */
+export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable, cache, metrics }) {
   return async function handleGraphFunction(req, res, requestId) {
-    const log = createRequestLogger(requestId);
+    const log = createRequestLogger(requestId, { layer: 'function' });
+
+    // Declared before any rejection branch (including the
+    // CodeVisualizer-availability check below) so every terminal outcome
+    // can report a real durationMs and record a metric.
+    const startedAt = new Date().toISOString();
+    const startedAtMs = Date.now();
 
     if (getCodeVisualizerAvailable && !getCodeVisualizerAvailable()) {
-      log.warn('rejected graph-function request: CodeVisualizer core unavailable');
+      const durationMs = Date.now() - startedAtMs;
+      log.warn('rejected graph-function request: CodeVisualizer core unavailable', { durationMs });
+      metrics.record({ layer: 'function', resultState: 'dependency_unavailable', durationMs });
       return sendError(
         res,
         502,
@@ -157,9 +165,13 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
     try {
       body = await readJsonBody(req, config.maxRequestBodyBytes);
     } catch (err) {
+      const durationMs = Date.now() - startedAtMs;
+      metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
       if (err instanceof BodyTooLargeError) {
+        log.warn('rejected graph-function request: body too large', { durationMs });
         return sendJson(res, 413, { error: 'Request body too large' });
       }
+      log.warn('rejected graph-function request: body not valid JSON', { durationMs });
       return sendJson(res, 400, { error: 'Request body must be valid JSON' });
     }
 
@@ -168,14 +180,18 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
       request = validateFunctionRequest(body);
     } catch (err) {
       if (err instanceof ValidationError) {
-        log.warn('rejected graph-function request: invalid input', { message: err.message });
+        const durationMs = Date.now() - startedAtMs;
+        log.warn('rejected graph-function request: invalid input', { errorMessage: err.message, durationMs });
+        metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
         return sendError(res, 400, err.message, 'unsupported_input', requestId);
       }
       throw err;
     }
 
     if (!isRepoAllowed(request.owner, request.repo, config)) {
-      log.warn('rejected graph-function request: repository not allowlisted', { owner: request.owner, repo: request.repo });
+      const durationMs = Date.now() - startedAtMs;
+      log.warn('rejected graph-function request: repository not allowlisted', { owner: request.owner, repo: request.repo, durationMs });
+      metrics.record({ layer: 'function', resultState: 'not_allowlisted', durationMs });
       return sendError(res, 403, 'This repository is not on the allowlist', 'unsupported_input', requestId);
     }
 
@@ -187,9 +203,6 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
       path: request.path,
       symbolPath: request.symbolPath,
     });
-
-    const startedAt = new Date().toISOString();
-    const startedAtMs = Date.now();
 
     try {
       let resolved;
@@ -224,14 +237,17 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
         const durationMs = Date.now() - startedAtMs;
         if (err instanceof GraphAnalysisTimeoutError) {
           log.warn('graph-function analysis timed out', { path: request.path, durationMs });
+          metrics.record({ layer: 'function', resultState: 'timeout', durationMs });
           return sendError(res, 504, err.message, 'timeout', requestId);
         }
         if (err instanceof ValidationError) {
-          log.warn('rejected graph-function request: path resolution failed', { message: err.message });
+          log.warn('rejected graph-function request: path resolution failed', { errorMessage: err.message, durationMs });
+          metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
           return sendError(res, 400, err.message, 'unsupported_input', requestId);
         }
         if (err instanceof AnalysisContextError) {
-          log.warn('rejected graph-function request: PR revision changed since the parent graph was loaded', { message: err.message });
+          log.warn('rejected graph-function request: PR revision changed since the parent graph was loaded', { errorMessage: err.message, durationMs });
+          metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
           return sendError(
             res,
             409,
@@ -242,10 +258,12 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
         }
         if (err instanceof GithubFetchError) {
           const rateLimited = RATE_LIMIT_PATTERN.test(err.message);
-          log.warn('github fetch failed', { message: err.message, rateLimited, durationMs });
+          log.warn('github fetch failed', { errorMessage: err.message, rateLimited, durationMs });
+          metrics.record({ layer: 'function', resultState: 'github_error', durationMs });
           return sendError(res, rateLimited ? 429 : 502, err.message, 'github_access', requestId, { retryable: rateLimited });
         }
-        log.error('function source retrieval failed', { message: err && err.message, durationMs });
+        log.error('function source retrieval failed', { errorMessage: err && err.message, durationMs });
+        metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
         return sendError(res, 502, 'Function analysis failed while retrieving its source', 'github_access', requestId);
       }
 
@@ -266,21 +284,28 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
         errorRanges = indexed.errorRanges;
         const result = resolveFunctionSymbol(indexed.entries, request.symbolPath);
         if (result.outcome === 'unresolved') {
-          log.warn('rejected graph-function request: no matching symbol', { path: request.path, symbolPath: request.symbolPath });
+          const durationMs = Date.now() - startedAtMs;
+          log.warn('rejected graph-function request: no matching symbol', { path: request.path, symbolPath: request.symbolPath, durationMs });
+          metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
           return sendError(res, 404, 'No function found at this path/symbolPath in this revision.', 'unsupported_input', requestId);
         }
         if (result.outcome === 'ambiguous') {
-          log.warn('rejected graph-function request: ambiguous symbol', { path: request.path, symbolPath: request.symbolPath, count: result.count });
+          const durationMs = Date.now() - startedAtMs;
+          log.warn('rejected graph-function request: ambiguous symbol', { path: request.path, symbolPath: request.symbolPath, count: result.count, durationMs });
+          metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
           return sendError(res, 400, 'Multiple symbols match this coordinate; cannot resolve unambiguously.', 'unsupported_input', requestId);
         }
         entry = result.entry;
         if (entry.symbolKind !== 'function' && entry.symbolKind !== 'method') {
-          log.warn('rejected graph-function request: symbol is not a function/method', { symbolKind: entry.symbolKind });
+          const durationMs = Date.now() - startedAtMs;
+          log.warn('rejected graph-function request: symbol is not a function/method', { symbolKind: entry.symbolKind, durationMs });
+          metrics.record({ layer: 'function', resultState: 'validation_error', durationMs });
           return sendError(res, 400, `Target symbol is a ${entry.symbolKind}, not a function or method.`, 'unsupported_input', requestId);
         }
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
-        log.error('symbol indexing failed', { message: err && err.message, durationMs });
+        log.error('symbol indexing failed', { errorMessage: err && err.message, durationMs });
+        metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
         return sendError(res, 500, 'Analysis failed while indexing the file’s symbols', 'internal_error', requestId);
       }
 
@@ -317,8 +342,10 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
           options: cacheKeyRequestIdentity(cacheContext),
         });
       } catch (err) {
+        const durationMs = Date.now() - startedAtMs;
         if (err instanceof AnalysisContextError) {
-          log.warn('graph-function contract violation while building the cache key', { message: err.message });
+          log.warn('graph-function contract violation while building the cache key', { errorMessage: err.message, durationMs });
+          metrics.record({ layer: 'function', resultState: 'contract_violation', durationMs });
           return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
         }
         throw err;
@@ -339,6 +366,7 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
           cacheKey,
           cacheHit: true,
         });
+        metrics.record({ layer: 'function', resultState: 'cache_hit', durationMs });
         return sendJson(res, 200, buildAdapterResult({
           graph: cachedGraph,
           warnings: cachedGraph.warnings,
@@ -396,17 +424,20 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
               endByte: err.endByte,
               durationMs,
             });
+            metrics.record({ layer: 'function', resultState: 'parser_failure', durationMs });
           } else {
             log.error('byte-offset conversion did not match @codevisualizer/core’s own parse', {
-              message: err.message,
+              errorMessage: err.message,
               startByte: err.startByte,
               endByte: err.endByte,
               durationMs,
             });
+            metrics.record({ layer: 'function', resultState: 'contract_violation', durationMs });
           }
           return sendError(res, classified.status, classified.message, classified.category, requestId);
         }
-        log.error('CodeVisualizer analysis failed', { message: err && err.message, durationMs });
+        log.error('CodeVisualizer analysis failed', { errorMessage: err && err.message, durationMs });
+        metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
         return sendError(res, 500, 'Analysis failed while generating the function flowchart', 'internal_error', requestId);
       }
 
@@ -417,12 +448,14 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
       try {
         graph = adaptFunctionAnalysis({ context: cacheContext, entrySymbol: entry, source: resolved.content, flowchartIR, analyzer: ANALYZER });
       } catch (err) {
+        const durationMs = Date.now() - startedAtMs;
         if (err instanceof AnalysisContextError) {
-          log.warn('graph-function contract violation during graph construction', { message: err.message });
+          log.warn('graph-function contract violation during graph construction', { errorMessage: err.message, durationMs });
+          metrics.record({ layer: 'function', resultState: 'contract_violation', durationMs });
           return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
         }
-        const durationMs = Date.now() - startedAtMs;
-        log.error('graph construction failed (GraphIR conversion)', { message: err && err.message, durationMs });
+        log.error('graph construction failed (GraphIR conversion)', { errorMessage: err && err.message, durationMs });
+        metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
         return sendError(res, 500, 'Analysis failed while building the function graph', 'internal_error', requestId);
       }
 
@@ -453,16 +486,21 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
         nodeCount: graph.nodes.length,
         edgeCount: graph.edges.length,
         warningCount: graph.warnings.length,
+        resultState: 'success',
         cacheKey,
         cacheHit: false,
       });
+      metrics.record({ layer: 'function', resultState: 'success', durationMs });
       sendJson(res, 200, adapterResult);
     } catch (err) {
+      const durationMs = Date.now() - startedAtMs;
       if (err instanceof AnalysisContextError || err instanceof AdapterResultError) {
-        log.warn('graph-function contract violation', { message: err.message });
+        log.warn('graph-function contract violation', { errorMessage: err.message, durationMs });
+        metrics.record({ layer: 'function', resultState: 'contract_violation', durationMs });
         return sendError(res, 502, 'The analyzed function could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
       }
-      log.error('graph-function internal error', { message: err && err.message });
+      log.error('graph-function internal error', { errorMessage: err && err.message, durationMs });
+      metrics.record({ layer: 'function', resultState: 'internal_error', durationMs });
       sendError(res, 500, 'Analysis failed', 'internal_error', requestId);
     }
   };

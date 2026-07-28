@@ -172,6 +172,15 @@ export function loadConfig({ repoRoot, env = process.env }) {
     else errors.push(`CACHE_ENABLED must be exactly "true" or "false", got: ${JSON.stringify(env.CACHE_ENABLED)}`);
   }
 
+  // MOO-72 Commit 3: same strict-enum treatment as CACHE_ENABLED above --
+  // a typo must produce a startup error, not a silently wrong log volume.
+  const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
+  let logLevel = 'info';
+  if (env.LOG_LEVEL != null && env.LOG_LEVEL !== '') {
+    if (LOG_LEVELS.includes(env.LOG_LEVEL)) logLevel = env.LOG_LEVEL;
+    else errors.push(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}, got: ${JSON.stringify(env.LOG_LEVEL)}`);
+  }
+
   if (errors.length > 0) {
     throw new ConfigError(errors);
   }
@@ -198,5 +207,6 @@ export function loadConfig({ repoRoot, env = process.env }) {
     cacheMaxBytes,
     cacheTtlMs,
     cacheEnabled,
+    logLevel,
   };
 }
