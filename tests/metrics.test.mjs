@@ -102,11 +102,18 @@ test('snapshot() shape includes scope, windowStartedAt, and snapshotAt', () => {
   assert.ok(Array.isArray(snapshot.buckets));
 });
 
+test('cancelled is a real terminal resultState, distinct from timeout/internal_error -- MOO-72 Commit 1B', () => {
+  const metrics = new Metrics();
+  metrics.record({ layer: 'file', resultState: 'cancelled', durationMs: 12 });
+  const bucket = metrics.snapshot().buckets.find((b) => b.layer === 'file' && b.resultState === 'cancelled');
+  assert.equal(bucket.count, 1);
+});
+
 test('all closed-vocabulary layers and resultStates are individually accepted', () => {
   const metrics = new Metrics();
   const layers = ['repository', 'file', 'function'];
   const resultStates = [
-    'success', 'partial_success', 'timeout', 'validation_error',
+    'success', 'partial_success', 'timeout', 'cancelled', 'validation_error',
     'not_allowlisted', 'github_error', 'parser_failure', 'contract_violation',
     'dependency_unavailable', 'internal_error',
   ];

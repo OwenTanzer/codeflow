@@ -12,6 +12,7 @@
 // the one terminal structured log line for that same request.
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -33,13 +34,17 @@ function fakeRequest(body) {
   return Readable.from([Buffer.from(JSON.stringify(body), 'utf8')]);
 }
 
+// MOO-72 Commit 1B: a real EventEmitter (not a plain object) -- the route
+// handlers' cancellation wiring calls res.once('close', ...)/res.off(...),
+// which a plain object doesn't have.
 function fakeResponse() {
-  return {
-    statusCode: 0,
-    body: null,
-    writeHead(status) { this.statusCode = status; },
-    end(payload) { this.body = payload ? JSON.parse(payload) : null; },
-  };
+  const res = new EventEmitter();
+  res.statusCode = 0;
+  res.body = null;
+  res.writableEnded = false;
+  res.writeHead = function (status) { this.statusCode = status; };
+  res.end = function (payload) { this.body = payload ? JSON.parse(payload) : null; this.writableEnded = true; };
+  return res;
 }
 
 /**
@@ -202,6 +207,31 @@ test('repository layer: a validation failure is recorded once as validation_erro
   assert.equal(logLine.resultState, 'validation_error');
   assert.equal(logLine.cacheStatus, undefined, 'validation_error never reaches a cache lookup');
   assertOneMatchingTerminalRecord(metrics, logLine);
+});
+
+test('repository layer: a validation failure for one field still echoes an independently-valid sessionId from the raw body', async () => {
+  const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled: true });
+  const metrics = new Metrics();
+  const handler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics });
+  const sessionId = 'a1b2c3d4-e5f6-4789-a012-3456789abcde';
+  const res = fakeResponse();
+  // `repo` is missing -- validation fails on an unrelated field, but the
+  // raw body's own sessionId is independently well-formed and must still
+  // be echoed (checked against the raw parsed body, not a validated
+  // `request` object that was never constructed).
+  await handler(fakeRequest({ owner: 'octocat', sessionId }), res, 'req-echo');
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.sessionId, sessionId);
+});
+
+test('repository layer: a malformed sessionId is never echoed back as-is on a validation error', async () => {
+  const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled: true });
+  const metrics = new Metrics();
+  const handler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics });
+  const res = fakeResponse();
+  await handler(fakeRequest({ owner: 'octocat', sessionId: 'garbage-not-a-uuid' }), res, 'req-echo-bad');
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.sessionId, null);
 });
 
 test('repository layer: ref resolution timing out is recorded once as timeout', async (t) => {

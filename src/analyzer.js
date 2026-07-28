@@ -2793,7 +2793,7 @@ function buildTree(files){
 
 function countFiles(n){return n.files.length+Object.values(n.children).reduce(function(s,c){return s+countFiles(c);},0);}
 
-var ARCHITECTURE_MAX_BLOCKS=64;
+var ARCHITECTURE_MAX_BLOCKS=72;
 var ARCHITECTURE_MAX_RENDERED_DEPENDENCIES=48;
 var ARCHITECTURE_GROUP_ORDER_CODEFLOW=['Browser App','GitHub Action','Analysis Core','Repository Collection','Rendering / Reports','Testing','Fixtures / Examples','Application','Storage'];
 var ARCHITECTURE_GROUP_ORDER_WEBAPP=['App Entry / Shell','Frontend Routes / Views','Frontend Components','Backend / API Layer','Services / Business Logic','Data / Storage','Shared / Utilities','Configuration','Content / Data','External Integrations','Build Output','Testing','Fixtures / Examples'];

@@ -63,10 +63,12 @@ export class GraphFileClientError extends ServerRequestError {
  * @param {string} input.path
  * @param {string|null} [input.depth]
  * @param {string} input.serverAuthToken
+ * @param {string} [input.sessionId] - MOO-72 Commit 1B: correlates this request with the rest of one drill-down chain
+ * @param {AbortSignal} [input.signal] - MOO-72 Commit 1B: forwarded straight to fetch
  * @returns {{url: string, init: RequestInit}}
  */
-export function buildGraphFileRequest({ owner, repo, resolvedSha, pr, sourceOwner, sourceRepo, path, depth, serverAuthToken }) {
-  const body = { owner, repo, path, depth: depth || undefined };
+export function buildGraphFileRequest({ owner, repo, resolvedSha, pr, sourceOwner, sourceRepo, path, depth, serverAuthToken, sessionId, signal }) {
+  const body = { owner, repo, path, depth: depth || undefined, sessionId };
   if (pr != null) {
     body.pr = pr;
     body.expectedResolvedSha = resolvedSha;
@@ -75,7 +77,7 @@ export function buildGraphFileRequest({ owner, repo, resolvedSha, pr, sourceOwne
   } else {
     body.ref = resolvedSha;
   }
-  return buildServerJsonRequest({ path: '/api/graph/file', body, serverAuthToken });
+  return buildServerJsonRequest({ path: '/api/graph/file', body, serverAuthToken, signal });
 }
 
 /**

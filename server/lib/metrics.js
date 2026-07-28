@@ -26,6 +26,7 @@ const RESULT_STATES = new Set([
   'success',
   'partial_success',
   'timeout',
+  'cancelled',
   'validation_error',
   'not_allowlisted',
   'github_error',

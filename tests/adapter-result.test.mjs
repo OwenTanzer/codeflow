@@ -81,6 +81,32 @@ test('a full-success result with a valid graph builds cleanly', () => {
   assert.equal(result.graph, graph);
 });
 
+// MOO-72 Commit 1B: requestId/sessionId pass through when provided, default
+// to null when omitted -- nullish-coalesced (`??`), not `||`, so an
+// explicitly-falsy-but-valid value could never be silently replaced (not
+// reachable for either field today, but the operator choice itself is the
+// contract worth pinning down).
+test('requestId and sessionId pass through when provided', () => {
+  const graph = makeGraphIR(graphInput());
+  const result = buildAdapterResult({
+    graph,
+    warnings: [],
+    provenance: provenance(),
+    timing: timing(),
+    requestId: 'req-123',
+    sessionId: 'a1b2c3d4-e5f6-4789-a012-3456789abcde',
+  });
+  assert.equal(result.requestId, 'req-123');
+  assert.equal(result.sessionId, 'a1b2c3d4-e5f6-4789-a012-3456789abcde');
+});
+
+test('requestId and sessionId default to null when omitted', () => {
+  const graph = makeGraphIR(graphInput());
+  const result = buildAdapterResult({ graph, warnings: [], provenance: provenance(), timing: timing() });
+  assert.equal(result.requestId, null);
+  assert.equal(result.sessionId, null);
+});
+
 test('partial-success: a schema-valid but degraded graph plus warnings remains valid', () => {
   const graph = makeGraphIR(graphInput({ confidence: 0.4 }));
   const result = buildAdapterResult({

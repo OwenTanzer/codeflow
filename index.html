@@ -663,6 +663,7 @@ import { fetchRepositoryGraph, GraphRepositoryClientError } from './src/state/gr
 import { renderFunctionGraph } from './src/render/functionGraph.js';
 import { buildFunctionRenderModel } from './src/render/functionRenderModel.js';
 import { fetchFunctionGraph, GraphFunctionClientError } from './src/state/graphFunctionClient.js';
+import { AnalysisSession } from './src/state/analysisSession.js';
 Object.assign(window, analyzer, {
   renderRepositoryGraph, renderFileGraph, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute,
   adaptRepositoryAnalysis, repositoryGraphToViewModel, normalizeContext, calcBlastFromGraph,
@@ -671,6 +672,7 @@ Object.assign(window, analyzer, {
   fetchFileGraph, GraphFileClientError,
   fetchRepositoryGraph, GraphRepositoryClientError,
   renderFunctionGraph, buildFunctionRenderModel, fetchFunctionGraph, GraphFunctionClientError,
+  AnalysisSession,
 });
 </script>
 <script type="text/babel">
@@ -1184,7 +1186,7 @@ function ServerTokenPrompt(props){
 // (src/state/repositoryDrillDown.js) -- id-keyed, not path-keyed, since
 // many function/method nodes share one file's coordinate.path.
 function FileLayerPanel(props){
-    var navPanel=props.navPanel,repositoryGraph=props.repositoryGraph,
+    var navPanel=props.navPanel,repositoryGraph=props.repositoryGraph,session=props.session,
         theme=props.theme,openFileDrillDown=props.openFileDrillDown,
         showNotification=props.showNotification,onHover=props.onHover,
         cacheGraph=props.cacheGraph,readCachedGraph=props.readCachedGraph,
@@ -1218,7 +1220,7 @@ function FileLayerPanel(props){
     var _retry=useState(0),retryCount=_retry[0],setRetryCount=_retry[1];
 
     useEffect(function(){
-        if(!path||!repositoryGraph)return;
+        if(!path||!repositoryGraph||!session)return;
         // MOO-71 Commit 8: restore the previously loaded file graph when
         // navigating back from a function drill-down, rather than re-running
         // pyan3 analysis for a view the user already had.
@@ -1231,38 +1233,33 @@ function FileLayerPanel(props){
             return;
         }
         if(!committedToken)return;
-        var cancelled=false;
         setFileGraphLoading(true);
         setFileGraphError(null);
         setFileGraphErrorStatus(null);
         setFileGraph(null);
-        // PR review fix: send the requested BASE owner/repo (never
-        // sourceOwner/sourceRepo, the resolved fork for a PR) so the
-        // server's allowlist check applies to the right repository; for
-        // PR mode send `pr` and let the server re-resolve the fork/head
-        // sha itself, matching how resolveRef() already handles it. Also
-        // pass sourceOwner/sourceRepo/resolvedSha through so
-        // buildGraphFileRequest can send expectedResolvedSha -- otherwise
-        // a PR receiving a new commit between this graph loading and a
-        // file drill-down would silently analyze a different revision.
+        // MOO-72 Commit 1B: describeFileRequest derives owner/repo/pr/
+        // sourceOwner/sourceRepo/resolvedSha from the session's adopted
+        // repository context -- a call site can no longer pass its own
+        // (and potentially stale/mismatched) copy of those fields. Same
+        // revision-pinning guarantee as before, now enforced by the
+        // session contract rather than by this panel remembering to
+        // copy every field correctly.
+        var descriptor=session.describeFileRequest(path,undefined);
         fetchFileGraph({
-            owner:repositoryGraph.context.owner,
-            repo:repositoryGraph.context.repo,
-            pr:repositoryGraph.context.mode==='pr'?repositoryGraph.context.prNumber:undefined,
-            sourceOwner:repositoryGraph.context.sourceOwner,
-            sourceRepo:repositoryGraph.context.sourceRepo,
-            resolvedSha:repositoryGraph.context.resolvedSha,
-            path:path,
+            ...descriptor.params,
+            signal:descriptor.signal,
             serverAuthToken:committedToken,
         }).then(function(result){
-            if(cancelled)return;
+            if(!session.isCurrent('file',descriptor.generation,descriptor.epoch))return;
             setFileGraph(result.graph);
             setFileGraphLoading(false);
             var key=result.cache&&result.cache.key;
             cacheGraph(key,result.graph);
             if(key)recordPanelState({graphCacheKey:key});
         }).catch(function(err){
-            if(cancelled)return;
+            // Cancellation (superseded by a newer request, or this effect
+            // tearing down) is silent, never a user-visible error.
+            if((err&&err.name==='AbortError')||!session.isCurrent('file',descriptor.generation,descriptor.epoch))return;
             var status=err instanceof GraphFileClientError?err.status:null;
             setFileGraphLoading(false);
             // MOO-71 Commit 7: a rejected token clears the committed value and
@@ -1274,8 +1271,8 @@ function FileLayerPanel(props){
             setFileGraphError((err instanceof GraphFileClientError?err.message:'Failed to load file graph')||'Failed to load file graph');
             setFileGraphErrorStatus(status);
         });
-        return function(){cancelled=true;};
-    },[path,repositoryGraph,committedToken,retryCount,navPanel.graphCacheKey]);
+        return function(){session.abortCurrent('file');};
+    },[path,repositoryGraph,session,committedToken,retryCount,navPanel.graphCacheKey]);
 
     selectSymbolRef.current=function(){}; // MOO-70 Commit 8: selection highlighting deferred, matching this pass's minimal scope
     activateSymbolRef.current=function(nodeId){
@@ -1351,7 +1348,7 @@ function FileLayerPanel(props){
 // coordinate exists", and today none does, so double-click explains that
 // instead of navigating somewhere plausible-looking but wrong.
 function FunctionLayerPanel(props){
-    var navPanel=props.navPanel,repositoryGraph=props.repositoryGraph,
+    var navPanel=props.navPanel,repositoryGraph=props.repositoryGraph,session=props.session,
         theme=props.theme,showNotification=props.showNotification,onHover=props.onHover,
         committedToken=props.serverAuthToken,onTokenRejected=props.onTokenRejected,
         onCommitToken=props.onCommitToken,onChangeToken=props.onChangeToken,
@@ -1383,7 +1380,7 @@ function FunctionLayerPanel(props){
     var symbolKey=coordinate&&coordinate.symbolPath?coordinate.symbolPath.join('.'):null;
 
     useEffect(function(){
-        if(!path||!symbolKey||!repositoryGraph)return;
+        if(!path||!symbolKey||!repositoryGraph||!session)return;
         // MOO-71 Commit 8: restore from cache before considering a fetch, so
         // navigating back to a function already viewed is instant and cannot
         // re-run analysis at a different revision. Also means back/forward
@@ -1397,38 +1394,32 @@ function FunctionLayerPanel(props){
             return;
         }
         if(!committedToken)return;
-        var cancelled=false;
         setLoadingGraph(true);
         setGraphError(null);
         setFunctionGraph(null);
         setSelectedNodeId(null);
-        // Same revision-pinning shape as the file layer, for the same reason:
-        // base owner/repo (never the resolved fork), `pr` in PR mode so the
-        // server re-resolves the head sha itself, and expectedResolvedSha so a
-        // PR that moved since the parent graph loaded is rejected rather than
-        // silently analyzed at a different revision.
+        // MOO-72 Commit 1B: describeFunctionRequest derives the same
+        // revision-pinning fields as the file layer from the session's
+        // adopted repository context -- see FileLayerPanel's matching
+        // comment.
+        var descriptor=session.describeFunctionRequest(path,coordinate.symbolPath);
         fetchFunctionGraph({
-            owner:repositoryGraph.context.owner,
-            repo:repositoryGraph.context.repo,
-            pr:repositoryGraph.context.mode==='pr'?repositoryGraph.context.prNumber:undefined,
-            sourceOwner:repositoryGraph.context.sourceOwner,
-            sourceRepo:repositoryGraph.context.sourceRepo,
-            resolvedSha:repositoryGraph.context.resolvedSha,
-            path:path,
-            symbolPath:coordinate.symbolPath,
+            ...descriptor.params,
+            signal:descriptor.signal,
             serverAuthToken:committedToken,
         }).then(function(result){
-            if(cancelled)return;
+            if(!session.isCurrent('function',descriptor.generation,descriptor.epoch))return;
             setFunctionGraph(result.graph);
             setLoadingGraph(false);
             // Record against the breadcrumb entry so back/forward can restore
-            // this exact graph. `cancelled` already guarantees a superseded
-            // response never reaches here.
+            // this exact graph.
             var key=result.cache&&result.cache.key;
             cacheGraph(key,result.graph);
             if(key)recordPanelState({graphCacheKey:key});
         }).catch(function(err){
-            if(cancelled)return;
+            // Cancellation (superseded by a newer request, or this effect
+            // tearing down) is silent, never a user-visible error.
+            if((err&&err.name==='AbortError')||!session.isCurrent('function',descriptor.generation,descriptor.epoch))return;
             var status=err instanceof GraphFunctionClientError?err.status:null;
             setLoadingGraph(false);
             // Clearing the token reopens the prompt without touching navPanel,
@@ -1441,8 +1432,8 @@ function FunctionLayerPanel(props){
                 category:err instanceof GraphFunctionClientError?err.category:null,
             });
         });
-        return function(){cancelled=true;};
-    },[path,symbolKey,repositoryGraph,committedToken,retryCount,navPanel.graphCacheKey]);
+        return function(){session.abortCurrent('function');};
+    },[path,symbolKey,repositoryGraph,session,committedToken,retryCount,navPanel.graphCacheKey]);
 
     selectSymbolRef.current=function(nodeId){
         setSelectedNodeId(nodeId);
@@ -1669,6 +1660,14 @@ function App(){
     // not wired to anything yet, per Commit 4's governing decision not to
     // encode navigation policy ahead of MOO-68.
     var activateFileRef=useRef(function(){});
+    // MOO-72 Commit 1B: the unified analysis-session orchestrator. Two refs,
+    // not one -- a session is only promoted from pending to active in the
+    // same synchronous step as the repository graph it belongs to, so a
+    // FileLayerPanel/FunctionLayerPanel (which only ever reads
+    // activeSessionRef) can never observe a graph and a session that don't
+    // match, and never sees a session whose repositoryContext is still null.
+    var pendingSessionRef=useRef(null);
+    var activeSessionRef=useRef(null);
     var zipInputRef=useRef(null);
     var zipArchiveRef=useRef(null);
     var zipFileRef=useRef(null);
@@ -1843,6 +1842,16 @@ function App(){
         setError(null);
         setData(null);
         setRepositoryGraph(null);
+        // MOO-72 Commit 1B: every call site that tears down or replaces the
+        // current analysis already goes through here first -- one place to
+        // cancel whatever session is being discarded, rather than a
+        // .cancelAll() scattered at each individual call site. Overwriting
+        // the refs without this would leak the old session's controllers:
+        // its requests would keep running and its own isCurrent() checks
+        // could still read true, applying a stale result into the new
+        // analysis's view.
+        if(pendingSessionRef.current){pendingSessionRef.current.cancelAll();pendingSessionRef.current=null;}
+        if(activeSessionRef.current){activeSessionRef.current.cancelAll();activeSessionRef.current=null;}
         resetNavHistory();
         // MOO-71 Commit 8: every cached graph is keyed to the revision being
         // replaced, so keeping them across a new analysis could only ever
@@ -1924,6 +1933,16 @@ function App(){
         }
         
         resetAnalysisState();
+        // MOO-72 Commit 1B: the session is created here, before the
+        // repository request is even issued -- not after it succeeds. It
+        // is the root of the revision chain (describeRepositoryRequest is
+        // a real, used method here, not just for file/function children),
+        // so the repository request itself carries a sessionId and can be
+        // correlated in logs the same way its own file/function children
+        // will be once repositoryContext is adopted below.
+        var session=new AnalysisSession();
+        pendingSessionRef.current=session;
+        var repoDescriptor=session.describeRepositoryRequest(undefined,undefined,currentExcludePatterns.map(function(x){return x.raw;}));
         setLocalDirHandle(null);
         setLocalSourceKind(null);
         zipArchiveRef.current=null;
@@ -1971,12 +1990,25 @@ function App(){
             return fetchRepositoryGraph({
                 owner:p.owner,
                 repo:p.repo,
-                excludePatterns:currentExcludePatterns.map(function(x){return x.raw;}),
+                ...repoDescriptor.params,
+                signal:repoDescriptor.signal,
                 serverAuthToken:serverAuthToken
             });
         }).then(function(result){
             if(!isCurrentAnalysisGeneration(generation))return;
             var graph=result.graph;
+            // MOO-72 Commit 1B: adopt only if this descriptor is still
+            // current (checks the session's own generation/epoch, not just
+            // the legacy per-analysis counter above) -- a false return means
+            // a newer repository request already superseded this one, so
+            // the result is silently discarded rather than applied. Session
+            // promotion (pending -> active) happens in this same synchronous
+            // step as setRepositoryGraph, so FileLayerPanel/FunctionLayerPanel
+            // (which only ever read activeSessionRef) can never observe a
+            // graph and a session that don't match.
+            if(!session.adoptRepositoryContext(graph.context,repoDescriptor))return;
+            activeSessionRef.current=session;
+            pendingSessionRef.current=null;
             var viewModel=repositoryGraphToViewModel(graph);
             setData(viewModel);
             setRepositoryGraph(graph);
@@ -1984,7 +2016,10 @@ function App(){
             writeRepoRoute(p.owner+'/'+p.repo);
             setLoading(false);
         }).catch(function(e){
-            if(e==='cancelled'||!isCurrentAnalysisGeneration(generation))return;
+            // Cancellation (superseded by a newer repository load, or this
+            // component/session torn down) is silent, never a user-visible
+            // error -- checked before anything else.
+            if((e&&e.name==='AbortError')||e==='cancelled'||!isCurrentAnalysisGeneration(generation)||!session.isCurrent('repository',repoDescriptor.generation,repoDescriptor.epoch))return;
             setLoading(false);
             if(e instanceof GraphRepositoryClientError&&e.status===401){
                 setServerAuthToken('');
@@ -4185,7 +4220,7 @@ function App(){
             if(isCurrentAnalysisGeneration(generation)){showNotification('Could not load PR','error');setLoading(false);}
         });
     }
-    function resetAnalysis(){setData(null);setRepositoryGraph(null);resetNavHistory();graphCacheRef.current.clear();setSelected(null);setBlastRadius(null);setOwnership(null);setRepoInfo(null);setRepoUrl('');setPrData(null);setFolderFilter(null);setLocalDirHandle(null);setLocalSourceKind(null);setArchitectureIncludeTests(false);setArchitectureIncludeBuildOutput(false);zipArchiveRef.current=null;zipFileRef.current=null;clearRoute();}
+    function resetAnalysis(){if(pendingSessionRef.current){pendingSessionRef.current.cancelAll();pendingSessionRef.current=null;}if(activeSessionRef.current){activeSessionRef.current.cancelAll();activeSessionRef.current=null;}setData(null);setRepositoryGraph(null);resetNavHistory();graphCacheRef.current.clear();setSelected(null);setBlastRadius(null);setOwnership(null);setRepoInfo(null);setRepoUrl('');setPrData(null);setFolderFilter(null);setLocalDirHandle(null);setLocalSourceKind(null);setArchitectureIncludeTests(false);setArchitectureIncludeBuildOutput(false);zipArchiveRef.current=null;zipFileRef.current=null;clearRoute();}
     function filterByFolder(path){setFolderFilter(function(prev){return prev===path?null:path;});}
     function getArchitectureViewStats(diagram,includeTests,includeBuildOutput){
         if(!diagram)return{blocks:0,dependencies:0,routes:0,apiRoutes:0,databaseTouchpoints:0,warnings:0};
@@ -4649,7 +4684,7 @@ function App(){
                     // commit/reject/change handlers, so one prompt serves the
                     // whole repository -> file -> function path.
                     navPanel&&(navPanel.layer==='file'?React.createElement(FileLayerPanel,{
-                        navPanel:navPanel,repositoryGraph:repositoryGraph,
+                        navPanel:navPanel,repositoryGraph:repositoryGraph,session:activeSessionRef.current,
                         theme:theme,openFileDrillDown:openFileDrillDown,
                         showNotification:showNotification,onHover:setTooltip,
                         serverAuthToken:serverAuthToken,tokenRejected:serverTokenRejected,
@@ -4657,7 +4692,7 @@ function App(){
                         onChangeToken:handleChangeServerToken,
                         cacheGraph:cacheGraph,readCachedGraph:readCachedGraph,recordPanelState:recordPanelState,
                     }):navPanel.layer==='function'?React.createElement(FunctionLayerPanel,{
-                        navPanel:navPanel,repositoryGraph:repositoryGraph,
+                        navPanel:navPanel,repositoryGraph:repositoryGraph,session:activeSessionRef.current,
                         theme:theme,
                         showNotification:showNotification,onHover:setTooltip,
                         serverAuthToken:serverAuthToken,tokenRejected:serverTokenRejected,

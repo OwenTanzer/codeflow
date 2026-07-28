@@ -113,6 +113,10 @@ function sanitizeValue(value) {
  * @property {AdapterTiming} timing
  * @property {AdapterCacheInfo} cache
  * @property {boolean} partial - true when the adapter produced a degraded/incomplete result rather than a full success
+ * @property {string|null} requestId - MOO-72 Commit 1B: the server-generated per-HTTP-request id, echoed here so a
+ *   successful response can be correlated the same way an error response already could (via its own requestId field)
+ * @property {string|null} sessionId - MOO-72 Commit 1B: the client-supplied, client-generated session id (if any),
+ *   echoed back unchanged -- ties this response to the rest of one repository->file->function drill-down chain
  */
 
 export class AdapterResultError extends Error {
@@ -168,5 +172,7 @@ export function buildAdapterResult(input) {
     timing: { startedAt: input.timing.startedAt, durationMs: input.timing.durationMs },
     cache: { key: (input.cache && input.cache.key) || null, hit: !!(input.cache && input.cache.hit) },
     partial: !!input.partial,
+    requestId: input.requestId ?? null,
+    sessionId: input.sessionId ?? null,
   };
 }

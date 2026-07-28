@@ -69,7 +69,7 @@ test('RateLimiter tracks separate keys independently', () => {
 
 test('validateRepoRequest accepts a well-formed owner/repo with no ref/pr', () => {
   const result = validateRepoRequest({ owner: 'octocat', repo: 'Hello-World' });
-  assert.deepEqual(result, { owner: 'octocat', repo: 'Hello-World', ref: null, pr: null, excludePatterns: [] });
+  assert.deepEqual(result, { owner: 'octocat', repo: 'Hello-World', ref: null, pr: null, excludePatterns: [], sessionId: null });
 });
 
 test('validateRepoRequest accepts a well-formed ref (branch or commit SHA)', () => {
@@ -160,4 +160,23 @@ test('validateRepoRequest rejects excludePatterns whose combined length exceeds 
   // the aggregate cap -- proves the two limits are checked independently.
   const many = Array.from({ length: 50 }, () => 'a'.repeat(100));
   assert.throws(() => validateRepoRequest({ owner: 'octocat', repo: 'x', excludePatterns: many }), ValidationError);
+});
+
+// MOO-72 Commit 1B: sessionId is optional and diagnostic-only -- it is
+// never a reason to reject the whole request, only ever normalized to
+// null when absent or malformed.
+test('validateRepoRequest accepts and echoes a UUID-shaped sessionId', () => {
+  const id = 'a1b2c3d4-e5f6-4789-a012-3456789abcde';
+  const result = validateRepoRequest({ owner: 'octocat', repo: 'Hello-World', sessionId: id });
+  assert.equal(result.sessionId, id);
+});
+
+test('validateRepoRequest normalizes a malformed sessionId to null rather than rejecting the request', () => {
+  const result = validateRepoRequest({ owner: 'octocat', repo: 'Hello-World', sessionId: 'not-a-uuid' });
+  assert.equal(result.sessionId, null);
+});
+
+test('validateRepoRequest defaults sessionId to null when omitted', () => {
+  const result = validateRepoRequest({ owner: 'octocat', repo: 'Hello-World' });
+  assert.equal(result.sessionId, null);
 });
