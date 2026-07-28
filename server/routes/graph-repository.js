@@ -132,18 +132,28 @@ export function cacheKeyRequestIdentity(context) {
   };
 }
 
-/** @param {{config: object, cache: import('../lib/graph-cache.js').GraphCache}} deps */
-export function createGraphRepositoryHandler({ config, cache }) {
+/** @param {{config: object, cache: import('../lib/graph-cache.js').GraphCache, metrics: import('../lib/metrics.js').Metrics}} deps */
+export function createGraphRepositoryHandler({ config, cache, metrics }) {
   return async function handleGraphRepository(req, res, requestId) {
-    const log = createRequestLogger(requestId);
+    const log = createRequestLogger(requestId, { layer: 'repository' });
+
+    // Declared before any rejection branch (body parsing, validation,
+    // allowlist) so every terminal outcome -- including the earliest
+    // rejections -- can report a real durationMs and record a metric.
+    const startedAt = new Date().toISOString();
+    const startedAtMs = Date.now();
 
     let body;
     try {
       body = await readJsonBody(req, config.maxRequestBodyBytes);
     } catch (err) {
+      const durationMs = Date.now() - startedAtMs;
+      metrics.record({ layer: 'repository', resultState: 'validation_error', durationMs });
       if (err instanceof BodyTooLargeError) {
+        log.warn('rejected graph-repository request: body too large', { durationMs, resultState: 'validation_error' });
         return sendJson(res, 413, { error: 'Request body too large' });
       }
+      log.warn('rejected graph-repository request: body not valid JSON', { durationMs, resultState: 'validation_error' });
       return sendJson(res, 400, { error: 'Request body must be valid JSON' });
     }
 
@@ -152,24 +162,27 @@ export function createGraphRepositoryHandler({ config, cache }) {
       request = validateRepoRequest(body);
     } catch (err) {
       if (err instanceof ValidationError) {
-        log.warn('rejected graph-repository request: invalid input', { message: err.message });
+        const durationMs = Date.now() - startedAtMs;
+        log.warn('rejected graph-repository request: invalid input', { errorMessage: err.message, durationMs, resultState: 'validation_error' });
+        metrics.record({ layer: 'repository', resultState: 'validation_error', durationMs });
         return sendError(res, 400, err.message, 'unsupported_input', requestId);
       }
       throw err;
     }
 
     if (!isRepoAllowed(request.owner, request.repo, config)) {
+      const durationMs = Date.now() - startedAtMs;
       log.warn('rejected graph-repository request: repository not allowlisted', {
         owner: request.owner,
         repo: request.repo,
+        durationMs,
+        resultState: 'not_allowlisted',
       });
+      metrics.record({ layer: 'repository', resultState: 'not_allowlisted', durationMs });
       return sendError(res, 403, 'This repository is not on the allowlist', 'unsupported_input', requestId);
     }
 
     log.info('graph-repository request accepted', { owner: request.owner, repo: request.repo, ref: request.ref, pr: request.pr });
-
-    const startedAt = new Date().toISOString();
-    const startedAtMs = Date.now();
 
     // Phase 0: resolve the ref only -- one or two cheap GitHub calls, no
     // content fetched. This is what makes the cache worth having: the key
@@ -185,15 +198,18 @@ export function createGraphRepositoryHandler({ config, cache }) {
     } catch (err) {
       const durationMs = Date.now() - startedAtMs;
       if (err instanceof GraphAnalysisTimeoutError) {
-        log.warn('graph-repository ref resolution timed out', { owner: request.owner, repo: request.repo, durationMs });
+        log.warn('graph-repository ref resolution timed out', { owner: request.owner, repo: request.repo, durationMs, resultState: 'timeout' });
+        metrics.record({ layer: 'repository', resultState: 'timeout', durationMs });
         return sendError(res, 504, err.message, 'timeout', requestId);
       }
       if (err instanceof GithubFetchError) {
         const rateLimited = RATE_LIMIT_PATTERN.test(err.message);
-        log.warn('github ref resolution failed', { message: err.message, rateLimited, durationMs });
+        log.warn('github ref resolution failed', { errorMessage: err.message, rateLimited, durationMs, resultState: 'github_error' });
+        metrics.record({ layer: 'repository', resultState: 'github_error', durationMs });
         return sendError(res, rateLimited ? 429 : 502, err.message, 'github_access', requestId, { retryable: rateLimited });
       }
-      log.error('graph-repository ref resolution failed', { message: err && err.message, durationMs });
+      log.error('graph-repository ref resolution failed', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
+      metrics.record({ layer: 'repository', resultState: 'internal_error', durationMs });
       return sendError(res, 502, 'Repository analysis failed while resolving its revision', 'github_access', requestId);
     }
 
@@ -229,17 +245,30 @@ export function createGraphRepositoryHandler({ config, cache }) {
         },
       });
     } catch (err) {
+      const durationMs = Date.now() - startedAtMs;
       if (err instanceof AnalysisContextError) {
-        log.warn('graph-repository contract violation', { message: err.message });
+        log.warn('graph-repository contract violation', { errorMessage: err.message, durationMs, resultState: 'contract_violation' });
+        metrics.record({ layer: 'repository', resultState: 'contract_violation', durationMs });
         return sendError(res, 502, 'The analyzed repository state could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
       }
-      log.error('graph-repository internal error', { message: err && err.message });
+      log.error('graph-repository internal error', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
+      metrics.record({ layer: 'repository', resultState: 'internal_error', durationMs });
       return sendError(res, 500, 'Analysis failed', 'internal_error', requestId);
     }
 
     const cachedGraph = cache.get(cacheKey);
     if (cachedGraph) {
       const durationMs = Date.now() - startedAtMs;
+      // PR review finding: cache provenance and response quality are
+      // independent -- this route deliberately caches Python-tree-sitter-
+      // degraded graphs (see the comment at cache.set() below), so a hit
+      // can still be serving a partial_success. Re-derived here from the
+      // cached graph itself (a pure function of its nodes) rather than
+      // assumed, since the entry may have been populated by a different
+      // request than this one.
+      const { pythonFileCount: cachedPythonFileCount, pythonTreeSitterActive: cachedPythonTreeSitterActive } =
+        derivePythonParserCapability(cachedGraph);
+      const resultState = cachedPythonFileCount > 0 && !cachedPythonTreeSitterActive ? 'partial_success' : 'success';
       log.info('graph-repository cache hit', {
         owner: request.owner,
         repo: request.repo,
@@ -248,8 +277,10 @@ export function createGraphRepositoryHandler({ config, cache }) {
         nodeCount: cachedGraph.nodes.length,
         edgeCount: cachedGraph.edges.length,
         cacheKey,
-        cacheHit: true,
+        resultState,
+        cacheStatus: 'hit',
       });
+      metrics.record({ layer: 'repository', resultState, durationMs, cacheStatus: 'hit' });
       // Built fresh rather than stored/replayed, so timing reflects *this*
       // request and the stored graph is never mutated to carry per-request
       // response metadata. excludePatterns is rebuilt from *this* request
@@ -285,18 +316,21 @@ export function createGraphRepositoryHandler({ config, cache }) {
     } catch (err) {
       const durationMs = Date.now() - startedAtMs;
       if (err instanceof GraphAnalysisTimeoutError) {
-        log.warn('graph-repository analysis timed out', { owner: request.owner, repo: request.repo, durationMs });
+        log.warn('graph-repository analysis timed out', { owner: request.owner, repo: request.repo, durationMs, resultState: 'timeout' });
+        metrics.record({ layer: 'repository', resultState: 'timeout', durationMs });
         return sendError(res, 504, err.message, 'timeout', requestId);
       }
       if (err instanceof GithubFetchError) {
         const rateLimited = RATE_LIMIT_PATTERN.test(err.message);
-        log.warn('github fetch failed', { message: err.message, rateLimited, durationMs });
+        log.warn('github fetch failed', { errorMessage: err.message, rateLimited, durationMs, resultState: 'github_error' });
+        metrics.record({ layer: 'repository', resultState: 'github_error', durationMs });
         return sendError(res, rateLimited ? 429 : 502, err.message, 'github_access', requestId, { retryable: rateLimited });
       }
       // Anything else escaping fetchAndAnalyzeRepo (Parser.extract,
       // buildAnalysisData) is a failure to parse this repository's actual
       // content, not an unsupported-input or internal-server condition.
-      log.error('repository parsing failed', { message: err && err.message, durationMs });
+      log.error('repository parsing failed', { errorMessage: err && err.message, durationMs, resultState: 'parser_failure' });
+      metrics.record({ layer: 'repository', resultState: 'parser_failure', durationMs });
       return sendError(res, 502, 'Repository analysis failed while parsing its content', 'parser_failure', requestId);
     }
 
@@ -310,7 +344,8 @@ export function createGraphRepositoryHandler({ config, cache }) {
       // comes from the startup grammar probe (see the key built above),
       // since it has to be knowable before the analysis runs. This stays
       // the accurate per-analysis signal for what the user is told.
-      if (pythonFileCount > 0 && !pythonTreeSitterActive) {
+      const degraded = pythonFileCount > 0 && !pythonTreeSitterActive;
+      if (degraded) {
         graph.warnings.push(
           'Python call-graph analysis degraded: tree-sitter runtime unavailable, falling back to heuristic regex parsing.'
         );
@@ -329,6 +364,7 @@ export function createGraphRepositoryHandler({ config, cache }) {
         timing: { startedAt, durationMs },
         cache: { key: cacheKey, hit: false },
       });
+      const resultState = degraded ? 'partial_success' : 'success';
       // Sufficient to identify where an analysis run went, without ever
       // logging source content or the GitHub token: request ID (via
       // createRequestLogger), repository/revision identity, duration,
@@ -343,16 +379,21 @@ export function createGraphRepositoryHandler({ config, cache }) {
         nodeCount: graph.nodes.length,
         edgeCount: graph.edges.length,
         warningCount: graph.warnings.length,
+        resultState,
         cacheKey,
-        cacheHit: false,
+        cacheStatus: 'miss',
       });
+      metrics.record({ layer: 'repository', resultState, durationMs, cacheStatus: 'miss' });
       sendJson(res, 200, adapterResult);
     } catch (err) {
+      const durationMs = Date.now() - startedAtMs;
       if (err instanceof AnalysisContextError || err instanceof AdapterResultError) {
-        log.warn('graph-repository contract violation', { message: err.message });
+        log.warn('graph-repository contract violation', { errorMessage: err.message, durationMs, resultState: 'contract_violation' });
+        metrics.record({ layer: 'repository', resultState: 'contract_violation', durationMs });
         return sendError(res, 502, 'The analyzed repository state could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
       }
-      log.error('graph-repository internal error', { message: err && err.message });
+      log.error('graph-repository internal error', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
+      metrics.record({ layer: 'repository', resultState: 'internal_error', durationMs });
       sendError(res, 500, 'Analysis failed', 'internal_error', requestId);
     }
   };

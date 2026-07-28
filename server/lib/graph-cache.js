@@ -12,6 +12,7 @@
 // AdapterResult envelope). Route handlers call buildAdapterResult()
 // freshly on every response, including cache hits, so timing, cache.hit,
 // and other request-specific fields are never stale.
+import { log } from './logger.js';
 
 export class GraphCache {
   /**
@@ -60,7 +61,7 @@ export class GraphCache {
     const bytes = JSON.stringify(graph).length;
     if (bytes > this._maxBytes) {
       // Entry is too large to ever fit — don't evict everything just to fail
-      console.warn(`[graph-cache] entry for key ${key} is ${bytes} bytes, exceeds maxBytes ${this._maxBytes}; skipping`);
+      log('warn', 'graph-cache entry exceeds maxBytes; skipping', { cacheKey: key, bytes, maxBytes: this._maxBytes });
       return;
     }
     // Remove any existing entry for this key first so re-insertion puts it

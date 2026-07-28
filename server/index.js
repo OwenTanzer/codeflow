@@ -12,13 +12,14 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 import { loadConfig, ConfigError } from './lib/config.js';
-import { log, generateRequestId } from './lib/logger.js';
+import { log, configureLogger, generateRequestId } from './lib/logger.js';
 import { WorkspaceManager } from './lib/workspace.js';
 import { createStaticHandler } from './lib/static.js';
 import { createHealthHandler, createReadinessHandler } from './lib/health.js';
 import { isAuthorized } from './lib/auth.js';
 import { RateLimiter } from './lib/rate-limit.js';
 import { GraphCache } from './lib/graph-cache.js';
+import { Metrics } from './lib/metrics.js';
 import { createAnalyzeHandler } from './routes/analyze.js';
 import { createAnalyzeRepoHandler } from './routes/analyze-repo.js';
 import { createGraphRepositoryHandler } from './routes/graph-repository.js';
@@ -54,20 +55,38 @@ async function main() {
     if (err instanceof ConfigError) {
       // Actionable, not a stack trace: this is meant to be read by whoever
       // just ran `npm start`/deployed to Railway.
+      //
+      // exitCode, not exit(1): an immediate process.exit() can truncate a
+      // write still sitting in a pipe's buffer (Railway's log collector
+      // reads stdout/stderr through a pipe, which is exactly the case
+      // Node's own docs warn can drop output under exit()). Setting
+      // exitCode and returning lets the event loop drain -- with nothing
+      // else keeping it alive at this point, the process exits on its own
+      // once that write actually flushes.
       process.stderr.write('[codeflow-server] ' + err.message + '\n');
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
     throw err;
   }
+
+  // Configured immediately once config exists -- everything logged from
+  // this point on is level-gated and redacted (AUTH_TOKEN/GITHUB_TOKEN
+  // scrubbed verbatim wherever they'd appear in a logged string, plus the
+  // generic token-shape patterns in logger.js). The one thing that can
+  // never go through this path is the loadConfig failure above: there is
+  // no config yet at that point to redact with, so it stays a plain
+  // stderr write.
+  configureLogger({ level: config.logLevel, secrets: [config.authToken, config.githubToken] });
 
   const workspaceManager = new WorkspaceManager(config.workspaceRoot);
   try {
     await workspaceManager.ensureRoot();
   } catch (err) {
-    process.stderr.write(
-      `[codeflow-server] Workspace root ${config.workspaceRoot} is not writable: ${err.message}\n`
-    );
-    process.exit(1);
+    log('error', 'workspace root is not writable', { workspaceRoot: config.workspaceRoot, errorMessage: err.message });
+    // exitCode, not exit(1) -- see the ConfigError branch above for why.
+    process.exitCode = 1;
+    return;
   }
 
   // MOO-70 Commit 7/9: check pyan3 availability once at startup so it's
@@ -90,7 +109,7 @@ async function main() {
   } catch (err) {
     pyan3Available = false;
     log('warn', 'pyan3 unavailable at startup -- /api/graph/file will run in tree-sitter-only (degraded) mode until this is fixed', {
-      message: err.message,
+      errorMessage: err.message,
     });
   }
 
@@ -105,7 +124,7 @@ async function main() {
   } catch (err) {
     codeVisualizerAvailable = false;
     log('warn', 'CodeVisualizer core unavailable at startup -- /api/graph/function will be unavailable until this is fixed', {
-      message: err.message,
+      errorMessage: err.message,
     });
   }
 
@@ -130,6 +149,21 @@ async function main() {
     enabled: config.cacheEnabled,
   });
 
+  // MOO-72 Commit 3: one shared counter store across all three graph
+  // layers, same process-local/cumulative-since-start lifetime as
+  // graphCache above. A required constructor dependency for every route
+  // handler below (not an optional no-op default) -- a silent default
+  // would hide exactly the kind of production wiring mistake this is
+  // meant to prevent.
+  const metrics = new Metrics();
+  const metricsSummaryInterval = setInterval(() => {
+    // Logged at 'info' -- LOG_LEVEL=warn or error suppresses this line,
+    // same as any other info log. That's expected, not a sign metrics
+    // collection itself is broken.
+    log('info', 'metrics summary', metrics.snapshot());
+  }, 5 * 60 * 1000);
+  metricsSummaryInterval.unref();
+
   const handleStatic = createStaticHandler(config.distDir);
   const handleHealth = createHealthHandler({ config });
   const handleReadiness = createReadinessHandler({
@@ -139,12 +173,13 @@ async function main() {
   });
   const handleAnalyze = createAnalyzeHandler({ config, workspaceManager });
   const handleAnalyzeRepo = createAnalyzeRepoHandler({ config });
-  const handleGraphRepository = createGraphRepositoryHandler({ config, cache: graphCache });
-  const handleGraphFile = createGraphFileHandler({ config, workspaceManager, cache: graphCache });
+  const handleGraphRepository = createGraphRepositoryHandler({ config, cache: graphCache, metrics });
+  const handleGraphFile = createGraphFileHandler({ config, workspaceManager, cache: graphCache, metrics });
   const handleGraphFunction = createGraphFunctionHandler({
     config,
     getCodeVisualizerAvailable: () => codeVisualizerAvailable,
     cache: graphCache,
+    metrics,
   });
 
   const server = createServer(async (req, res) => {
@@ -182,7 +217,7 @@ async function main() {
         await handleStatic(req, res);
       }
     } catch (err) {
-      log('error', 'unhandled request error', { requestId, message: err && err.message });
+      log('error', 'unhandled request error', { requestId, errorMessage: err && err.message });
       if (!res.headersSent) res.writeHead(500);
       res.end('Internal server error');
     } finally {
@@ -216,11 +251,20 @@ async function main() {
       // operator debugging a stale or missing result needs to know the cache
       // does not survive a restart and is not shared across replicas.
       cacheScope: 'process-local (cleared on restart/deploy, not shared across replicas)',
+      logLevel: config.logLevel,
     });
   });
 }
 
 main().catch((err) => {
-  process.stderr.write('[codeflow-server] fatal startup error: ' + (err.stack || err.message) + '\n');
-  process.exit(1);
+  // PR review finding: by the time anything can bubble out to this
+  // catch-all, configureLogger() (called immediately after loadConfig
+  // succeeds, near the top of main()) has always already run -- the only
+  // failure that can happen before that point is loadConfig's own
+  // ConfigError, which is caught and exits inline, never reaching here.
+  // So this can safely go through the structured/redacted logger rather
+  // than an unstructured, unredacted stderr write.
+  log('error', 'fatal startup error', { errorMessage: err && err.message, stack: err && err.stack });
+  // exitCode, not exit(1) -- see the ConfigError branch in main() for why.
+  process.exitCode = 1;
 });

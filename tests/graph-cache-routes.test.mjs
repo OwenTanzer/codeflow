@@ -19,6 +19,7 @@ import { Readable } from 'node:stream';
 import test from 'node:test';
 
 import { GraphCache } from '../server/lib/graph-cache.js';
+import { Metrics } from '../server/lib/metrics.js';
 import { cacheKeyRequestIdentity } from '../server/routes/graph-repository.js';
 import { normalizeExcludePatterns } from '../server/lib/github-analyzer-bridge.js';
 import { buildCacheKey } from '../src/graph-ir/cacheKey.js';
@@ -309,7 +310,7 @@ const HANDLER_CONFIG = {
 
 test('a repository request for a non-allowlisted repo is rejected before the cache is consulted', async () => {
   const { createGraphRepositoryHandler } = await import('../server/routes/graph-repository.js');
-  const handler = createGraphRepositoryHandler({ config: HANDLER_CONFIG, cache: forbiddenCache() });
+  const handler = createGraphRepositoryHandler({ config: HANDLER_CONFIG, cache: forbiddenCache(), metrics: new Metrics() });
   const res = fakeResponse();
 
   await handler(fakeRequest({ owner: 'attacker', repo: 'private-thing' }), res, 'req-1');
@@ -320,7 +321,7 @@ test('a repository request for a non-allowlisted repo is rejected before the cac
 
 test('a repository request that fails validation is rejected before the cache is consulted', async () => {
   const { createGraphRepositoryHandler } = await import('../server/routes/graph-repository.js');
-  const handler = createGraphRepositoryHandler({ config: HANDLER_CONFIG, cache: forbiddenCache() });
+  const handler = createGraphRepositoryHandler({ config: HANDLER_CONFIG, cache: forbiddenCache(), metrics: new Metrics() });
   const res = fakeResponse();
 
   await handler(fakeRequest({ repo: 'Hello-World' }), res, 'req-2');
@@ -334,6 +335,7 @@ test('a file request for a non-allowlisted repo is rejected before the cache is 
     config: HANDLER_CONFIG,
     workspaceManager: { createRequestWorkspace() { throw new Error('must not be reached'); } },
     cache: forbiddenCache(),
+    metrics: new Metrics(),
   });
   const res = fakeResponse();
 
@@ -348,6 +350,7 @@ test('a function request is rejected before the cache when CodeVisualizer is una
     config: HANDLER_CONFIG,
     getCodeVisualizerAvailable: () => false,
     cache: forbiddenCache(),
+    metrics: new Metrics(),
   });
   const res = fakeResponse();
 
@@ -362,6 +365,7 @@ test('a function request for a non-allowlisted repo is rejected before the cache
     config: HANDLER_CONFIG,
     getCodeVisualizerAvailable: () => true,
     cache: forbiddenCache(),
+    metrics: new Metrics(),
   });
   const res = fakeResponse();
 
