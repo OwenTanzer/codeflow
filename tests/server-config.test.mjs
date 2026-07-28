@@ -213,3 +213,62 @@ test('loadConfig reports every missing required field in a single error, not jus
     });
   });
 });
+
+// MOO-72 Commit 2: the centralized graph cache's configuration.
+test('loadConfig applies the cache defaults when no CACHE_* vars are set', async () => {
+  await withBuiltRepo((repoRoot) => {
+    const config = loadConfig({ repoRoot, env: VALID_ENV });
+    assert.equal(config.cacheEnabled, true);
+    assert.equal(config.cacheMaxItems, 200);
+    assert.equal(config.cacheMaxBytes, 256 * 1024 * 1024);
+    assert.equal(config.cacheTtlMs, 60 * 60 * 1000);
+  });
+});
+
+test('loadConfig accepts the two valid CACHE_ENABLED spellings', async () => {
+  await withBuiltRepo((repoRoot) => {
+    assert.equal(loadConfig({ repoRoot, env: { ...VALID_ENV, CACHE_ENABLED: 'true' } }).cacheEnabled, true);
+    assert.equal(loadConfig({ repoRoot, env: { ...VALID_ENV, CACHE_ENABLED: 'false' } }).cacheEnabled, false);
+  });
+});
+
+test('loadConfig rejects a mistyped CACHE_ENABLED rather than silently leaving caching on', async () => {
+  await withBuiltRepo((repoRoot) => {
+    // The failure mode this guards against: an operator disabling the cache
+    // to reproduce a stale-result bug, fat-fingering the value, and getting
+    // a still-caching server that quietly contradicts their intent.
+    for (const bad of ['fasle', 'False', 'TRUE', '0', '1', 'yes', 'no']) {
+      assert.throws(
+        () => loadConfig({ repoRoot, env: { ...VALID_ENV, CACHE_ENABLED: bad } }),
+        /CACHE_ENABLED must be exactly "true" or "false"/,
+        `expected ${JSON.stringify(bad)} to be rejected`
+      );
+    }
+  });
+});
+
+test('loadConfig validates the cache size/TTL bounds as positive integers', async () => {
+  await withBuiltRepo((repoRoot) => {
+    for (const key of ['CACHE_MAX_ITEMS', 'CACHE_MAX_BYTES', 'CACHE_TTL_MS']) {
+      for (const bad of ['0', '-1', 'nope', '1.5']) {
+        assert.throws(
+          () => loadConfig({ repoRoot, env: { ...VALID_ENV, [key]: bad } }),
+          new RegExp(`${key} must be a positive integer`),
+          `expected ${key}=${JSON.stringify(bad)} to be rejected`
+        );
+      }
+    }
+  });
+});
+
+test('loadConfig accepts explicit cache overrides', async () => {
+  await withBuiltRepo((repoRoot) => {
+    const config = loadConfig({
+      repoRoot,
+      env: { ...VALID_ENV, CACHE_MAX_ITEMS: '50', CACHE_MAX_BYTES: '1048576', CACHE_TTL_MS: '5000' },
+    });
+    assert.equal(config.cacheMaxItems, 50);
+    assert.equal(config.cacheMaxBytes, 1048576);
+    assert.equal(config.cacheTtlMs, 5000);
+  });
+});

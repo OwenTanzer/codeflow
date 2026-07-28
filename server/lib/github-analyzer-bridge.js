@@ -49,8 +49,16 @@ const { GitHub, Parser, shouldExcludeFile, shouldIgnoreDirectory, buildAnalysisD
 // call-edge detection instead of the token-heuristic fallback. See
 // node-tree-sitter-shim.js for the two Node-vs-browser incompatibilities
 // this works around.
-import { installNodeTreeSitter } from './node-tree-sitter-shim.js';
+import { installNodeTreeSitter, isPythonGrammarCapable } from './node-tree-sitter-shim.js';
 await installNodeTreeSitter(Parser);
+
+// MOO-72 Commit 2: deployment-static parser capability, probed once at
+// import time (see node-tree-sitter-shim.js's active Language.load check).
+// The repository layer folds this into its cache key so a Tree-sitter-backed
+// and a heuristic-fallback analysis of the same revision can never be served
+// from the same cache entry. Safe as a module constant precisely because the
+// cache is in-memory: both are recomputed together on every restart.
+export const PYTHON_TREE_SITTER_CAPABLE = isPythonGrammarCapable();
 
 const GITHUB_API = 'https://api.github.com';
 
@@ -318,10 +326,68 @@ export async function fetchAllContents(owner, repo, files, concurrency = 8) {
 }
 
 /**
+ * Normalize a request's exclude patterns into the canonical, order- and
+ * case-insensitive form used for cache identity. Routes the raw values
+ * through the analyzer's own compileExcludePatterns (trimming, splitting,
+ * deduplication) rather than reimplementing any of it, then lowercases and
+ * sorts -- exclude matching is already case-insensitive end-to-end, and
+ * pattern order never changes which files are analyzed, so two requests
+ * that mean the same thing must produce byte-identical output here.
+ * @param {string[]} [patterns]
+ * @returns {string[]}
+ */
+export function normalizeExcludePatterns(patterns) {
+  return compileExcludePatterns((patterns || []).join('\n'))
+    .map((p) => p.raw.toLowerCase())
+    .sort();
+}
+
+/**
+ * Rebuild the display form of a request's exclude patterns -- trimmed and
+ * deduped like normalizeExcludePatterns, but preserving this request's own
+ * casing and order rather than canonicalizing it. Cache identity and display
+ * metadata must not diverge: normalizeExcludePatterns collapses
+ * `['DIST', 'node_modules']` and `['node_modules', 'dist']` onto the same
+ * cache entry, so `graph.metadata.excludePatterns` can never be read off
+ * whichever request happened to populate that entry -- it has to be rebuilt
+ * from *this* request on every response, hit or miss. Pure and cheap (no
+ * I/O), so recomputing it per-response costs nothing.
+ * @param {string[]} [patterns]
+ * @returns {string[]}
+ */
+export function displayExcludePatterns(patterns) {
+  return compileExcludePatterns((patterns || []).join('\n')).map((p) => p.raw);
+}
+
+/**
+ * Resolve which commit a request actually points at, without fetching any
+ * repository content. Split out from analyzeGithubRepo for MOO-72 Commit 2:
+ * the resolved SHA is the one input the repository layer's cache key needs
+ * that isn't already in the request, so the cache can be consulted before
+ * the expensive tree/blob fetching below ever starts.
+ * @param {{owner: string, repo: string, ref: string|null, pr: number|null}} request
+ * @param {{githubToken: string}} config
+ * @returns {Promise<{sourceOwner: string, sourceRepo: string, resolvedSha: string, resolvedRef: string}>}
+ */
+export async function resolveGithubRef(request, config) {
+  configureGithubClient({ token: config.githubToken });
+  const { owner, repo, ref: resolvedRef } = await resolveRef(request);
+  // pr mode already resolves to a real commit SHA (the PR's head.sha); any
+  // other mode's `ref` may still be a branch/tag name, so it needs this one
+  // extra call to pin down the actual commit GraphIR's AnalysisContext (see
+  // src/graph-ir/githubContext.js) requires -- resolvedSha must always be a
+  // resolved commit SHA, never a branch name.
+  const resolvedSha = request.pr != null ? resolvedRef : await resolveCommitSha(owner, repo, resolvedRef);
+  return { sourceOwner: owner, sourceRepo: repo, resolvedSha, resolvedRef };
+}
+
+/**
+ * Fetch and analyze a repository's content at an already-resolved ref.
  * @param {{owner: string, repo: string, ref: string|null, pr: number|null, excludePatterns?: string[]}} request
+ * @param {{sourceOwner: string, sourceRepo: string, resolvedSha: string, resolvedRef: string}} refResult - resolveGithubRef's output
  * @param {{githubToken: string, maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number}} config
  */
-export async function analyzeGithubRepo(request, config) {
+export async function fetchAndAnalyzeRepo(request, refResult, config) {
   configureGithubClient({ token: config.githubToken });
 
   // MOO-72 Commit 1A: exclude patterns are part of the request (what the
@@ -333,14 +399,7 @@ export async function analyzeGithubRepo(request, config) {
   const rawExcludePatterns = request.excludePatterns || [];
   const compiledExcludePatterns = compileExcludePatterns(rawExcludePatterns.join('\n'));
 
-  const { owner, repo, ref: resolvedRef } = await resolveRef(request);
-  // pr mode already resolves to a real commit SHA (the PR's head.sha); any
-  // other mode's `ref` may still be a branch/tag name, so it needs this one
-  // extra call to pin down the actual commit GraphIR's AnalysisContext (see
-  // src/graph-ir/githubContext.js) requires -- resolvedSha must always be a
-  // resolved commit SHA, never a branch name. Harmless extra round trip for
-  // the existing /api/analyze-repo response, which doesn't consume it.
-  const resolvedSha = request.pr != null ? resolvedRef : await resolveCommitSha(owner, repo, resolvedRef);
+  const { sourceOwner: owner, sourceRepo: repo, resolvedRef, resolvedSha } = refResult;
   const { files, skippedOversizedFiles } = await fetchTree({
     owner,
     repo,
@@ -409,4 +468,17 @@ export async function analyzeGithubRepo(request, config) {
     sourceRepo: repo,
     resolvedSha,
   };
+}
+
+/**
+ * Resolve a ref and analyze the repository at it, in one call. The
+ * repository route splits these two phases apart so it can check the cache
+ * in between; this composed form remains for /api/analyze-repo and for
+ * callers that have no cache to consult.
+ * @param {{owner: string, repo: string, ref: string|null, pr: number|null, excludePatterns?: string[]}} request
+ * @param {{githubToken: string, maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number}} config
+ */
+export async function analyzeGithubRepo(request, config) {
+  const refResult = await resolveGithubRef(request, config);
+  return fetchAndAnalyzeRepo(request, refResult, config);
 }

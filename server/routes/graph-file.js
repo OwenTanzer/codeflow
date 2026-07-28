@@ -31,7 +31,7 @@ import {
   fetchAllContents,
   GithubFetchError,
 } from '../lib/github-analyzer-bridge.js';
-import { buildRequestContext, withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN } from './graph-repository.js';
+import { buildRequestContext, withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN, cacheKeyRequestIdentity } from './graph-repository.js';
 import { stagePythonFiles, runPyan3 } from '../lib/pyan3Adapter.js';
 import { parseDotGraph, extractPyanNodes, extractPyanEdges } from '../lib/dotGraph.js';
 import { indexPythonSymbols } from '../lib/pythonSymbolIndex.js';
@@ -42,6 +42,7 @@ import { buildCacheKey } from '../../src/graph-ir/cacheKey.js';
 import { GRAPH_IR_SCHEMA_VERSION } from '../../src/graph-ir/graphIR.js';
 import { AdapterError, buildAdapterResult, AdapterResultError, sanitizeDiagnostic } from '../../src/graph-ir/adapterResult.js';
 import { AnalysisContextError, assertContextPropagation } from '../../src/graph-ir/githubContext.js';
+import { makeCoordinate } from '../../src/graph-ir/sourceCoordinate.js';
 
 const ANALYZER = { name: 'codeflow-pyan3-adapter', version: '1.0.0' };
 
@@ -206,8 +207,8 @@ export function resolveFileTarget({ treeFiles, requestedPath }) {
   throw new ValidationError(`"${requestedPath}" was not found in this revision`);
 }
 
-/** @param {{config: object, workspaceManager: import('../lib/workspace.js').WorkspaceManager}} deps */
-export function createGraphFileHandler({ config, workspaceManager }) {
+/** @param {{config: object, workspaceManager: import('../lib/workspace.js').WorkspaceManager, cache: import('../lib/graph-cache.js').GraphCache}} deps */
+export function createGraphFileHandler({ config, workspaceManager, cache }) {
   return async function handleGraphFile(req, res, requestId) {
     const log = createRequestLogger(requestId);
 
@@ -340,6 +341,72 @@ export function createGraphFileHandler({ config, workspaceManager }) {
         return sendError(res, 502, 'File analysis failed while retrieving its source', 'github_access', requestId);
       }
 
+      // MOO-72 Commit 2: cache lookup sits here -- after the (comparatively
+      // cheap) GitHub fetch that resolves the SHA and the file/package
+      // target, but before the workspace staging and pyan3 subprocess that
+      // actually dominate this route's cost.
+      //
+      // depthMode, not the post-analysis `chosen.mode`: chooseDepthMode
+      // needs a built graph to pick an automatic depth, which is precisely
+      // the work a cache hit must skip. `request.depth ?? 'auto'` is
+      // request-derived, so lookup and storage always agree -- two
+      // auto-depth requests for the same file@SHA share an entry (auto
+      // depth is deterministic given the same graph), while an explicit
+      // depth override gets its own.
+      let cacheKey;
+      let cacheContext;
+      try {
+        cacheContext = buildRequestContext(request, resolved);
+        cacheKey = buildCacheKey({
+          context: cacheContext,
+          analyzerName: ANALYZER.name,
+          analyzerVersion: ANALYZER.version,
+          graphSchemaVersion: GRAPH_IR_SCHEMA_VERSION,
+          // Matches fileGraphAdapter.js's own requestCoordinate() exactly,
+          // so the key built here and the graph's eventual rootCoordinate
+          // describe the same thing.
+          coordinate: makeCoordinate({
+            repository: { host: 'github.com', owner: cacheContext.sourceOwner, name: cacheContext.sourceRepo },
+            revision: cacheContext.resolvedSha,
+            path: request.path,
+            symbolKind: 'module',
+          }),
+          options: {
+            depthMode: request.depth != null ? request.depth : 'auto',
+            ...cacheKeyRequestIdentity(cacheContext),
+          },
+        });
+      } catch (err) {
+        if (err instanceof AnalysisContextError) {
+          log.warn('graph-file contract violation while building the cache key', { message: err.message });
+          return sendError(res, 502, 'The analyzed file state could not be represented as a valid graph', 'malformed_analyzer_output', requestId);
+        }
+        throw err;
+      }
+
+      const cachedGraph = cache.get(cacheKey);
+      if (cachedGraph) {
+        const durationMs = Date.now() - startedAtMs;
+        log.info('graph-file cache hit', {
+          owner: request.owner,
+          repo: request.repo,
+          path: request.path,
+          resolvedSha: resolved.resolvedSha,
+          durationMs,
+          nodeCount: cachedGraph.nodes.length,
+          edgeCount: cachedGraph.edges.length,
+          cacheKey,
+          cacheHit: true,
+        });
+        return sendJson(res, 200, buildAdapterResult({
+          graph: cachedGraph,
+          warnings: cachedGraph.warnings,
+          provenance: { analyzerName: ANALYZER.name, analyzerVersion: ANALYZER.version },
+          timing: { startedAt, durationMs },
+          cache: { key: cacheKey, hit: true },
+        }));
+      }
+
       // Stage into a fresh request workspace -- always cleaned up below,
       // regardless of what happens next. Diagnosed as its own stage
       // ("workspace preparation") rather than falling into the generic
@@ -379,7 +446,6 @@ export function createGraphFileHandler({ config, workspaceManager }) {
       // joining, GraphIR conversion, and depth selection -- distinct from
       // source retrieval/workspace prep/pyan3 above.
       let chosen;
-      let context;
       let joined;
       try {
         const symbolEntries = [];
@@ -388,10 +454,9 @@ export function createGraphFileHandler({ config, workspaceManager }) {
           symbolEntries.push(...indexed.entries);
         }
 
-        context = buildRequestContext(request, resolved);
         joined = joinPyanToSymbols({ pyanNodes: pyanOutcome.pyanNodes, pyanEdges: pyanOutcome.pyanEdges, symbolEntries, workspaceDir: workspace.dir });
         joined.stats.warnings.push(...pyanOutcome.warnings);
-        const fullGraph = adaptFileAnalysis({ context, requestPath: request.path, joined, analyzer: ANALYZER });
+        const fullGraph = adaptFileAnalysis({ context: cacheContext, requestPath: request.path, joined, analyzer: ANALYZER });
 
         chosen = chooseDepthMode({
           graph: fullGraph,
@@ -409,14 +474,15 @@ export function createGraphFileHandler({ config, workspaceManager }) {
         return sendError(res, 500, 'Analysis failed while building the file graph', 'internal_error', requestId);
       }
 
-      const cacheKey = buildCacheKey({
-        context,
-        analyzerName: ANALYZER.name,
-        analyzerVersion: ANALYZER.version,
-        graphSchemaVersion: GRAPH_IR_SCHEMA_VERSION,
-        coordinate: chosen.graph.rootCoordinate,
-        depth: chosen.mode,
-      });
+      // Never cache a degraded result: a pyan3 failure is typically
+      // transient (a subprocess timeout under load, a temporarily broken
+      // install), and storing the tree-sitter-only fallback would keep
+      // serving it for the full TTL long after pyan3 recovered. A miss that
+      // re-runs pyan3 is cheap compared to silently degrading every
+      // subsequent request for an hour.
+      if (pyanOutcome.failedCategory === null) {
+        cache.set(cacheKey, chosen.graph);
+      }
 
       const durationMs = Date.now() - startedAtMs;
       const adapterResult = buildAdapterResult({
@@ -424,9 +490,6 @@ export function createGraphFileHandler({ config, workspaceManager }) {
         warnings: chosen.graph.warnings,
         provenance: { analyzerName: ANALYZER.name, analyzerVersion: ANALYZER.version },
         timing: { startedAt, durationMs },
-        // No durable cache store exists yet -- centralized caching is
-        // MOO-72's job. This endpoint reports the key an eventual cache
-        // would use, always as a miss.
         cache: { key: cacheKey, hit: false },
       });
 
