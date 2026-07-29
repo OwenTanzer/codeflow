@@ -10,12 +10,15 @@
 //
 // Requires a real GitHub credential to verify the GitHub-backed path
 // end-to-end (not just "didn't crash with a fake token" — GitHub 401s an
-// invalid token even for public data) — uses whatever `gh auth token`
-// already has authenticated in this environment, same PAT decided on for
-// the server's own GITHUB_TOKEN.
+// invalid token even for public data). MOO-72 Commit 7: reads GITHUB_TOKEN
+// from the environment first (CI supplies the Actions-provided
+// secrets.GITHUB_TOKEN this way, sufficient for the public-repo-only reads
+// this script makes) — falls back to whatever `gh auth token` already has
+// authenticated locally, same PAT decided on for the server's own
+// GITHUB_TOKEN, unchanged from before for local dev.
 //
-// Usage: node tests/server-smoke.mjs (run `npm run build` first, and be
-// signed in via `gh auth login`)
+// Usage: node tests/server-smoke.mjs (run `npm run build` first; either set
+// GITHUB_TOKEN or be signed in via `gh auth login`)
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -61,15 +64,17 @@ function authed(headers = {}) {
   return { Authorization: `Bearer ${AUTH_TOKEN}`, ...headers };
 }
 
-let githubToken;
-try {
-  githubToken = execFileSync('gh', ['auth', 'token'], { encoding: 'utf8' }).trim();
-} catch (err) {
-  console.error(
-    'Could not get a GitHub token via `gh auth token` — required to verify the ' +
-      'GitHub-backed /api/analyze-repo path end-to-end. Run `gh auth login` first.'
-  );
-  process.exit(1);
+let githubToken = process.env.GITHUB_TOKEN;
+if (!githubToken) {
+  try {
+    githubToken = execFileSync('gh', ['auth', 'token'], { encoding: 'utf8' }).trim();
+  } catch (err) {
+    console.error(
+      'Could not get a GitHub token via GITHUB_TOKEN or `gh auth token` — required to ' +
+        'verify the GitHub-backed /api/analyze-repo path end-to-end. Set GITHUB_TOKEN or run `gh auth login` first.'
+    );
+    process.exit(1);
+  }
 }
 
 const workspaceRoot = await mkdtemp(join(tmpdir(), 'codeflow-server-smoke-'));
@@ -312,6 +317,27 @@ try {
     assert(json.graph.context.mode === 'branch', `expected context.mode "branch", got ${json.graph.context.mode}`);
     assert(json.graph.context.ref === 'test', `expected context.ref "test", got ${json.graph.context.ref}`);
     assert(json.graph.context.resolvedSha !== 'test', 'resolvedSha must be the resolved commit SHA, not the literal branch name');
+  });
+
+  // MOO-72 Commit 7: the one ref-mode gap the audit found -- a full commit
+  // SHA passed as `ref` is a real, distinct request *shape* (even though
+  // graph-repository.js's buildRequestContext routes it through the same
+  // mode:'branch' code path as a named branch, confirmed via grep -- there
+  // is no separate 'commit' mode anywhere in this codebase). The real
+  // assertion worth making here is that resolvedSha comes back byte-identical
+  // to what was passed, proving no unnecessary re-resolution happens when
+  // the input is already a full SHA.
+  await step('/api/graph/repository accepts a full commit SHA as ref (commit-only input), resolving to itself unchanged', async () => {
+    const knownSha = '7fd1a60b01f91b314f59955a4e4d4e80d8edf11d'; // octocat/Hello-World's real first commit -- stable, will not change
+    const res = await fetch(baseUrl + '/api/graph/repository', {
+      method: 'POST',
+      headers: authed({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ owner: 'octocat', repo: 'Hello-World', ref: knownSha }),
+    });
+    const json = await res.json();
+    assert(res.status === 200, `expected 200, got ${res.status}: ${JSON.stringify(json)}`);
+    assert(json.graph.context.ref === knownSha, `expected context.ref to echo the SHA verbatim, got ${json.graph.context.ref}`);
+    assert(json.graph.context.resolvedSha === knownSha, `expected resolvedSha to equal the input SHA exactly with no re-resolution, got ${json.graph.context.resolvedSha}`);
   });
 
   await step("/api/graph/repository resolves a PR's context to its fork's source repository, not the base", async () => {
