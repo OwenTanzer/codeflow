@@ -95,6 +95,42 @@ export function recheckPyan3Available({ pythonBin }) {
 const PYTHON_VERSION_PATTERN = /Python\s+(\d+\.\d+\.\d+)/;
 
 /**
+ * Pure parse/gate step of verifyPythonRuntime, extracted specifically so
+ * it's directly unit-testable without spawning a real subprocess --
+ * execFile-ing a fake ".bat"/shell-script stand-in for a "Python 2
+ * interpreter" turned out to be unreliable across platforms (Windows'
+ * execFile rejects .bat files without shell:true, which this codebase
+ * deliberately never sets). This function is where the actual decision
+ * logic lives; verifyPythonRuntime below is now just "run the subprocess,
+ * hand the output here."
+ *
+ * PR review finding: parsing *a* version was not the same as parsing a
+ * *supported* one -- an operator-configured Python 2 interpreter (which
+ * prints its version to stderr in exactly the same "Python X.Y.Z" shape)
+ * was reported ok:true, even though pyan3/the whole adapter require
+ * Python 3 (stagePythonFiles/runPyan3 assume Python 3 semantics
+ * throughout, and the setup scripts specifically prefer `python3`). That's
+ * a misleading /readyz signal: healthy runtime, broken analysis.
+ * @param {{stdout: string, stderr: string}} input
+ * @returns {{ok: boolean, version: string|null, detail: string|null}}
+ */
+export function evaluatePythonVersionOutput({ stdout, stderr }) {
+  // Python 2 prints --version to stderr; Python 3 prints to stdout -- check
+  // both rather than assuming, since PYTHON_BIN is operator-configured and
+  // could in principle point at either.
+  const match = PYTHON_VERSION_PATTERN.exec(stdout) || PYTHON_VERSION_PATTERN.exec(stderr);
+  if (!match) {
+    return { ok: false, version: null, detail: `could not parse a version from output: ${JSON.stringify(stdout || stderr)}` };
+  }
+  const version = match[1];
+  const major = Number(version.split('.')[0]);
+  if (major !== 3) {
+    return { ok: false, version, detail: `found Python ${version}, but a Python 3 interpreter is required` };
+  }
+  return { ok: true, version, detail: null };
+}
+
+/**
  * MOO-72 Commit 5: distinct from verifyPyan3Available/PINNED_VERSION --
  * the checklist calls out "Python runtime" and "pyan3 version" as two
  * separate things to verify. This reports whether the configured
@@ -115,14 +151,7 @@ export async function verifyPythonRuntime({ pythonBin }) {
     }
     return { ok: false, version: null, detail: `"${pythonBin} --version" failed: ${stderr || error.message}` };
   }
-  // Python 2 prints --version to stderr; Python 3 prints to stdout -- check
-  // both rather than assuming, since PYTHON_BIN is operator-configured and
-  // could in principle point at either.
-  const match = PYTHON_VERSION_PATTERN.exec(stdout) || PYTHON_VERSION_PATTERN.exec(stderr);
-  if (!match) {
-    return { ok: false, version: null, detail: `could not parse a version from output: ${JSON.stringify(stdout || stderr)}` };
-  }
-  return { ok: true, version: match[1], detail: null };
+  return evaluatePythonVersionOutput({ stdout, stderr });
 }
 
 /**

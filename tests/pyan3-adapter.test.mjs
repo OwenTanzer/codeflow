@@ -18,6 +18,7 @@ import {
   verifyPyan3Available,
   recheckPyan3Available,
   verifyPythonRuntime,
+  evaluatePythonVersionOutput,
   stagePythonFiles,
   runPyan3,
   isTransientSubprocessFailure,
@@ -91,6 +92,42 @@ test('verifyPythonRuntime: a missing binary reports not-ok with an actionable de
   assert.equal(result.ok, false);
   assert.equal(result.version, null);
   assert.match(result.detail, /was not found on PATH/);
+});
+
+// PR review finding: a parseable "Python X.Y.Z" string was treated as
+// sufficient on its own, so a configured Python 2 interpreter (which
+// prints its --version output to stderr in exactly this shape) was
+// reported ok:true, even though pyan3/the whole adapter require Python 3.
+// Exercises the pure parse/gate helper directly with real Python 2/3
+// --version output shapes -- no subprocess involved, so this doesn't
+// depend on a real Python 2 install (or a fake-executable workaround,
+// which turned out to be unreliable on Windows: execFile rejects a .bat
+// stand-in without shell:true, which this codebase deliberately never sets).
+test('evaluatePythonVersionOutput: rejects Python 2 (stderr, real --version shape), reporting the version anyway', () => {
+  const result = evaluatePythonVersionOutput({ stdout: '', stderr: 'Python 2.7.18\n' });
+  assert.equal(result.ok, false);
+  assert.equal(result.version, '2.7.18', 'the version should still be reported even though it is rejected');
+  assert.match(result.detail, /Python 3 interpreter is required/);
+});
+
+test('evaluatePythonVersionOutput: accepts Python 3 (stdout, real --version shape)', () => {
+  const result = evaluatePythonVersionOutput({ stdout: 'Python 3.11.4\n', stderr: '' });
+  assert.equal(result.ok, true);
+  assert.equal(result.version, '3.11.4');
+  assert.equal(result.detail, null);
+});
+
+test('evaluatePythonVersionOutput: reports not-ok with an actionable detail when nothing parses', () => {
+  const result = evaluatePythonVersionOutput({ stdout: '', stderr: 'not a version string' });
+  assert.equal(result.ok, false);
+  assert.equal(result.version, null);
+  assert.match(result.detail, /could not parse a version/);
+});
+
+test('verifyPythonRuntime: a real Python 3 interpreter is still accepted end-to-end (subprocess + gate)', async () => {
+  const result = await verifyPythonRuntime({ pythonBin: PYTHON_BIN });
+  assert.equal(result.ok, true);
+  assert.equal(Number(result.version.split('.')[0]), 3);
 });
 
 test('stagePythonFiles writes staged content honoring workspace escape protection', async () => {
