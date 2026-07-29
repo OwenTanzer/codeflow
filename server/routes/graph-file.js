@@ -451,9 +451,16 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
       // depth is deterministic given the same graph), while an explicit
       // depth override gets its own.
       let cacheKey;
+      let pyan3InflightKey;
       let cacheContext;
       try {
         cacheContext = buildRequestContext(request, resolved);
+        const coordinate = makeCoordinate({
+          repository: { host: 'github.com', owner: cacheContext.sourceOwner, name: cacheContext.sourceRepo },
+          revision: cacheContext.resolvedSha,
+          path: request.path,
+          symbolKind: 'module',
+        });
         cacheKey = buildCacheKey({
           context: cacheContext,
           analyzerName: ANALYZER.name,
@@ -462,16 +469,29 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
           // Matches fileGraphAdapter.js's own requestCoordinate() exactly,
           // so the key built here and the graph's eventual rootCoordinate
           // describe the same thing.
-          coordinate: makeCoordinate({
-            repository: { host: 'github.com', owner: cacheContext.sourceOwner, name: cacheContext.sourceRepo },
-            revision: cacheContext.resolvedSha,
-            path: request.path,
-            symbolKind: 'module',
-          }),
+          coordinate,
           options: {
             depthMode: request.depth != null ? request.depth : 'auto',
             ...cacheKeyRequestIdentity(cacheContext),
           },
+        });
+        // MOO-72 Commit 4 PR review: the in-flight registry key must NOT
+        // include depthMode. cacheKey does (correctly -- two different
+        // depths are two different cached *responses*), but pyan3 itself
+        // never sees depth at all -- chooseDepthMode only runs after the
+        // shared pyan3 result comes back (phase 2, per-caller). Keying the
+        // registry on the full cacheKey meant two concurrent requests for
+        // the same file@revision at different depths ran two full,
+        // identical pyan3 subprocesses instead of sharing one. This key
+        // omits depthMode so they share it; each caller still applies its
+        // own requested depth to the shared pyanOutcome afterward.
+        pyan3InflightKey = buildCacheKey({
+          context: cacheContext,
+          analyzerName: ANALYZER.name,
+          analyzerVersion: ANALYZER.version,
+          graphSchemaVersion: GRAPH_IR_SCHEMA_VERSION,
+          coordinate,
+          options: { ...cacheKeyRequestIdentity(cacheContext) },
         });
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
@@ -541,9 +561,9 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
       // terminal outcome (success or partial_success) is recorded once,
       // at the completion log, with the real joined.stats -- not
       // fabricated placeholder counts at this earlier point.
-      const inflightBefore = inflightRegistry.has(cacheKey);
+      const inflightBefore = inflightRegistry.has(pyan3InflightKey);
       const pyanOutcome = await inflightRegistry.subscribe(
-        cacheKey,
+        pyan3InflightKey,
         (internalSignal) =>
           runSharedPyan3Analysis({
             pythonBin: config.pythonBin,

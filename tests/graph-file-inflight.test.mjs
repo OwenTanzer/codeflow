@@ -137,3 +137,72 @@ test('two concurrent requests for the same file@revision coalesce onto one pyan3
   const inflightStatuses = terminalLines.map((l) => l.inflightStatus).sort();
   assert.deepEqual(inflightStatuses, ['coalesced', 'executed'], 'one request ran the shared pyan3 work, the other joined it');
 });
+
+// PR #14 review finding: the in-flight key was the full cacheKey, which
+// includes depthMode -- two concurrent requests for the same file@revision
+// differing only in requested depth ran two full, duplicate pyan3
+// subprocesses instead of sharing one, since chooseDepthMode only runs
+// after pyan3 (phase 2, per-caller) and never affects what pyan3 itself is
+// asked to do. Proven here by counting actual workspace creations (one per
+// real pyan3 run) rather than trusting the log line alone.
+test('two concurrent requests for the same file@revision at DIFFERENT depths still share one pyan3 run', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'codeflow-inflight-depth-e2e-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspaceManager = new WorkspaceManager(root);
+  await workspaceManager.ensureRoot();
+  let workspacesCreated = 0;
+  const originalCreate = workspaceManager.createRequestWorkspace.bind(workspaceManager);
+  workspaceManager.createRequestWorkspace = function (...args) {
+    workspacesCreated += 1;
+    return originalCreate(...args);
+  };
+
+  const content = await readFile(join(__dirname, 'fixtures/python-symbols/calls.py'), 'utf8');
+  const blobSha = 'e'.repeat(40);
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (/\/repos\/[^/]+\/[^/]+$/.test(u)) return jsonResponse({ default_branch: 'main' });
+    if (u.includes('/commits/')) return jsonResponse({ sha: SHA });
+    if (u.includes('/git/trees/')) {
+      return jsonResponse({ truncated: false, tree: [{ type: 'blob', path: 'calls.py', sha: blobSha, size: content.length }] });
+    }
+    if (u.includes('/git/blobs/')) {
+      return jsonResponse({ encoding: 'base64', content: Buffer.from(content, 'utf8').toString('base64') });
+    }
+    throw new Error('unexpected GitHub URL in test stub: ' + u);
+  };
+  t.after(() => { globalThis.fetch = original; });
+
+  const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled: true });
+  const metrics = new Metrics();
+  const inflightRegistry = new InFlightRegistry();
+  const handler = createGraphFileHandler({
+    config: { ...REPO_CONFIG, pythonBin: PYTHON_BIN, pyan3TimeoutMs: 15_000 },
+    workspaceManager,
+    cache,
+    metrics,
+    inflightRegistry,
+  });
+
+  const capture = captureWrites();
+  const res1 = fakeResponse();
+  const res2 = fakeResponse();
+  try {
+    await Promise.all([
+      handler(fakeRequest({ owner: 'octocat', repo: 'Hello-World', path: 'calls.py', depth: 'symbols' }), res1, 'req-depth-a'),
+      handler(fakeRequest({ owner: 'octocat', repo: 'Hello-World', path: 'calls.py', depth: 'full' }), res2, 'req-depth-b'),
+    ]);
+  } finally {
+    capture.restore();
+  }
+
+  assert.equal(res1.statusCode, 200);
+  assert.equal(res2.statusCode, 200);
+  assert.equal(workspacesCreated, 1, 'different depths for the same file@revision must still share one pyan3 run, not one each');
+
+  const terminalLines = capture.lines.filter((l) => l.resultState != null && l.layer === 'file');
+  assert.equal(terminalLines.length, 2);
+  const inflightStatuses = terminalLines.map((l) => l.inflightStatus).sort();
+  assert.deepEqual(inflightStatuses, ['coalesced', 'executed']);
+});

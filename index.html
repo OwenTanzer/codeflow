@@ -1273,6 +1273,16 @@ function FileLayerPanel(props){
     var _fge=useState(null),fileGraphError=_fge[0],setFileGraphError=_fge[1];
     var _fgeStatus=useState(null),fileGraphErrorStatus=_fgeStatus[0],setFileGraphErrorStatus=_fgeStatus[1];
     var _fgeRetryable=useState(false),fileGraphErrorRetryable=_fgeRetryable[0],setFileGraphErrorRetryable=_fgeRetryable[1];
+    // MOO-72 Commit 4 PR review: retryAfterMs (from a 429's Retry-After
+    // header, threaded through by serverRequest.js) must actually delay
+    // Retry, not just sit unread -- otherwise a rate-limited failure lets
+    // all RETRY_LIMIT attempts fire immediately, consuming the whole
+    // retry budget inside the same rate-limit window it was meant to
+    // avoid. canRetryNow starts true (no delay) and is only set false
+    // when a real retryAfterMs arrives, flipped back by the timer effect
+    // below once it elapses.
+    var _fgeRetryAfter=useState(null),fileGraphErrorRetryAfterMs=_fgeRetryAfter[0],setFileGraphErrorRetryAfterMs=_fgeRetryAfter[1];
+    var _fgeCanRetryNow=useState(true),fileGraphCanRetryNow=_fgeCanRetryNow[0],setFileGraphCanRetryNow=_fgeCanRetryNow[1];
     var path=navPanel.coordinate?navPanel.coordinate.path:null;
     // MOO-72 Commit 4: retryState.count is only meaningful for the target it
     // was recorded against. targetKey is derived from session identity +
@@ -1302,6 +1312,8 @@ function FileLayerPanel(props){
             setFileGraphError(null);
             setFileGraphErrorStatus(null);
             setFileGraphErrorRetryable(false);
+            setFileGraphErrorRetryAfterMs(null);
+            setFileGraphCanRetryNow(true);
             return;
         }
         if(!committedToken)return;
@@ -1309,6 +1321,8 @@ function FileLayerPanel(props){
         setFileGraphError(null);
         setFileGraphErrorStatus(null);
         setFileGraphErrorRetryable(false);
+        setFileGraphErrorRetryAfterMs(null);
+        setFileGraphCanRetryNow(true);
         setFileGraph(null);
         // MOO-72 Commit 1B: describeFileRequest derives owner/repo/pr/
         // sourceOwner/sourceRepo/resolvedSha from the session's adopted
@@ -1351,9 +1365,23 @@ function FileLayerPanel(props){
             // GraphFileClientError too, with retryable:true, so this one
             // check covers both structured and transport-level failures.
             setFileGraphErrorRetryable(err instanceof GraphFileClientError?err.retryable===true:false);
+            // MOO-72 Commit 4 PR review: a 429's Retry-After must actually
+            // gate the Retry button, not just be computed and ignored.
+            var retryAfterMs=err instanceof GraphFileClientError?err.retryAfterMs:null;
+            setFileGraphErrorRetryAfterMs(retryAfterMs);
+            setFileGraphCanRetryNow(!retryAfterMs);
         });
         return function(){session.abortCurrent('file');};
     },[path,repositoryGraph,session,committedToken,retryEffectiveCount,navPanel.graphCacheKey]);
+
+    // MOO-72 Commit 4 PR review: flips fileGraphCanRetryNow back to true
+    // once the server's requested delay has actually elapsed -- a plain
+    // setTimeout, not polling Date.now() every render.
+    useEffect(function(){
+        if(!fileGraphErrorRetryAfterMs)return;
+        var timer=setTimeout(function(){setFileGraphCanRetryNow(true);},fileGraphErrorRetryAfterMs);
+        return function(){clearTimeout(timer);};
+    },[fileGraphErrorRetryAfterMs,fileGraphError]);
 
     if(!committedToken){
         return React.createElement(ServerTokenPrompt,{
@@ -1377,9 +1405,14 @@ function FileLayerPanel(props){
                 // server signal) and capped at RETRY_LIMIT per target --
                 // navigating to a different file/revision (retryTargetKey
                 // changing) resets the effective count without a separate
-                // reset effect, per retryTargetKey's derivation above.
-                fileGraphErrorRetryable&&retryEffectiveCount<RETRY_LIMIT&&React.createElement('button',{className:'top-btn',onClick:function(){setRetryState({targetKey:retryTargetKey,count:retryEffectiveCount+1});}},iconLabel('refresh','Retry')),
-                fileGraphErrorRetryable&&retryEffectiveCount>=RETRY_LIMIT&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',alignSelf:'center'}},'Retry limit reached'),
+                // reset effect, per retryTargetKey's derivation above. Also
+                // gated on fileGraphCanRetryNow (PR review: a 429's
+                // Retry-After must actually delay Retry, not just compute
+                // and ignore it, or all RETRY_LIMIT attempts fire inside
+                // the same rate-limit window).
+                fileGraphErrorRetryable&&fileGraphCanRetryNow&&retryEffectiveCount<RETRY_LIMIT&&React.createElement('button',{className:'top-btn',onClick:function(){setRetryState({targetKey:retryTargetKey,count:retryEffectiveCount+1});}},iconLabel('refresh','Retry')),
+                fileGraphErrorRetryable&&!fileGraphCanRetryNow&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',alignSelf:'center'}},'Retry available in '+Math.ceil(fileGraphErrorRetryAfterMs/1000)+'s'),
+                fileGraphErrorRetryable&&fileGraphCanRetryNow&&retryEffectiveCount>=RETRY_LIMIT&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',alignSelf:'center'}},'Retry limit reached'),
                 // MOO-70 Commit 9 PR review: "offer a way to replace the
                 // stored token rather than only retrying the same invalid
                 // one" -- always available, not just on a detected 401,
@@ -1469,6 +1502,10 @@ function FunctionLayerPanel(props){
     var _e=useState(null),graphError=_e[0],setGraphError=_e[1];
     var _sel=useState(null),selectedNodeId=_sel[0],setSelectedNodeId=_sel[1];
     var _q=useState(''),searchQuery=_q[0],setSearchQuery=_q[1];
+    // MOO-72 Commit 4 PR review: see FileLayerPanel's matching comment --
+    // graphError.retryAfterMs (from a 429's Retry-After) must actually
+    // delay Retry, not just be computed and ignored.
+    var _canRetryNow=useState(true),canRetryNow=_canRetryNow[0],setCanRetryNow=_canRetryNow[1];
 
     // MOO-72 Commit 4: handleRef is still owned here (not inside
     // FunctionGraphCanvas below) because the search-highlighting effect
@@ -1504,11 +1541,13 @@ function FunctionLayerPanel(props){
             setSelectedNodeId(navPanel.selectedNodeId||null);
             setLoadingGraph(false);
             setGraphError(null);
+            setCanRetryNow(true);
             return;
         }
         if(!committedToken)return;
         setLoadingGraph(true);
         setGraphError(null);
+        setCanRetryNow(true);
         setFunctionGraph(null);
         setSelectedNodeId(null);
         // MOO-72 Commit 1B: describeFunctionRequest derives the same
@@ -1539,6 +1578,7 @@ function FunctionLayerPanel(props){
             // so re-entering it re-runs this effect and resumes this same
             // function request.
             if(status===401){onTokenRejected();return;}
+            var retryAfterMs=err instanceof GraphFunctionClientError?err.retryAfterMs:null;
             setGraphError({
                 message:(err instanceof GraphFunctionClientError?err.message:'Failed to load function graph')||'Failed to load function graph',
                 status:status,
@@ -1546,10 +1586,23 @@ function FunctionLayerPanel(props){
                 // MOO-72 Commit 4: the real server signal, replacing the old
                 // hardcoded category!=='parser_failure' gate below.
                 retryable:err instanceof GraphFunctionClientError?err.retryable===true:false,
+                // MOO-72 Commit 4 PR review: threaded through so the render
+                // below can actually delay Retry, not just compute this and
+                // ignore it.
+                retryAfterMs:retryAfterMs,
             });
+            setCanRetryNow(!retryAfterMs);
         });
         return function(){session.abortCurrent('function');};
     },[path,symbolKey,repositoryGraph,session,committedToken,retryEffectiveCount,navPanel.graphCacheKey]);
+
+    // MOO-72 Commit 4 PR review: flips canRetryNow back to true once the
+    // server's requested delay has actually elapsed.
+    useEffect(function(){
+        if(!graphError||!graphError.retryAfterMs)return;
+        var timer=setTimeout(function(){setCanRetryNow(true);},graphError.retryAfterMs);
+        return function(){clearTimeout(timer);};
+    },[graphError]);
 
     function handleSelectNode(nodeId){
         setSelectedNodeId(nodeId);
@@ -1600,9 +1653,12 @@ function FunctionLayerPanel(props){
                 // MOO-72 Commit 4: gated on graphError.retryable (the real
                 // server signal, per RETRYABLE_BY_CATEGORY -- parser_failure
                 // still defaults non-retryable, so the diagnostic copy above
-                // stays accurate) and capped at RETRY_LIMIT per target.
-                graphError.retryable&&retryEffectiveCount<RETRY_LIMIT&&React.createElement('button',{className:'top-btn',onClick:function(){setRetryState({targetKey:retryTargetKey,count:retryEffectiveCount+1});}},iconLabel('refresh','Retry')),
-                graphError.retryable&&retryEffectiveCount>=RETRY_LIMIT&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',alignSelf:'center'}},'Retry limit reached'),
+                // stays accurate) and capped at RETRY_LIMIT per target. Also
+                // gated on canRetryNow (PR review: a 429's Retry-After must
+                // actually delay Retry).
+                graphError.retryable&&canRetryNow&&retryEffectiveCount<RETRY_LIMIT&&React.createElement('button',{className:'top-btn',onClick:function(){setRetryState({targetKey:retryTargetKey,count:retryEffectiveCount+1});}},iconLabel('refresh','Retry')),
+                graphError.retryable&&!canRetryNow&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',alignSelf:'center'}},'Retry available in '+Math.ceil(graphError.retryAfterMs/1000)+'s'),
+                graphError.retryable&&canRetryNow&&retryEffectiveCount>=RETRY_LIMIT&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',alignSelf:'center'}},'Retry limit reached'),
                 React.createElement('button',{className:'top-btn',onClick:onChangeToken},'Change token')
             )
         ),
@@ -2191,6 +2247,14 @@ function App(){
         }
         window.showDirectoryPicker().then(function(dirHandle){
             resetAnalysisState();
+            // MOO-72 Commit 4 PR review: local/ZIP analysis never bumped
+            // analysisGenerationRef (only analyze()/analyzePR() did), so
+            // RepositoryGraphCanvas's error boundary -- keyed partly on
+            // this -- never remounted for a fresh local analysis. Bumped
+            // here (and at every other local-analysis entry point below)
+            // even though nothing here reads the returned value; it exists
+            // purely to give the boundary key a fresh identity.
+            beginNewAnalysisGeneration();
             setRepoInfo(null);
             setLocalDirHandle(dirHandle);
             setLocalSourceKind('folder');
@@ -2225,6 +2289,7 @@ function App(){
         var file=e.target.files&&e.target.files[0];
         if(!file)return;
         resetAnalysisState();
+        beginNewAnalysisGeneration(); // see launchLocalFolderPicker's matching comment
         setRepoInfo(null);
         setLocalDirHandle(null);
         setLocalSourceKind('zip');
@@ -2241,6 +2306,7 @@ function App(){
         var files=Array.from(fileList);
         localFilesRef.current=files;
         resetAnalysisState();
+        beginNewAnalysisGeneration(); // see launchLocalFolderPicker's matching comment
         setRepoInfo(null);
         setLocalDirHandle(null);
         setLocalSourceKind('folder');
@@ -2254,6 +2320,7 @@ function App(){
     function refreshAnalysis(){
         if(localSourceKind==='folder'&&localDirHandle){
             resetAnalysisState();
+            beginNewAnalysisGeneration(); // see launchLocalFolderPicker's matching comment
             setLoading(true);
             setProgress('Reading local folder...');
             readLocalFolder(localDirHandle,activeExcludePatterns);
@@ -2261,6 +2328,7 @@ function App(){
         }
         if(localSourceKind==='folder'&&localFilesRef.current){
             resetAnalysisState();
+            beginNewAnalysisGeneration(); // see launchLocalFolderPicker's matching comment
             setLoading(true);
             setProgress('Reading local folder...');
             readLocalFolderFromFiles(localFilesRef.current,activeExcludePatterns);
@@ -2272,6 +2340,7 @@ function App(){
                 return;
             }
             resetAnalysisState();
+            beginNewAnalysisGeneration(); // see launchLocalFolderPicker's matching comment
             setLocalDirHandle(null);
             setLocalSourceKind('zip');
             zipArchiveRef.current=null;
@@ -4702,10 +4771,20 @@ function App(){
                     graphConfig.vizType==='graph'&&React.createElement('svg',{ref:svgRef}),
                     // MOO-72 Commit 4: sibling of the <svg>, not a wrapper --
                     // see RepositoryGraphRenderEffect's own doc comment for
-                    // why. Keyed by the resolved revision so a genuinely new
-                    // repository/revision remounts cleanly; local-folder/zip
-                    // analysis (no repositoryGraph) shares one stable key.
-                    graphConfig.vizType==='graph'&&React.createElement(PanelErrorBoundary,{key:(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha)||'local'},
+                    // why. Keyed by repository identity (sourceOwner/
+                    // sourceRepo, not just resolvedSha -- PR review: two
+                    // different repositories can share a commit SHA) plus
+                    // the resolved revision for GitHub-backed analysis, so
+                    // a genuinely new repository/revision remounts cleanly.
+                    // For local/ZIP analysis (no repositoryGraph, no stable
+                    // identity of its own), analysisGenerationRef.current
+                    // (bumped at every local-analysis entry point, per
+                    // launchLocalFolderPicker's comment) stands in as the
+                    // "new target" signal -- PR review: the boundary must
+                    // reset for every repository-analysis target, not just
+                    // once for the whole local/ZIP path collapsed into one
+                    // constant key.
+                    graphConfig.vizType==='graph'&&React.createElement(PanelErrorBoundary,{key:(repositoryGraph&&repositoryGraph.context?repositoryGraph.context.sourceOwner+'/'+repositoryGraph.context.sourceRepo+'@'+repositoryGraph.context.resolvedSha:'local')+':'+analysisGenerationRef.current},
                         React.createElement(RepositoryGraphRenderEffect,{
                             svgRef:svgRef,data:data,repositoryGraph:repositoryGraph,colorMap:colorMap,
                             colorMode:colorMode,theme:theme,folderFilter:folderFilter,graphConfig:graphConfig,
