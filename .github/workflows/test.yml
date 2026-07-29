@@ -42,3 +42,25 @@ jobs:
 
       - name: Run test suite
         run: node --test tests/*.test.mjs
+
+      # MOO-72 Commit 7: structural end-to-end smoke tests, run against the
+      # real built app + real server process + real (public-repo-read-only)
+      # GitHub API calls -- "a clean environment can execute the full
+      # pipeline" is satisfied by these running here, on a fresh Actions
+      # runner, not just asserted locally. Uses the Actions-provided
+      # automatic token (no new secret to configure) -- sufficient for the
+      # public-repo reads both scripts make, including on a pull_request
+      # run from a fork. Deliberately does NOT run function-layer-smoke.mjs
+      # here -- that one is Playwright/browser-driven, needs a real GitHub
+      # PAT (not just API-read access) and the server's own AUTH_TOKEN via
+      # a separate-terminal flow, and belongs to MOO-71's visual-smoke path,
+      # not this structural-smoke commit.
+      - name: Run server smoke test
+        run: node tests/server-smoke.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run e2e construction smoke test
+        run: node tests/e2e-construction-smoke.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
