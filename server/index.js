@@ -114,6 +114,25 @@ async function main() {
     return;
   }
 
+  // MOO-72 Commit 6: process-restart cleanup -- removes any *other*
+  // instance's orphaned workspace directories left behind by a crashed
+  // prior process (confirmed not-alive via its own lock file's PID, never
+  // an overlapping still-running instance). Never fatal -- a failed sweep
+  // means potentially-private source lingers on disk longer than it
+  // should, which is worth a loud log, not a startup abort (the server is
+  // otherwise fully able to serve traffic).
+  {
+    const sweepResult = await workspaceManager.sweepStaleWorkspaces();
+    if (sweepResult.skipped) {
+      log('warn', 'workspace startup sweep skipped', { reason: sweepResult.skipped, workspaceRoot: config.workspaceRoot });
+    } else {
+      log('info', 'workspace startup sweep complete', { removed: sweepResult.removed, failed: sweepResult.failed });
+      if (sweepResult.failed > 0) {
+        log('error', 'workspace startup sweep left stale, potentially-private workspace(s) behind', { failed: sweepResult.failed });
+      }
+    }
+  }
+
   // MOO-70 Commit 7/9: check pyan3 availability once at startup so it's
   // visible in the logs immediately, rather than only discovered on the
   // first /api/graph/file request. PR review finding: this previously

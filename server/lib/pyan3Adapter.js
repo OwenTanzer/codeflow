@@ -17,8 +17,6 @@
 //     so that failure mode is detected and categorized separately
 //     (parser_failure) from other subprocess failures.
 import { execFile } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
 import { AdapterError } from '../../src/graph-ir/adapterResult.js';
 
 const PINNED_VERSION = '2.6.2';
@@ -156,22 +154,23 @@ export async function verifyPythonRuntime({ pythonBin }) {
 
 /**
  * Write already-fetched file contents into a request workspace, preserving
- * their repo-relative directory structure, using the workspace's own
- * escape-safe path resolution (server/lib/workspace.js) — the "write
- * fetched content to disk" step pyan3 needs that nothing before this
- * commit ever did (github-analyzer-bridge.js only ever holds content in
- * memory).
- * @param {{resolve: (relativePath: string) => string}} workspace
+ * their repo-relative directory structure -- the "write fetched content to
+ * disk" step pyan3 needs that nothing before MOO-70 Commit 2 ever did
+ * (github-analyzer-bridge.js only ever holds content in memory).
+ *
+ * MOO-72 Commit 6: goes through `workspace.writeFile()` (server/lib/workspace.js),
+ * not a raw mkdir+writeFile -- that's the one place containment (ancestor
+ * symlink rejection), the TOCTOU-safe atomic exclusive-create, and private
+ * file permissions all live, so this (and every other workspace writer)
+ * can't accidentally bypass them by re-implementing the write path locally.
+ * @param {{writeFile: (relativePath: string, content: string) => Promise<string>}} workspace
  * @param {{path: string, content: string}[]} files
  * @returns {Promise<string[]>} absolute paths written, same order as `files`
  */
 export async function stagePythonFiles(workspace, files) {
   const written = [];
   for (const file of files) {
-    const target = workspace.resolve(file.path);
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, file.content, 'utf8');
-    written.push(target);
+    written.push(await workspace.writeFile(file.path, file.content));
   }
   return written;
 }
