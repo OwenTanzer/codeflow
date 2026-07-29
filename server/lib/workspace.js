@@ -173,8 +173,20 @@ export class WorkspaceManager {
       if (!UUID_PATTERN.test(entry.name)) continue;
 
       const instanceDir = join(instancesDir, entry.name);
-      const alive = await isInstanceAlive(instanceDir);
-      if (alive) continue;
+      // PR review finding (round 2): treating "no lock file" as "safe to
+      // remove" meant a genuinely foreign directory that merely *happened*
+      // to have a UUID-shaped name (never created by this codebase, no
+      // lock file inside it at all) got swept the moment the root-level
+      // ownership marker existed -- which the previous fix made true after
+      // only one restart cycle. The root-level marker proves "CodeFlow has
+      // run against this root before"; it does NOT prove any given
+      // instances/<uuid>/ directory was actually created by CodeFlow. That
+      // proof can only come from the directory's own lock file. So a
+      // missing/malformed lock file is now its own outcome -- 'unknown
+      // provenance' -- and is never removed, full stop, regardless of the
+      // root-level marker or how many restarts have happened.
+      const state = await instanceLifecycleState(instanceDir);
+      if (state !== 'dead') continue; // 'alive' or 'unknown' -- never touched
 
       try {
         await rm(instanceDir, { recursive: true, force: true });
@@ -189,27 +201,30 @@ export class WorkspaceManager {
 
 /**
  * @param {string} instanceDir
- * @returns {Promise<boolean>} true if the instance's lock file names a PID
- * that's still running (or running under a user we can't signal, treated
- * conservatively as alive), false if it's confirmed not running or the
- * lock file is missing/unreadable (a real instance always writes one, so
- * absence means stale, not "unknown, leave it alone").
+ * @returns {Promise<'alive'|'dead'|'unknown'>}
+ *   'alive' -- the lock file names a PID that's still running (or running
+ *     under a user we can't signal, treated conservatively as alive).
+ *   'dead' -- the lock file names a PID confirmed not running (ESRCH) --
+ *     the *only* outcome sweepStaleWorkspaces() will actually remove.
+ *   'unknown' -- no lock file, or one that doesn't parse as a PID at all --
+ *     this directory's provenance can't be proven, so it's treated the
+ *     same as 'alive' (never touched), not the same as 'dead'.
  */
-async function isInstanceAlive(instanceDir) {
+async function instanceLifecycleState(instanceDir) {
   let pid;
   try {
     const lockContent = await readFile(join(instanceDir, INSTANCE_LOCK_FILE), 'utf8');
     pid = Number(lockContent.trim());
   } catch {
-    return false;
+    return 'unknown';
   }
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (!Number.isInteger(pid) || pid <= 0) return 'unknown';
   try {
     process.kill(pid, 0); // signal 0: no-op, only tests whether the PID exists / we can signal it
-    return true;
+    return 'alive';
   } catch (err) {
-    if (err.code === 'EPERM') return true; // exists, owned by another user -- don't touch
-    return false; // ESRCH (or anything else): not running
+    if (err.code === 'EPERM') return 'alive'; // exists, owned by another user -- don't touch
+    return 'dead'; // ESRCH: confirmed not running
   }
 }
 

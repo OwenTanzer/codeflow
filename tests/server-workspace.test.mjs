@@ -251,6 +251,50 @@ test('sweepStaleWorkspaces works normally on a root\'s second startup, once a pr
   }
 });
 
+// PR review finding (round 2): the first fix only delayed the destructive
+// behavior by one restart cycle -- a pre-existing, genuinely foreign
+// instances/<uuid>/ directory (no lock file inside it at all, so nothing
+// proves CodeFlow ever created it) survived the *first* startup (root not
+// yet marked as owned) but was deleted on the *second* (the first
+// startup's ensureRoot() call had, by then, written the ownership marker,
+// making the root "previously owned" from the second startup's point of
+// view -- even though that "ownership" said nothing about this specific
+// directory). This is the exact reproduction from that follow-up,
+// run across two full startup cycles as requested.
+test('a pre-existing unrelated UUID-shaped directory with no lock file survives across two full startup cycles, not just one', async () => {
+  const root = await tempRoot();
+  const foreignDir = join(root, 'instances', 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+  try {
+    // Simulates a directory that exists before CodeFlow ever touches this
+    // root -- happens to be UUID-shaped, but was never created by this
+    // codebase, so it carries no lock file at all.
+    await mkdir(foreignDir, { recursive: true });
+    await writeFile(join(foreignDir, 'unrelated.txt'), 'not ours');
+
+    // First startup cycle.
+    const first = new WorkspaceManager(root);
+    await first.ensureRoot();
+    const firstSweep = await first.sweepStaleWorkspaces();
+    assert.equal(firstSweep.skipped, 'root-not-previously-owned');
+    assert.equal(firstSweep.removed, 0);
+    assert.equal(await readFile(join(foreignDir, 'unrelated.txt'), 'utf8'), 'not ours', 'must survive the first cycle');
+
+    // Second startup cycle -- the root is now "previously owned" (the
+    // first cycle's ensureRoot() wrote the marker), so the sweep actually
+    // runs this time. The foreign directory must still survive: it has no
+    // lock file, so its provenance is unproven, regardless of the root's
+    // own ownership status.
+    const second = new WorkspaceManager(root);
+    await second.ensureRoot();
+    const secondSweep = await second.sweepStaleWorkspaces();
+    assert.equal(secondSweep.skipped, null, 'the root is genuinely previously-owned by now, so the sweep should run');
+    assert.equal(secondSweep.removed, 0, 'nothing should be removed -- the only candidate has no lock file');
+    assert.equal(await readFile(join(foreignDir, 'unrelated.txt'), 'utf8'), 'not ours', 'must survive the second cycle too, not just the first');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('sweepStaleWorkspaces never touches files outside instances/, even on an owned root', async () => {
   const root = await tempRoot();
   try {
