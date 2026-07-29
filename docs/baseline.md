@@ -587,6 +587,20 @@ deployment metadata after redeploying with this file present
   Node v22.23.1 on Railway satisfies the `^20.19.0 || >=22.12.0` engine
   constraint from the Commit 3 fixup — confirmed, not assumed.
 - `GET /readyz` → `200 {"status":"ready","checks":{"buildOutput":{"ok":true},"workspaceRoot":{"ok":true}}}`.
+  **As of MOO-72 Commit 5** (dependency/runtime health checks — verified
+  locally via `tests/server-smoke.mjs` against the real server, real pinned
+  pyan3, and a real GitHub token; not yet re-verified against this specific
+  live Railway deployment), `/readyz`'s `checks` object gained
+  `cacheStorage`/`nodeRuntime` (both `gatesReadiness: true`, same as
+  `buildOutput`/`workspaceRoot`) and `pythonRuntime`/`pyan3`/`codeVisualizer`/
+  `pythonTreeSitter`/`githubReachable`/`graphvizDot` (all
+  `gatesReadiness: false` — reported for visibility, never take the whole
+  service out of rotation). An unauthenticated request only ever sees
+  `ok`/`gatesReadiness`(or `applicable`) per check; a request carrying the
+  same `Authorization: Bearer <AUTH_TOKEN>` used for `/api/*` additionally
+  sees `detail`/`version`/`checkedAt` — the "expose readiness details only
+  to authenticated/admin views where sensitive" requirement, reusing the
+  existing auth secret rather than a second one.
 - `GET /` → `200`, serves the built app.
 - `POST /api/analyze` with no `Authorization` header → `401`.
 - `POST /api/analyze` with a wrong token → `401`.

@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { selectAnalyzableFiles, GithubFetchError } from '../server/lib/github-analyzer-bridge.js';
+import { selectAnalyzableFiles, GithubFetchError, verifyGithubReachable } from '../server/lib/github-analyzer-bridge.js';
 
 const LIMITS = { maxRepoFiles: 500, maxFileBytes: 1024, maxRepoBytes: 4096 };
 
@@ -126,4 +126,81 @@ test('selectAnalyzableFiles still applies ignored-directory and excluded-file ru
     LIMITS
   );
   assert.deepEqual(files.map((f) => f.path), ['src/app.js']);
+});
+
+// MOO-72 Commit 5: verifyGithubReachable is used for a periodic
+// dependency/runtime health check -- hermetically mocked here (no real
+// token, no real network call) via the injectable fetchImpl/apiBase, per
+// the PR review finding that a hard-coded GITHUB_API/real-token dependency
+// would make this untestable in CI.
+function fakeFetch(handler) {
+  return async (url, init) => handler(url, init);
+}
+
+test('verifyGithubReachable: a 200 response reports ok', async () => {
+  const result = await verifyGithubReachable({
+    token: 'irrelevant',
+    apiBase: 'https://fake.example',
+    fetchImpl: fakeFetch(async () => ({ ok: true, status: 200 })),
+  });
+  assert.deepEqual(result, { ok: true, detail: null });
+});
+
+test('verifyGithubReachable: a 401 is distinguished from other failures', async () => {
+  const result = await verifyGithubReachable({
+    token: 'bad-token',
+    apiBase: 'https://fake.example',
+    fetchImpl: fakeFetch(async () => ({ ok: false, status: 401 })),
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /rejected the configured token/);
+});
+
+test('verifyGithubReachable: a non-401 non-2xx status is reported with its own detail', async () => {
+  const result = await verifyGithubReachable({
+    token: 'irrelevant',
+    apiBase: 'https://fake.example',
+    fetchImpl: fakeFetch(async () => ({ ok: false, status: 503 })),
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /503/);
+});
+
+test('verifyGithubReachable: a rejected fetch (network failure) is reported distinctly from a 401', async () => {
+  const result = await verifyGithubReachable({
+    token: 'irrelevant',
+    apiBase: 'https://fake.example',
+    fetchImpl: fakeFetch(async () => { throw new TypeError('fetch failed'); }),
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /Could not reach the GitHub API/);
+});
+
+test('verifyGithubReachable: an aborted (timed-out) request is reported distinctly', async () => {
+  const result = await verifyGithubReachable({
+    token: 'irrelevant',
+    apiBase: 'https://fake.example',
+    fetchImpl: fakeFetch(async (url, init) => {
+      const err = new Error('aborted');
+      err.name = 'AbortError';
+      throw err;
+    }),
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /did not respond within/);
+});
+
+test('verifyGithubReachable: sends the token as a Bearer header against the injected apiBase', async () => {
+  let capturedUrl, capturedAuth;
+  await verifyGithubReachable({
+    token: 'my-token',
+    apiBase: 'https://fake.example',
+    fetchImpl: fakeFetch(async (url, init) => {
+      capturedUrl = url;
+      capturedAuth = init.headers.Authorization;
+      return { ok: true, status: 200 };
+    }),
+  });
+  assert.equal(capturedUrl, 'https://fake.example/rate_limit');
+  assert.equal(capturedAuth, 'Bearer my-token');
 });

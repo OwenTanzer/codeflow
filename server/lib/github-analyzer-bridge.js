@@ -88,6 +88,53 @@ export function configureGithubClient({ token }) {
   GitHub.token = token;
 }
 
+/**
+ * MOO-72 Commit 5: dependency/runtime health check for GitHub credential
+ * availability + reachability. Deliberately does NOT reuse GitHub.request()
+ * / the shared GitHub.token singleton (set per-request by
+ * configureGithubClient above) -- a periodic background health check
+ * racing a real in-flight request's token swap would be a genuine hazard.
+ * This takes its own `token` explicitly and makes an independent call.
+ *
+ * GET /rate_limit is used because it's the one authenticated GitHub
+ * endpoint that doesn't itself consume the caller's rate-limit quota, so
+ * a periodic health check can't accidentally starve real traffic.
+ *
+ * `fetchImpl`/`apiBase` are injectable specifically so this is hermetically
+ * unit-testable (mocked 200/401/403/5xx/network-error/abort) without a real
+ * token or a real network call -- a real-token check belongs in an
+ * integration/smoke test instead, not the unit suite.
+ * @param {object} input
+ * @param {string} input.token
+ * @param {typeof fetch} [input.fetchImpl]
+ * @param {string} [input.apiBase]
+ * @returns {Promise<{ok: boolean, detail: string|null}>}
+ */
+export async function verifyGithubReachable({ token, fetchImpl = globalThis.fetch, apiBase = GITHUB_API }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const res = await fetchImpl(`${apiBase}/rate_limit`, {
+      headers: { Accept: 'application/vnd.github.v3+json', Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    if (res.status === 401) {
+      return { ok: false, detail: 'GitHub rejected the configured token (401 Unauthorized)' };
+    }
+    if (!res.ok) {
+      return { ok: false, detail: `GitHub API returned ${res.status}` };
+    }
+    return { ok: true, detail: null };
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      return { ok: false, detail: 'GitHub API did not respond within 10s' };
+    }
+    return { ok: false, detail: `Could not reach the GitHub API: ${err && err.message}` };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function apiRequest(path, errorMap) {
   // GitHub.request() (shared with the browser) throws a plain Error using
   // errorMap's messages, not GithubFetchError — wrap it so every failure

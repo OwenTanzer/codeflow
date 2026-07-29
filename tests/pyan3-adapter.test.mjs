@@ -16,6 +16,9 @@ import test from 'node:test';
 import { WorkspaceManager } from '../server/lib/workspace.js';
 import {
   verifyPyan3Available,
+  recheckPyan3Available,
+  verifyPythonRuntime,
+  evaluatePythonVersionOutput,
   stagePythonFiles,
   runPyan3,
   isTransientSubprocessFailure,
@@ -56,6 +59,75 @@ test('verifyPyan3Available rejects with a clear message when the binary is missi
     /pyan3 unavailable/
   );
   _resetVerifyCacheForTests();
+});
+
+test('verifyPyan3Available resolves to the detected pyan3 version string', async () => {
+  _resetVerifyCacheForTests();
+  const version = await verifyPyan3Available({ pythonBin: PYTHON_BIN });
+  assert.equal(version, '2.6.2');
+  _resetVerifyCacheForTests();
+});
+
+// MOO-72 Commit 5: recheckPyan3Available must genuinely re-run the check,
+// not just replay a memoized result -- decisive proof: force a failure
+// against a bad binary, then recheck against the real one and confirm it
+// actually recovers (which a stale memoized rejection could never do).
+test('recheckPyan3Available forces a fresh check rather than reusing a stale memoized result', async () => {
+  _resetVerifyCacheForTests();
+  await assert.rejects(() => verifyPyan3Available({ pythonBin: 'definitely-not-a-real-python-binary' }), /pyan3 unavailable/);
+  const recovered = await recheckPyan3Available({ pythonBin: PYTHON_BIN });
+  assert.equal(recovered, '2.6.2');
+  _resetVerifyCacheForTests();
+});
+
+test('verifyPythonRuntime: a real interpreter reports ok with a parsed version', async () => {
+  const result = await verifyPythonRuntime({ pythonBin: PYTHON_BIN });
+  assert.equal(result.ok, true);
+  assert.match(result.version, /^\d+\.\d+\.\d+$/);
+  assert.equal(result.detail, null);
+});
+
+test('verifyPythonRuntime: a missing binary reports not-ok with an actionable detail, never throws', async () => {
+  const result = await verifyPythonRuntime({ pythonBin: 'definitely-not-a-real-python-binary' });
+  assert.equal(result.ok, false);
+  assert.equal(result.version, null);
+  assert.match(result.detail, /was not found on PATH/);
+});
+
+// PR review finding: a parseable "Python X.Y.Z" string was treated as
+// sufficient on its own, so a configured Python 2 interpreter (which
+// prints its --version output to stderr in exactly this shape) was
+// reported ok:true, even though pyan3/the whole adapter require Python 3.
+// Exercises the pure parse/gate helper directly with real Python 2/3
+// --version output shapes -- no subprocess involved, so this doesn't
+// depend on a real Python 2 install (or a fake-executable workaround,
+// which turned out to be unreliable on Windows: execFile rejects a .bat
+// stand-in without shell:true, which this codebase deliberately never sets).
+test('evaluatePythonVersionOutput: rejects Python 2 (stderr, real --version shape), reporting the version anyway', () => {
+  const result = evaluatePythonVersionOutput({ stdout: '', stderr: 'Python 2.7.18\n' });
+  assert.equal(result.ok, false);
+  assert.equal(result.version, '2.7.18', 'the version should still be reported even though it is rejected');
+  assert.match(result.detail, /Python 3 interpreter is required/);
+});
+
+test('evaluatePythonVersionOutput: accepts Python 3 (stdout, real --version shape)', () => {
+  const result = evaluatePythonVersionOutput({ stdout: 'Python 3.11.4\n', stderr: '' });
+  assert.equal(result.ok, true);
+  assert.equal(result.version, '3.11.4');
+  assert.equal(result.detail, null);
+});
+
+test('evaluatePythonVersionOutput: reports not-ok with an actionable detail when nothing parses', () => {
+  const result = evaluatePythonVersionOutput({ stdout: '', stderr: 'not a version string' });
+  assert.equal(result.ok, false);
+  assert.equal(result.version, null);
+  assert.match(result.detail, /could not parse a version/);
+});
+
+test('verifyPythonRuntime: a real Python 3 interpreter is still accepted end-to-end (subprocess + gate)', async () => {
+  const result = await verifyPythonRuntime({ pythonBin: PYTHON_BIN });
+  assert.equal(result.ok, true);
+  assert.equal(Number(result.version.split('.')[0]), 3);
 });
 
 test('stagePythonFiles writes staged content honoring workspace escape protection', async () => {
