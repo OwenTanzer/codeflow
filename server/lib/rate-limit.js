@@ -12,20 +12,27 @@ export class RateLimiter {
     this.windows = new Map(); // key -> { count, windowStart }
   }
 
-  /** @returns {{allowed: boolean, remaining: number}} */
+  /**
+   * @returns {{allowed: boolean, remaining: number, retryAfterMs: number|null}}
+   * retryAfterMs is only meaningful (non-null) when allowed is false --
+   * MOO-72 Commit 4 PR review: the rate-limit 429 response must expose how
+   * long is actually left in the current fixed window, so the client can
+   * emit a real `Retry-After` header instead of leaving the caller to
+   * guess (or worse, retry immediately within the same window).
+   */
   check(key) {
     const now = Date.now();
     const windowMs = 60_000;
     const entry = this.windows.get(key);
     if (!entry || now - entry.windowStart >= windowMs) {
       this.windows.set(key, { count: 1, windowStart: now });
-      return { allowed: true, remaining: this.limitPerMinute - 1 };
+      return { allowed: true, remaining: this.limitPerMinute - 1, retryAfterMs: null };
     }
     if (entry.count >= this.limitPerMinute) {
-      return { allowed: false, remaining: 0 };
+      return { allowed: false, remaining: 0, retryAfterMs: windowMs - (now - entry.windowStart) };
     }
     entry.count += 1;
-    return { allowed: true, remaining: this.limitPerMinute - entry.count };
+    return { allowed: true, remaining: this.limitPerMinute - entry.count, retryAfterMs: null };
   }
 
   /** Prevent unbounded growth from many distinct keys over a long-running process. */

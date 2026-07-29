@@ -5,6 +5,7 @@ import test from 'node:test';
 const {
   AdapterError,
   ERROR_CATEGORIES,
+  RETRYABLE_BY_CATEGORY,
   sanitizeDiagnostic,
   buildAdapterResult,
   AdapterResultError,
@@ -45,6 +46,30 @@ test('every declared ErrorCategory constructs a valid AdapterError', () => {
 
 test('AdapterError rejects an unknown category', () => {
   assert.throws(() => new AdapterError('not_a_real_category', 'oops'), TypeError);
+});
+
+// MOO-72 Commit 4.
+test('AdapterError.retryable defaults to RETRYABLE_BY_CATEGORY[category] when omitted', () => {
+  for (const category of ERROR_CATEGORIES) {
+    const err = new AdapterError(category, `${category} happened`);
+    assert.equal(err.retryable, RETRYABLE_BY_CATEGORY[category], `category=${category}`);
+  }
+});
+
+test('AdapterError.retryable: an explicit value always wins over the category default', () => {
+  // timeout defaults true -- force it false.
+  assert.equal(new AdapterError('timeout', 'x', { retryable: false }).retryable, false);
+  // github_access defaults false -- force it true (the rate-limit override path).
+  assert.equal(new AdapterError('github_access', 'x', { retryable: true }).retryable, true);
+});
+
+test('sanitizeDiagnostic forwards retryable as an explicit boolean, never silently dropped', () => {
+  const err = new AdapterError('timeout', 'pyan3 timed out');
+  const sanitized = sanitizeDiagnostic(err);
+  assert.equal(sanitized.retryable, true);
+  const err2 = new AdapterError('parser_failure', 'bad syntax');
+  const sanitized2 = sanitizeDiagnostic(err2);
+  assert.equal(sanitized2.retryable, false);
 });
 
 test('sanitizeDiagnostic redacts secret-shaped keys at any depth and drops stack traces', () => {

@@ -100,7 +100,7 @@ function selectAmongCandidates(candidates, pyanNode) {
  * @param {{id: string, label: string|null, qualifiedName: string|null, path: string|null, line: number|null, kind: string, parentScope: string|null}[]} input.pyanNodes
  * @param {{source: string, target: string, kind: string}[]} input.pyanEdges
  * @param {object[]} input.symbolEntries - flattened concatenation of every staged file's indexPythonSymbols(...).entries for this request
- * @param {string} input.workspaceDir - the request workspace root files were staged under (server/lib/workspace.js), used to recover pyan3's absolute paths back to repo-relative
+ * @param {string} [input.workspaceDir] - the request workspace root files were staged under (server/lib/workspace.js), used to recover pyan3's absolute paths back to repo-relative. MOO-72 Commit 4: omit (or pass '') when pyanNodes' `path` fields are already repo-relative -- the shared in-flight pyan3 registry converts them before any caller sees them, since no single caller's own workspace exists once the shared workspace is torn down.
  * @returns {{resolved: object[], edges: object[], stats: {matchedCount: number, unresolvedCount: number, ambiguousCount: number, symbolOnlyCount: number, warnings: string[]}}}
  */
 export function joinPyanToSymbols({ pyanNodes, pyanEdges, symbolEntries, workspaceDir }) {
@@ -119,8 +119,9 @@ export function joinPyanToSymbols({ pyanNodes, pyanEdges, symbolEntries, workspa
   let ambiguousCount = 0;
 
   for (const pyanNode of pyanNodes) {
-    const normalizedPath =
-      pyanNode.path && workspaceDir ? normalizePath(relative(workspaceDir, pyanNode.path)) : null;
+    const normalizedPath = pyanNode.path
+      ? normalizePath(workspaceDir ? relative(workspaceDir, pyanNode.path) : pyanNode.path)
+      : null;
     const nameCandidates = pyanNode.qualifiedName ? byQualifiedName.get(pyanNode.qualifiedName) : undefined;
 
     if (!nameCandidates || nameCandidates.length === 0) {

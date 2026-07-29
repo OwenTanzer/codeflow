@@ -23,12 +23,16 @@
  * client re-deriving them from the response body.
  */
 export class ServerRequestError extends Error {
-  constructor(message, { status, category, diagnostics } = {}) {
+  constructor(message, { status, category, diagnostics, retryable, retryAfterMs } = {}) {
     super(message);
     this.name = 'ServerRequestError';
     this.status = status;
     this.category = category;
     this.diagnostics = diagnostics || [];
+    // MOO-72 Commit 4: whether a Retry control should be offered for this
+    // failure. See mapServerJsonResponse for how this is derived.
+    this.retryable = !!retryable;
+    this.retryAfterMs = retryAfterMs ?? null;
   }
 }
 
@@ -65,22 +69,47 @@ export function buildServerJsonRequest({ path, body, serverAuthToken, signal }) 
 
 /**
  * Shared response mapping: return the parsed body on success, or throw the
- * endpoint's own error subclass carrying status/category/diagnostics.
+ * endpoint's own error subclass carrying status/category/diagnostics/retryable.
+ *
+ * MOO-72 Commit 4: a structured route diagnostic isn't the only shape a
+ * failure response can take -- a 429 from the server-wide rate limiter, or
+ * an unstructured 5xx from a proxy/Railway failure in front of the app,
+ * carry no `diagnostics[0]` at all. Precedence: an explicit boolean on the
+ * diagnostic wins; otherwise 429 defaults retryable (reading `Retry-After`
+ * if present); otherwise any other 5xx defaults retryable (conservative --
+ * an unstructured server failure is more often transient than not);
+ * anything else defaults non-retryable.
  *
  * @param {boolean} ok
  * @param {number} status
- * @param {object} body
- * @param {typeof ServerRequestError} ErrorClass - the endpoint's error subclass, so `instanceof` checks at call sites stay specific
+ * @param {object|null} body - null when the response body wasn't valid JSON
+ * @param {typeof ServerRequestError} ErrorClass - the endpoint's own error subclass, so `instanceof` checks at call sites stay specific
+ * @param {Headers} [headers]
  * @returns {object} the parsed body (an AdapterResult, for the graph endpoints)
  * @throws {ServerRequestError}
  */
-export function mapServerJsonResponse(ok, status, body, ErrorClass) {
+export function mapServerJsonResponse(ok, status, body, ErrorClass, headers) {
   if (!ok) {
-    const diagnostic = Array.isArray(body.diagnostics) ? body.diagnostics[0] : null;
-    throw new ErrorClass(body.error || `Request failed with status ${status}`, {
+    const safeBody = body || {};
+    const diagnostic = Array.isArray(safeBody.diagnostics) ? safeBody.diagnostics[0] : null;
+    let retryable;
+    if (diagnostic && typeof diagnostic.retryable === 'boolean') {
+      retryable = diagnostic.retryable;
+    } else if (status === 429) {
+      retryable = true;
+    } else if (status >= 500) {
+      retryable = true;
+    } else {
+      retryable = false;
+    }
+    const retryAfterHeader = status === 429 && headers && typeof headers.get === 'function' ? headers.get('Retry-After') : null;
+    const retryAfterMs = retryAfterHeader && !Number.isNaN(Number(retryAfterHeader)) ? Number(retryAfterHeader) * 1000 : null;
+    throw new ErrorClass(safeBody.error || `Request failed with status ${status}`, {
       status,
       category: diagnostic && diagnostic.category,
-      diagnostics: body.diagnostics,
+      diagnostics: safeBody.diagnostics,
+      retryable,
+      retryAfterMs,
     });
   }
   return body;
@@ -93,6 +122,16 @@ export function mapServerJsonResponse(ok, status, body, ErrorClass) {
  * and the `ref`-vs-`pr` revision-pinning decision) while transport, auth
  * headers, and error mapping stay here.
  *
+ * MOO-72 Commit 4: `fetch()` itself rejecting (DNS failure, connection
+ * refused, a Railway/proxy hiccup that never reaches the app) is not the
+ * same as the app responding with an error status, and must not be
+ * misclassified as non-retryable just because it produced no diagnostic --
+ * inability to reach the server is one of the most obviously transient
+ * failures there is. An AbortError (our own cancellation/supersession
+ * signal firing) is the one exception: it rethrows unchanged so existing
+ * call sites' `isCurrent`-style swallowing keeps working untouched, since
+ * an aborted request is never shown to the user at all.
+ *
  * @param {object} input
  * @param {string} input.url
  * @param {RequestInit} input.init - from buildServerJsonRequest
@@ -101,7 +140,18 @@ export function mapServerJsonResponse(ok, status, body, ErrorClass) {
  * @throws {ServerRequestError}
  */
 export async function sendServerJsonRequest({ url, init, ErrorClass }) {
-  const res = await fetch(url, init);
-  const parsed = await res.json().catch(() => ({}));
-  return mapServerJsonResponse(res.ok, res.status, parsed, ErrorClass);
+  let res;
+  try {
+    res = await fetch(url, init);
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw err;
+    throw new ErrorClass('Could not reach the CodeFlow server', {
+      status: 0,
+      category: 'network_error',
+      diagnostics: [],
+      retryable: true,
+    });
+  }
+  const parsed = await res.json().catch(() => null);
+  return mapServerJsonResponse(res.ok, res.status, parsed, ErrorClass, res.headers);
 }

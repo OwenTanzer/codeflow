@@ -21,6 +21,7 @@ import test from 'node:test';
 
 import { GraphCache } from '../server/lib/graph-cache.js';
 import { Metrics } from '../server/lib/metrics.js';
+import { InFlightRegistry } from '../server/lib/inflight-registry.js';
 import { WorkspaceManager } from '../server/lib/workspace.js';
 import { createGraphRepositoryHandler } from '../server/routes/graph-repository.js';
 import { createGraphFileHandler } from '../server/routes/graph-file.js';
@@ -316,6 +317,7 @@ test('file layer: a real pyan3 failure completes as exactly one partial_success'
     workspaceManager,
     cache,
     metrics,
+    inflightRegistry: new InFlightRegistry(),
   });
   const capture = captureWrites();
   const res = fakeResponse();
