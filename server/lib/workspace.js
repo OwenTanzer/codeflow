@@ -46,6 +46,16 @@ export class WorkspaceManager {
     // never touch its own directory.
     this.bootId = randomUUID();
     this._instanceDir = null;
+    // PR review finding: ensureRoot() writes the ownership marker on every
+    // startup, unconditionally, before sweepStaleWorkspaces() is ever
+    // called -- so gating the sweep on "does the marker exist" was
+    // checking a fact ensureRoot() itself had just made true, on every
+    // startup including the very first one against a freshly-misconfigured
+    // shared root. This instead remembers whether the marker already
+    // existed *before* this call wrote it, so the sweep can require actual
+    // continuity of ownership from a *prior* process, not just its own
+    // just-created marker.
+    this._rootWasPreviouslyOwned = false;
   }
 
   /**
@@ -66,14 +76,25 @@ export class WorkspaceManager {
     await mkdir(probe, { recursive: true });
     await rm(probe, { recursive: true, force: true });
 
-    // Ownership stamp: written once, never removed. sweepStaleWorkspaces()
-    // refuses to run at all against a root lacking this -- proof this
-    // process (or a prior one) actually established the root, not a
-    // shared/misconfigured directory that happens to exist.
-    try {
-      await fsWriteFile(join(this.root, OWNERSHIP_MARKER), '', { flag: 'wx' });
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
+    // Ownership stamp: written once, never removed. Checked for
+    // *pre-existence* before being written -- sweepStaleWorkspaces() only
+    // ever runs when this flag says a *prior* process already established
+    // ownership, never on the strength of the marker this same call is
+    // about to create. That's what actually protects a freshly-misconfigured
+    // shared root: its first-ever ensureRoot() call here sees no marker,
+    // remembers that, writes one for *next* time, and this process's own
+    // sweep stays a no-op regardless.
+    const markerPath = join(this.root, OWNERSHIP_MARKER);
+    this._rootWasPreviouslyOwned = await stat(markerPath).then(
+      () => true,
+      () => false
+    );
+    if (!this._rootWasPreviouslyOwned) {
+      try {
+        await fsWriteFile(markerPath, '', { flag: 'wx' });
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+      }
     }
 
     const instancesDir = join(this.root, 'instances');
@@ -121,16 +142,16 @@ export class WorkspaceManager {
    * Process-restart cleanup: removes *other* instance directories
    * confirmed not to belong to a still-running process. Never touches
    * anything outside instances/<uuid>/, never touches its own bootId, and
-   * refuses to run at all if this root has no ownership marker (protects
-   * against a misconfigured WORKSPACE_ROOT pointed at a shared/non-dedicated
-   * directory).
+   * refuses to run at all unless a *prior* process already established
+   * ownership of this root (see the constructor/ensureRoot() comments --
+   * this is `_rootWasPreviouslyOwned`, not merely "does the marker exist
+   * right now," which ensureRoot() itself would have just made true on a
+   * root's very first startup).
    * @returns {Promise<{removed: number, failed: number, skipped: string|null}>}
    */
   async sweepStaleWorkspaces() {
-    try {
-      await stat(join(this.root, OWNERSHIP_MARKER));
-    } catch {
-      return { removed: 0, failed: 0, skipped: 'missing-ownership-marker' };
+    if (!this._rootWasPreviouslyOwned) {
+      return { removed: 0, failed: 0, skipped: 'root-not-previously-owned' };
     }
 
     const instancesDir = join(this.root, 'instances');

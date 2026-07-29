@@ -28,6 +28,19 @@ async function trySymlink(target, linkPath, type) {
   }
 }
 
+/**
+ * Simulates "a prior process already established ownership of this root"
+ * -- pre-writes the marker ensureRoot() itself would otherwise only ever
+ * create on a root's first-ever startup, so a test can exercise
+ * sweepStaleWorkspaces()'s real decision logic (liveness/UUID-shape
+ * checks) rather than only proving "a first-time root's sweep is skipped,"
+ * which the dedicated tests below already cover on their own.
+ */
+async function markRootAsPreviouslyOwned(root) {
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, '.codeflow-owned-v1'), '');
+}
+
 test('ensureRoot creates the configured root and confirms it is writable', async () => {
   const root = join(await tempRoot(), 'nested', 'root');
   try {
@@ -107,6 +120,14 @@ test('cleanup() removes the request workspace but leaves the root intact', async
 
 // --- writeFile: broadened malicious path/ref fixtures ----------------------
 
+// PR review finding: a backslash-separated fixture is not a traversal on
+// POSIX at all -- backslash is just an ordinary filename character there
+// (not a path separator), so `path.resolve()` treats the whole string as
+// one literal filename component, which resolves *inside* the root, not
+// outside it. That fixture is only actually a meaningful escape attempt on
+// Windows, where backslash is the separator; it was previously asserted
+// unconditionally and failed on the Linux CI runner ("Missing expected
+// rejection").
 test('workspace.writeFile rejects a battery of malicious path fixtures, none escaping the root', async () => {
   const root = await tempRoot();
   try {
@@ -116,10 +137,12 @@ test('workspace.writeFile rejects a battery of malicious path fixtures, none esc
     const fixtures = [
       '../../etc/passwd',
       '../../../../../../etc/shadow',
-      '..\\..\\windows\\system32\\config\\sam',
       '/etc/passwd',
       'a/../../b',
     ];
+    if (process.platform === 'win32') {
+      fixtures.push('..\\..\\windows\\system32\\config\\sam');
+    }
     for (const fixture of fixtures) {
       await assert.rejects(() => ws.writeFile(fixture, 'x'), /escapes workspace root/, `expected "${fixture}" to be rejected`);
     }
@@ -163,21 +186,66 @@ test('two concurrent request workspaces never see each other\'s files', async ()
 
 // --- sweepStaleWorkspaces: ownership + overlap safety ------------------------
 
-test('sweepStaleWorkspaces refuses to run against a root with no ownership marker', async () => {
+// PR review finding: ensureRoot() writes the ownership marker on every
+// startup, unconditionally, before sweepStaleWorkspaces() is ever called --
+// so a naive "does the marker exist right now" check never actually
+// protects anything in the real server/index.js call order (ensureRoot()
+// always runs first, always creates the marker, so it's always present by
+// the time sweep checks). This is the exact regression test the review
+// asked for: the real, unmodified production order (ensureRoot() then
+// sweepStaleWorkspaces(), nothing bypassed) against a root that was NOT
+// previously owned.
+test('sweepStaleWorkspaces refuses to run on a root\'s very first startup (production ensureRoot()->sweep order)', async () => {
   const root = await tempRoot();
   try {
-    // A directory that exists but was never touched by ensureRoot() --
-    // simulates WORKSPACE_ROOT pointed at an already-existing, unrelated
-    // directory this codebase never established ownership of.
-    await mkdir(join(root, 'instances', 'not-a-real-instance'), { recursive: true });
+    // A stray UUID-shaped directory that exists before this process ever
+    // touches the root -- simulates WORKSPACE_ROOT freshly misconfigured to
+    // point at a shared/pre-existing directory that happens to already
+    // contain something UUID-named for unrelated reasons.
+    const strayDir = join(root, 'instances', '12345678-1234-4123-8123-123456789012');
+    await mkdir(strayDir, { recursive: true });
+
     const manager = new WorkspaceManager(root);
-    manager._instanceDir = join(root, 'instances', manager.bootId); // bypass ensureRoot() entirely
-    const result = await manager.sweepStaleWorkspaces();
-    assert.equal(result.skipped, 'missing-ownership-marker');
+    await manager.ensureRoot(); // the real call -- this is what writes the marker
+    const result = await manager.sweepStaleWorkspaces(); // the real call, in the real order
+
+    assert.equal(result.skipped, 'root-not-previously-owned');
     assert.equal(result.removed, 0);
-    // The unrelated directory must survive untouched.
-    const info = await stat(join(root, 'instances', 'not-a-real-instance'));
-    assert.ok(info.isDirectory());
+    const info = await stat(strayDir);
+    assert.ok(info.isDirectory(), 'a root\'s first-ever startup must never sweep, even though ensureRoot() just wrote the marker');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('sweepStaleWorkspaces works normally on a root\'s second startup, once a prior process established ownership', async () => {
+  const root = await tempRoot();
+  try {
+    // First process: this is its own root's first-ever startup, so its own
+    // sweep is correctly skipped (covered on its own by the dedicated test
+    // above) -- what it *does* do is write the ownership marker for the
+    // next process to find.
+    const first = new WorkspaceManager(root);
+    await first.ensureRoot();
+    const firstSweep = await first.sweepStaleWorkspaces();
+    assert.equal(firstSweep.skipped, 'root-not-previously-owned');
+    assert.equal(firstSweep.removed, 0);
+
+    // A dead instance left behind by that "first process" (simulating it
+    // having crashed after this point).
+    const deadInstanceDir = join(root, 'instances', '87654321-4321-4321-8321-210987654321');
+    await mkdir(deadInstanceDir, { recursive: true });
+    await writeFile(join(deadInstanceDir, '.codeflow-instance-lock'), '999999999'); // not a real PID
+
+    // Second process (new manager, same root): the marker already exists
+    // from the first process's ensureRoot() call, so this one's sweep must
+    // actually run.
+    const second = new WorkspaceManager(root);
+    await second.ensureRoot();
+    const secondSweep = await second.sweepStaleWorkspaces();
+    assert.equal(secondSweep.skipped, null);
+    assert.equal(secondSweep.removed, 1);
+    await assert.rejects(() => stat(deadInstanceDir));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -186,6 +254,7 @@ test('sweepStaleWorkspaces refuses to run against a root with no ownership marke
 test('sweepStaleWorkspaces never touches files outside instances/, even on an owned root', async () => {
   const root = await tempRoot();
   try {
+    await markRootAsPreviouslyOwned(root);
     const manager = new WorkspaceManager(root);
     await manager.ensureRoot();
     // Simulates an operator sharing WORKSPACE_ROOT with unrelated data.
@@ -203,6 +272,7 @@ test('sweepStaleWorkspaces never touches files outside instances/, even on an ow
 test('sweepStaleWorkspaces never removes an overlapping instance that is still alive', async () => {
   const root = await tempRoot();
   try {
+    await markRootAsPreviouslyOwned(root);
     const manager = new WorkspaceManager(root);
     await manager.ensureRoot();
     const otherBootId = '11111111-2222-4333-8444-555555555555';
@@ -223,6 +293,7 @@ test('sweepStaleWorkspaces never removes an overlapping instance that is still a
 test('sweepStaleWorkspaces removes an instance whose lock file names a confirmed-dead PID', async () => {
   const root = await tempRoot();
   try {
+    await markRootAsPreviouslyOwned(root);
     const manager = new WorkspaceManager(root);
     await manager.ensureRoot();
 
@@ -249,6 +320,7 @@ test('sweepStaleWorkspaces removes an instance whose lock file names a confirmed
 test('sweepStaleWorkspaces ignores non-UUID-shaped entries under instances/', async () => {
   const root = await tempRoot();
   try {
+    await markRootAsPreviouslyOwned(root);
     const manager = new WorkspaceManager(root);
     await manager.ensureRoot();
     const weirdDir = join(root, 'instances', 'not-a-uuid-at-all');
