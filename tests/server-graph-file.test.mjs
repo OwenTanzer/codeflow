@@ -5,13 +5,13 @@
 // matching tests/server-graph-repository.test.mjs's own scope exactly.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { resolveFileTarget, runPyan3ForFile, enforceFileRequestLimits, assertRevisionStillExpected } from '../server/routes/graph-file.js';
+import { resolveFileTarget, runPyan3ForFile, runSharedPyan3Analysis, enforceFileRequestLimits, assertRevisionStillExpected } from '../server/routes/graph-file.js';
 import { AnalysisContextError } from '../src/graph-ir/githubContext.js';
 import { validateFileRequest } from '../server/lib/validate-file-request.js';
 import { ValidationError } from '../server/lib/validate-repo-request.js';
@@ -195,6 +195,47 @@ test('runPyan3ForFile: a clean file returns real nodes/edges with no failure cat
     assert.equal(outcome.warnings.length, 0);
     assert.ok(outcome.pyanNodes.length > 0);
   });
+});
+
+// MOO-72 Commit 6: exercises the *real* signal-driven abort path (execFile's
+// own `signal` option, threaded through runPyan3), not a fabricated
+// rejection, and inspects the filesystem afterward -- the actual "timeout
+// cleanup" check the ticket calls for, distinct from the crash-restart
+// cleanup covered in tests/server-workspace.test.mjs.
+test('runSharedPyan3Analysis: aborting mid-run still cleans up its shared workspace', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codeflow-shared-pyan3-abort-'));
+  try {
+    const manager = new WorkspaceManager(root);
+    await manager.ensureRoot();
+    const content = readFileSync(join(FIXTURES, 'nested.py'), 'utf8');
+
+    const controller = new AbortController();
+    // Fires essentially immediately -- well before pyan3 could plausibly
+    // finish parsing a real file -- so the abort genuinely interrupts a
+    // live subprocess rather than racing a result that already returned.
+    setTimeout(() => controller.abort(), 1);
+
+    const outcome = await runSharedPyan3Analysis({
+      pythonBin: PYTHON_BIN,
+      workspaceManager: manager,
+      files: [{ path: 'nested.py', content }],
+      timeoutMs: 15_000,
+      internalSignal: controller.signal,
+    });
+
+    // pyan3 failing (including via this abort) degrades rather than
+    // throws -- runPyan3ForFile's existing resilience contract, already
+    // covered above. This test's own point is the cleanup that follows.
+    assert.ok(outcome.failedCategory, 'expected the aborted run to degrade rather than produce a full result');
+
+    const instancesDir = join(root, 'instances');
+    const instanceDirs = await readdir(instancesDir);
+    assert.equal(instanceDirs.length, 1);
+    const remaining = await readdir(join(instancesDir, instanceDirs[0]));
+    assert.deepEqual(remaining, ['.codeflow-instance-lock'], 'the shared pyan3 workspace must be cleaned up even when aborted mid-run');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 // MOO-70 Commit 9 PR review: file count/byte budgets must apply to the

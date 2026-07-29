@@ -11,7 +11,7 @@
 // Commit 6's job -- this endpoint has no GitHub credential and no auth
 // gate yet, so it intentionally can't reach outside the repo's own
 // checked-in fixtures.
-import { cp, realpath } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
 import { analyzeDirectory } from '../lib/analyzer-bridge.js';
 import { createRequestLogger } from '../lib/logger.js';
@@ -88,7 +88,12 @@ export function createAnalyzeHandler({ config, workspaceManager }) {
     try {
       workspace = await workspaceManager.createRequestWorkspace(requestId);
       log.info('workspace created', { dir: workspace.dir, requestedPath });
-      await cp(targetAbs, workspace.dir, { recursive: true });
+      // MOO-72 Commit 6: workspace.copyTree() (server/lib/workspace.js), not
+      // a raw cp() -- rejects a source tree containing a symlink outright
+      // (cp()'s own default follows/preserves symlinks rather than
+      // rejecting them) and tightens every copied entry's permissions,
+      // which a bare cp() call never did.
+      await workspace.copyTree(targetAbs);
       const result = await analyzeDirectory(workspace.dir);
       log.info('analysis complete', { files: result.stats.files, functions: result.stats.functions });
       sendJson(res, 200, result);

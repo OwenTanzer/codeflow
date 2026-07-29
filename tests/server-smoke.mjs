@@ -366,9 +366,26 @@ try {
     assert(Number.isInteger(retryAfterSeconds) && retryAfterSeconds > 0 && retryAfterSeconds <= 60, `expected an integer Retry-After within the 60s window, got ${retryAfter}`);
   });
 
-  await step('workspace root is empty after all requests (cleanup ran)', async () => {
-    const entries = await readdir(workspaceRoot);
-    assert(entries.length === 0, `expected an empty workspace root, found: ${entries.join(', ')}`);
+  // MOO-72 Commit 6: the root itself now legitimately carries the
+  // ownership marker and this process's own instances/<bootId>/ namespace
+  // for the whole server lifetime -- "empty" now means "no per-request
+  // workspace directories left inside this instance's own namespace",
+  // not "the root has zero entries at all".
+  await step('every per-request workspace was cleaned up (this instance\'s own namespace is empty)', async () => {
+    const rootEntries = (await readdir(workspaceRoot)).sort();
+    assert(
+      rootEntries.length === 2 && rootEntries[0] === '.codeflow-owned-v1' && rootEntries[1] === 'instances',
+      `expected only the ownership marker and instances/, found: ${rootEntries.join(', ')}`
+    );
+    const instancesDir = join(workspaceRoot, 'instances');
+    const instanceDirs = await readdir(instancesDir);
+    assert(instanceDirs.length === 1, `expected exactly this one running instance, found: ${instanceDirs.join(', ')}`);
+    const ownInstanceDir = join(instancesDir, instanceDirs[0]);
+    const ownEntries = await readdir(ownInstanceDir);
+    assert(
+      ownEntries.length === 1 && ownEntries[0] === '.codeflow-instance-lock',
+      `expected only the instance lock file (every per-request workspace cleaned up), found: ${ownEntries.join(', ')}`
+    );
   });
 } finally {
   child.kill();

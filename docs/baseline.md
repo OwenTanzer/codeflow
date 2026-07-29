@@ -335,7 +335,47 @@ server shell, split into namespaced modules:
   path escaping that subdirectory, and a `cleanup()`. This exists so MOO-70
   (pyan3) and MOO-71 (CodeVisualizer) have one shared convention for
   staging fetched source and intermediate artifacts instead of each
-  inventing its own temp-directory handling.
+  inventing its own temp-directory handling. CodeVisualizer's own function-layer
+  analysis (`graph-function.js`) never touches disk at all — it runs
+  entirely in-memory on already-fetched content — so it has no second,
+  parallel workspace implementation to reconcile; if it ever needs one, it
+  reuses this same class.
+
+  **MOO-72 Commit 6 (dependency/runtime workspace hardening)** layers on
+  top of that unchanged shape:
+  - **Instance-scoped layout + process-restart cleanup**: each server
+    process gets its own `instances/<bootId>/` namespace (a fresh
+    `randomUUID()` per process) under the root, plus an on-disk PID lock
+    file proving it's alive. At startup, `sweepStaleWorkspaces()` removes
+    *other* instance directories only once confirmed not-alive
+    (`process.kill(pid, 0)`) — a live overlapping instance (e.g. mid rolling-deploy)
+    is never touched. The sweep refuses to run at all against a root
+    lacking `.codeflow-owned-v1` (the ownership stamp `ensureRoot()`
+    writes) — protects a `WORKSPACE_ROOT` that's ever misconfigured to
+    point at a shared/non-dedicated directory from having anything of its
+    unrelated contents deleted.
+  - **Safe writing owned by the workspace object**: the workspace returned
+    by `createRequestWorkspace` exposes `writeFile()`/`copyTree()` as the
+    only sanctioned way to put content into it — each walks every ancestor
+    path component for a symlink (not just the immediate parent),
+    `writeFile` uses an atomic `wx` (`O_CREAT|O_EXCL`) exclusive create
+    (closing both the TOCTOU race and the case where the final target
+    itself is already a symlink), and both enforce private permissions
+    (`0700` directories, `0600` files — POSIX semantics, meaningful on the
+    real Linux deployment, largely a no-op under Windows' NTFS ACL model).
+    `copyTree` (used by `analyze.js`'s local-tree path) rejects — aborts
+    the whole copy, does not silently dereference or skip — if the source
+    tree contains any symlink at all.
+  - **Diagnostic-artifact retention policy: none.** No diagnostic (stderr,
+    a copy of a failing file, etc.) is ever written to disk or retained
+    past a request's completion — every diagnostic surfaces only
+    in-memory, in the response's already-sanitized `diagnostics` array
+    (`sanitizeDiagnostic`, `src/graph-ir/adapterResult.js`). Combined with
+    `cleanup()` always running (success, failure, or abort) and the
+    startup sweep above, this is what "avoid retaining private source
+    longer than necessary" means concretely in this codebase — stated
+    explicitly here so a future change doesn't add on-disk retention
+    without revisiting this decision.
 - `server/lib/logger.js` — structured JSON-lines logging
   (`{time,level,message,...meta}`), a `generateRequestId()`
   (`crypto.randomUUID()`), and a `createRequestLogger(requestId)` so every
