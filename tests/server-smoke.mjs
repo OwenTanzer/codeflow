@@ -320,10 +320,11 @@ try {
     assert(Array.isArray(json.diagnostics) && json.diagnostics.length === 1, 'expected one sanitized diagnostic');
   });
 
-  await step('rate limiting returns 429 once the per-minute budget (configured to 18) is exceeded', async () => {
+  await step('rate limiting returns 429 with a Retry-After header once the per-minute budget (configured to 18) is exceeded', async () => {
     // 7 budget-consuming requests already happened above; fire well past
     // the remainder regardless of exact prior count.
     const results = [];
+    let rateLimitedRes = null;
     for (let i = 0; i < 12; i++) {
       const res = await fetch(baseUrl + '/api/analyze', {
         method: 'POST',
@@ -331,8 +332,17 @@ try {
         body: JSON.stringify({ path: 'tests/fixtures/golden-world' }),
       });
       results.push(res.status);
+      if (res.status === 429 && !rateLimitedRes) rateLimitedRes = res;
     }
     assert(results.some((s) => s === 429), `expected at least one 429 among ${results.join(',')}`);
+    // MOO-72 Commit 4 PR review: the panel-side Retry-After gating is only
+    // real if the server's own rate limiter actually emits the header --
+    // this is the end-to-end assertion the review asked for, not just the
+    // unit-level RateLimiter.check() coverage in tests/rate-limit.test.mjs.
+    const retryAfter = rateLimitedRes.headers.get('Retry-After');
+    assert(retryAfter !== null, 'expected a Retry-After header on the 429 response');
+    const retryAfterSeconds = Number(retryAfter);
+    assert(Number.isInteger(retryAfterSeconds) && retryAfterSeconds > 0 && retryAfterSeconds <= 60, `expected an integer Retry-After within the 60s window, got ${retryAfter}`);
   });
 
   await step('workspace root is empty after all requests (cleanup ran)', async () => {

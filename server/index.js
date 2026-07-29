@@ -48,6 +48,29 @@ function clientKey(req) {
   return req.socket.remoteAddress || 'unknown';
 }
 
+/**
+ * MOO-72 Commit 4 PR review: a 429 with no `Retry-After` header left the
+ * client's retryAfterMs-based Retry gating (src/state/serverRequest.js)
+ * unable to actually engage for this, the one real application-generated
+ * 429 -- retryAfterMs stayed null and Retry re-enabled immediately,
+ * exactly the bug the client-side fix was meant to prevent. Sets the
+ * header as a side effect only when rate-limited, rounded UP to whole
+ * seconds (Retry-After's own spec is an integer number of seconds; never
+ * round down, which could let a client retry a moment before the window
+ * actually resets).
+ * @param {import('./lib/rate-limit.js').RateLimiter} rateLimiter
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ * @returns {{allowed: boolean, remaining: number, retryAfterMs: number|null}}
+ */
+function checkRateLimit(rateLimiter, req, res) {
+  const result = rateLimiter.check(clientKey(req));
+  if (!result.allowed) {
+    res.setHeader('Retry-After', String(Math.ceil(result.retryAfterMs / 1000)));
+  }
+  return result;
+}
+
 async function main() {
   let config;
   try {
@@ -208,7 +231,7 @@ async function main() {
       } else if (isApiRoute && !isAuthorized(req, config)) {
         log('warn', 'rejected unauthenticated request', { requestId, path: url.pathname });
         sendJson(res, 401, { error: 'Missing or invalid Authorization header' });
-      } else if (isApiRoute && !rateLimiter.check(clientKey(req)).allowed) {
+      } else if (isApiRoute && !checkRateLimit(rateLimiter, req, res).allowed) {
         log('warn', 'rejected rate-limited request', { requestId, path: url.pathname });
         sendJson(res, 429, { error: 'Rate limit exceeded, try again shortly' });
       } else if (url.pathname === '/api/analyze' && req.method === 'POST') {

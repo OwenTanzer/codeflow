@@ -67,6 +67,20 @@ test('RateLimiter tracks separate keys independently', () => {
   assert.equal(limiter.check('client-b').allowed, false);
 });
 
+// MOO-72 Commit 4 PR review: the server's own rate-limit 429 previously
+// carried no Retry-After header at all, so the client's retryAfterMs-based
+// Retry gating never actually engaged for this, the one real
+// application-generated 429.
+test('RateLimiter.check() exposes retryAfterMs only when rejecting, bounded by the fixed window', () => {
+  const limiter = new RateLimiter(1);
+  const first = limiter.check('client-a');
+  assert.equal(first.allowed, true);
+  assert.equal(first.retryAfterMs, null);
+  const second = limiter.check('client-a');
+  assert.equal(second.allowed, false);
+  assert.ok(typeof second.retryAfterMs === 'number' && second.retryAfterMs > 0 && second.retryAfterMs <= 60_000, `expected a retryAfterMs within the 60s window, got ${second.retryAfterMs}`);
+});
+
 test('validateRepoRequest accepts a well-formed owner/repo with no ref/pr', () => {
   const result = validateRepoRequest({ owner: 'octocat', repo: 'Hello-World' });
   assert.deepEqual(result, { owner: 'octocat', repo: 'Hello-World', ref: null, pr: null, excludePatterns: [], sessionId: null });
