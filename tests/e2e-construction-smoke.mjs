@@ -46,6 +46,12 @@ const CHAIN_OWNER = 'psf';
 const CHAIN_REPO = 'requests';
 const CHAIN_FILE = 'src/requests/sessions.py';
 const CHAIN_SYMBOL_PATH = ['SessionRedirectMixin', 'resolve_redirects'];
+// Pinned to a specific commit (not the mutable default branch) -- an
+// upstream rename/removal of sessions.py or resolve_redirects would
+// otherwise make this required CI check fail with no change on our side.
+// Verified this SHA has the file and symbol as of 2026-07-29:
+// https://github.com/psf/requests/blob/414f0513c33883adf6f2b46901d4f0b38a455851/src/requests/sessions.py
+const CHAIN_REF = '414f0513c33883adf6f2b46901d4f0b38a455851';
 
 function assert(condition, message) {
   if (!condition) throw new Error('Assertion failed: ' + message);
@@ -149,10 +155,13 @@ try {
     // Establish the chain's own pinned revision from a fresh repository
     // call against the fixture the file/function steps actually use --
     // deliberately not reusing repositoryResolvedSha above, which is a
-    // different repo (octocat/Hello-World).
-    const repoRes = await postJson('/api/graph/repository', { owner: CHAIN_OWNER, repo: CHAIN_REPO });
+    // different repo (octocat/Hello-World). Requests CHAIN_REF (a pinned
+    // commit, not the mutable default branch) so this required CI check
+    // can't fail from an unrelated upstream change to psf/requests.
+    const repoRes = await postJson('/api/graph/repository', { owner: CHAIN_OWNER, repo: CHAIN_REPO, ref: CHAIN_REF });
     assert(repoRes.status === 200, `expected 200, got ${repoRes.status}: ${JSON.stringify(repoRes.json)}`);
     chainResolvedSha = repoRes.json.graph.context.resolvedSha;
+    assert(chainResolvedSha === CHAIN_REF, `expected the pinned SHA to resolve to itself unchanged, got ${chainResolvedSha}`);
 
     const { status, json } = await postJson('/api/graph/file', { owner: CHAIN_OWNER, repo: CHAIN_REPO, ref: chainResolvedSha, path: CHAIN_FILE });
     assert(status === 200, `expected 200, got ${status}: ${JSON.stringify(json)}`);
