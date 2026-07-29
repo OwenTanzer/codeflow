@@ -46,7 +46,7 @@ function runExecFile(pythonBin, args, options) {
  * rather than deferred to the first real request.
  * @param {object} input
  * @param {string} input.pythonBin
- * @returns {Promise<void>}
+ * @returns {Promise<string>} the detected pyan3 version (always === PINNED_VERSION on success, since a mismatch throws) -- MOO-72 Commit 5: returned so a caller can populate a `version` field instead of only knowing "ok"/"not ok"
  */
 export function verifyPyan3Available({ pythonBin }) {
   if (!verifyPromise) {
@@ -65,6 +65,7 @@ export function verifyPyan3Available({ pythonBin }) {
       if (match[1] !== PINNED_VERSION) {
         throw new Error(`pyan3 version mismatch: expected ${PINNED_VERSION}, found ${match[1]}. Run \`pip install pyan3==${PINNED_VERSION}\`.`);
       }
+      return match[1];
     })();
   }
   return verifyPromise;
@@ -73,6 +74,55 @@ export function verifyPyan3Available({ pythonBin }) {
 /** Test-only: forces the next verifyPyan3Available call to re-check. */
 export function _resetVerifyCacheForTests() {
   verifyPromise = null;
+}
+
+/**
+ * MOO-72 Commit 5: production-facing re-check for the periodic dependency
+ * refresh (server/index.js's refreshDependencyStatuses) -- resets the same
+ * module-private memoized promise `_resetVerifyCacheForTests` resets, but
+ * under a name that doesn't say "ForTests" for what is, here, a real
+ * runtime behavior (a pyan3 install that was broken at startup and later
+ * fixed without a restart should be able to recover).
+ * @param {object} input
+ * @param {string} input.pythonBin
+ * @returns {Promise<string>} see verifyPyan3Available
+ */
+export function recheckPyan3Available({ pythonBin }) {
+  verifyPromise = null;
+  return verifyPyan3Available({ pythonBin });
+}
+
+const PYTHON_VERSION_PATTERN = /Python\s+(\d+\.\d+\.\d+)/;
+
+/**
+ * MOO-72 Commit 5: distinct from verifyPyan3Available/PINNED_VERSION --
+ * the checklist calls out "Python runtime" and "pyan3 version" as two
+ * separate things to verify. This reports whether the configured
+ * interpreter itself runs at all and what version it is, independent of
+ * whether pyan3 is installed under it -- so an operator can tell "Python
+ * itself is broken" apart from "Python works, pyan3 specifically doesn't".
+ * Never throws: this is a status-reporting check consumed by the
+ * readiness handler, not a fail-fast startup gate.
+ * @param {object} input
+ * @param {string} input.pythonBin
+ * @returns {Promise<{ok: boolean, version: string|null, detail: string|null}>}
+ */
+export async function verifyPythonRuntime({ pythonBin }) {
+  const { error, stdout, stderr } = await runExecFile(pythonBin, ['--version'], { timeoutMs: 10_000, maxBuffer: 1024 * 1024 });
+  if (error) {
+    if (error.code === 'ENOENT') {
+      return { ok: false, version: null, detail: `"${pythonBin}" was not found on PATH` };
+    }
+    return { ok: false, version: null, detail: `"${pythonBin} --version" failed: ${stderr || error.message}` };
+  }
+  // Python 2 prints --version to stderr; Python 3 prints to stdout -- check
+  // both rather than assuming, since PYTHON_BIN is operator-configured and
+  // could in principle point at either.
+  const match = PYTHON_VERSION_PATTERN.exec(stdout) || PYTHON_VERSION_PATTERN.exec(stderr);
+  if (!match) {
+    return { ok: false, version: null, detail: `could not parse a version from output: ${JSON.stringify(stdout || stderr)}` };
+  }
+  return { ok: true, version: match[1], detail: null };
 }
 
 /**

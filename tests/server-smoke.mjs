@@ -127,6 +127,27 @@ try {
     assert(json.status === 'ready', 'expected status ready');
     assert(json.checks.buildOutput.ok === true, 'expected buildOutput check to pass');
     assert(json.checks.workspaceRoot.ok === true, 'expected workspaceRoot check to pass');
+    // MOO-72 Commit 5: the new checks, against the real server -- pyan3 and
+    // GitHub are real (pinned pyan3 + a real `gh auth token`), so these can
+    // assert real ok:true, not just presence.
+    assert(json.checks.cacheStorage.ok === true, 'expected cacheStorage check to pass');
+    assert(json.checks.nodeRuntime.ok === true, `expected nodeRuntime check to pass under ${process.version}`);
+    assert(json.checks.pyan3.ok === true, 'expected the real pinned pyan3 to be available');
+    assert(json.checks.pythonRuntime.ok === true, 'expected the real Python interpreter to be available');
+    assert(json.checks.githubReachable.ok === true, 'expected the real GitHub token to be valid and reachable');
+    assert(json.checks.graphvizDot.applicable === false, 'graphvizDot must read as not-applicable, not a passed check');
+    // MOO-72 Commit 5: unauthenticated response must not leak detail/version.
+    assert(json.checks.pyan3.detail === undefined, 'unauthenticated /readyz must not expose detail');
+    assert(json.checks.pyan3.version === undefined, 'unauthenticated /readyz must not expose version');
+    assert(json.checks.nodeRuntime.version === undefined, 'unauthenticated /readyz must not expose version');
+  });
+
+  await step('/readyz exposes detail/version only to an authenticated caller', async () => {
+    const res = await fetch(baseUrl + '/readyz', { headers: authed() });
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    const json = await res.json();
+    assert(typeof json.checks.pyan3.version === 'string', 'expected an authenticated caller to see the detected pyan3 version');
+    assert(typeof json.checks.nodeRuntime.version === 'string', 'expected an authenticated caller to see the Node version');
   });
 
   await step('/api/analyze rejects an anonymous (no Authorization header) request', async () => {

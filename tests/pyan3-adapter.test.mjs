@@ -16,6 +16,8 @@ import test from 'node:test';
 import { WorkspaceManager } from '../server/lib/workspace.js';
 import {
   verifyPyan3Available,
+  recheckPyan3Available,
+  verifyPythonRuntime,
   stagePythonFiles,
   runPyan3,
   isTransientSubprocessFailure,
@@ -56,6 +58,39 @@ test('verifyPyan3Available rejects with a clear message when the binary is missi
     /pyan3 unavailable/
   );
   _resetVerifyCacheForTests();
+});
+
+test('verifyPyan3Available resolves to the detected pyan3 version string', async () => {
+  _resetVerifyCacheForTests();
+  const version = await verifyPyan3Available({ pythonBin: PYTHON_BIN });
+  assert.equal(version, '2.6.2');
+  _resetVerifyCacheForTests();
+});
+
+// MOO-72 Commit 5: recheckPyan3Available must genuinely re-run the check,
+// not just replay a memoized result -- decisive proof: force a failure
+// against a bad binary, then recheck against the real one and confirm it
+// actually recovers (which a stale memoized rejection could never do).
+test('recheckPyan3Available forces a fresh check rather than reusing a stale memoized result', async () => {
+  _resetVerifyCacheForTests();
+  await assert.rejects(() => verifyPyan3Available({ pythonBin: 'definitely-not-a-real-python-binary' }), /pyan3 unavailable/);
+  const recovered = await recheckPyan3Available({ pythonBin: PYTHON_BIN });
+  assert.equal(recovered, '2.6.2');
+  _resetVerifyCacheForTests();
+});
+
+test('verifyPythonRuntime: a real interpreter reports ok with a parsed version', async () => {
+  const result = await verifyPythonRuntime({ pythonBin: PYTHON_BIN });
+  assert.equal(result.ok, true);
+  assert.match(result.version, /^\d+\.\d+\.\d+$/);
+  assert.equal(result.detail, null);
+});
+
+test('verifyPythonRuntime: a missing binary reports not-ok with an actionable detail, never throws', async () => {
+  const result = await verifyPythonRuntime({ pythonBin: 'definitely-not-a-real-python-binary' });
+  assert.equal(result.ok, false);
+  assert.equal(result.version, null);
+  assert.match(result.detail, /was not found on PATH/);
 });
 
 test('stagePythonFiles writes staged content honoring workspace escape protection', async () => {

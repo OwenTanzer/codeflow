@@ -26,7 +26,8 @@ import { createAnalyzeRepoHandler } from './routes/analyze-repo.js';
 import { createGraphRepositoryHandler } from './routes/graph-repository.js';
 import { createGraphFileHandler } from './routes/graph-file.js';
 import { createGraphFunctionHandler } from './routes/graph-function.js';
-import { verifyPyan3Available } from './lib/pyan3Adapter.js';
+import { PYTHON_TREE_SITTER_CAPABLE } from './lib/github-analyzer-bridge.js';
+import { makeStatus, refreshDependencyStatuses } from './lib/dependency-status.js';
 import { initPythonLanguageService } from '@codevisualizer/core';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -127,13 +128,25 @@ async function main() {
   // tree-sitter-only graph rather than throwing) -- that same per-request
   // resilience is exactly what covers a totally-missing pyan3 install
   // too, so no separate "capability flag" plumbing is needed here.
-  let pyan3Available = true;
-  try {
-    await verifyPyan3Available({ pythonBin: config.pythonBin });
-  } catch (err) {
-    pyan3Available = false;
+  //
+  // MOO-72 Commit 5: pyan3Status/pythonRuntimeStatus/githubReachableStatus
+  // are the normalized {ok,detail,version,checkedAt} shape (dependency-status.js)
+  // instead of bare booleans, so /readyz can report real detail to an
+  // authenticated caller. All three are produced by one
+  // refreshDependencyStatuses() call, reused verbatim by the periodic
+  // refresh below -- no separate/duplicated startup-only check logic.
+  let { pyan3Status, pythonRuntimeStatus, githubReachableStatus } = await refreshDependencyStatuses({
+    pythonBin: config.pythonBin,
+    githubToken: config.githubToken,
+  });
+  if (!pyan3Status.ok) {
     log('warn', 'pyan3 unavailable at startup -- /api/graph/file will run in tree-sitter-only (degraded) mode until this is fixed', {
-      errorMessage: err.message,
+      errorMessage: pyan3Status.detail,
+    });
+  }
+  if (!githubReachableStatus.ok) {
+    log('warn', 'GitHub API unreachable or the configured token was rejected at startup -- GitHub-backed analysis will fail until this is fixed', {
+      errorMessage: githubReachableStatus.detail,
     });
   }
 
@@ -142,11 +155,23 @@ async function main() {
   // the function layer (no fallback analyzer exists) -- graph-function.js
   // uses this flag to fail clearly before even attempting a GitHub
   // fetch, rather than pretending to proceed.
+  //
+  // MOO-72 Commit 5: codeVisualizerAvailable (this bare boolean) is left
+  // completely untouched -- it's still what createGraphFunctionHandler
+  // gates real requests on below. codeVisualizerStatus is a SEPARATE,
+  // parallel object purely for /readyz's richer reporting; both are set
+  // from the same check, at the same time, but the boolean's contract
+  // (and every existing consumer of it) is unchanged. codeVisualizerStatus
+  // is never refreshed after startup -- see health.js's own comment on why
+  // (the vendored @codevisualizer/core package's parser-init memoization
+  // isn't something this codebase controls).
   let codeVisualizerAvailable = true;
+  let codeVisualizerStatus = makeStatus(true, null);
   try {
     await initPythonLanguageService();
   } catch (err) {
     codeVisualizerAvailable = false;
+    codeVisualizerStatus = makeStatus(false, err.message);
     log('warn', 'CodeVisualizer core unavailable at startup -- /api/graph/function will be unavailable until this is fixed', {
       errorMessage: err.message,
     });
@@ -173,6 +198,15 @@ async function main() {
     enabled: config.cacheEnabled,
   });
 
+  // MOO-72 Commit 5: a dedicated, tiny, isolated GraphCache instance purely
+  // for /readyz's cacheStorage self-test -- PR review finding: round-
+  // tripping against the LIVE graphCache above would perturb real LRU
+  // order, consume capacity, and risk a key collision on every /readyz hit.
+  // Always constructed enabled -- whether the *live* cache is disabled by
+  // configuration is a separate question health.js answers by reading
+  // config.cacheEnabled directly, before ever touching this instance.
+  const healthCheckCache = new GraphCache({ maxItems: 1, maxBytes: 1024, ttlMs: 60_000, enabled: true });
+
   // MOO-72 Commit 3: one shared counter store across all three graph
   // layers, same process-local/cumulative-since-start lifetime as
   // graphCache above. A required constructor dependency for every route
@@ -189,11 +223,40 @@ async function main() {
   // isn't wired here too).
   const fileInflightRegistry = new InFlightRegistry();
 
+  // MOO-72 Commit 5: folded into this existing interval rather than adding
+  // a second timer -- one fewer moving piece, same 5-minute cadence
+  // already established here. Guarded by `refreshInFlight` so an overlap
+  // (a check hanging past 5 minutes) is skipped rather than allowed to run
+  // concurrently with itself -- cheap insurance even though every
+  // individual check's own timeout (10s) is far shorter than the interval.
+  let refreshInFlight = false;
   const metricsSummaryInterval = setInterval(() => {
     // Logged at 'info' -- LOG_LEVEL=warn or error suppresses this line,
     // same as any other info log. That's expected, not a sign metrics
     // collection itself is broken.
     log('info', 'metrics summary', metrics.snapshot());
+
+    if (refreshInFlight) {
+      log('warn', 'dependency status refresh skipped -- previous refresh still in flight');
+      return;
+    }
+    refreshInFlight = true;
+    refreshDependencyStatuses({ pythonBin: config.pythonBin, githubToken: config.githubToken })
+      .then((next) => {
+        pyan3Status = next.pyan3Status;
+        pythonRuntimeStatus = next.pythonRuntimeStatus;
+        githubReachableStatus = next.githubReachableStatus;
+      })
+      .catch((err) => {
+        // refreshDependencyStatuses already isolates each individual
+        // check's own failure into its own status object -- reaching this
+        // catch means something broke in the refresh plumbing itself, not
+        // a dependency being down. Never let that take down the interval.
+        log('error', 'dependency status refresh failed unexpectedly', { errorMessage: err && err.message });
+      })
+      .finally(() => {
+        refreshInFlight = false;
+      });
   }, 5 * 60 * 1000);
   metricsSummaryInterval.unref();
 
@@ -201,8 +264,12 @@ async function main() {
   const handleHealth = createHealthHandler({ config });
   const handleReadiness = createReadinessHandler({
     config,
-    getPyan3Available: () => pyan3Available,
-    getCodeVisualizerAvailable: () => codeVisualizerAvailable,
+    healthCheckCache,
+    getPyan3Status: () => pyan3Status,
+    getPythonRuntimeStatus: () => pythonRuntimeStatus,
+    getCodeVisualizerStatus: () => codeVisualizerStatus,
+    getGithubReachableStatus: () => githubReachableStatus,
+    pythonTreeSitterCapable: PYTHON_TREE_SITTER_CAPABLE,
   });
   const handleAnalyze = createAnalyzeHandler({ config, workspaceManager });
   const handleAnalyzeRepo = createAnalyzeRepoHandler({ config });
@@ -274,8 +341,11 @@ async function main() {
       allowedRepos: config.allowedRepos.length,
       allowedOwners: config.allowedOwners.length,
       rateLimitPerMinute: config.rateLimitPerMinute,
-      pyan3Available,
+      pyan3Available: pyan3Status.ok,
+      pythonRuntimeAvailable: pythonRuntimeStatus.ok,
       codeVisualizerAvailable,
+      githubReachable: githubReachableStatus.ok,
+      pythonTreeSitterCapable: PYTHON_TREE_SITTER_CAPABLE,
       cacheEnabled: config.cacheEnabled,
       cacheMaxItems: config.cacheMaxItems,
       cacheMaxBytes: config.cacheMaxBytes,
