@@ -95,8 +95,13 @@ independently-computed values that could drift.
 
 - `commitSha`: explicit `BUILD_COMMIT_SHA` env override first (so any
   CI/deployment environment can inject a known-good value without git
-  metadata present at all), else `git rev-parse HEAD` (caught — never fails
-  the build over a provenance nicety), else the literal string `"unknown"`.
+  metadata present at all), else Railway's own `RAILWAY_GIT_COMMIT_SHA`
+  (provided automatically for builds/deployments from a connected GitHub
+  repo — [Railway's variable reference](https://docs.railway.com/variables/reference)
+  — but not guaranteed for every build type, e.g. a bare `railway up` from a
+  local directory with no git metadata in the uploaded context), else
+  `git rev-parse HEAD` (caught — never fails the build over a provenance
+  nicety), else the literal string `"unknown"`.
 - `dirty`: `true` if `git status --porcelain` reports anything at build
   time, surfaced (not enforced) — **production builds should come from a
   clean CI/Railway checkout**, not a working copy with uncommitted changes;

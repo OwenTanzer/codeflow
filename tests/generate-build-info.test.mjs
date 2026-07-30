@@ -22,6 +22,45 @@ test('an explicit BUILD_COMMIT_SHA env override wins over git rev-parse, but dir
   assert.equal(info.dirty, false);
 });
 
+// MOO-72 Commit 8 PR review: Railway provides RAILWAY_GIT_COMMIT_SHA
+// automatically for builds/deployments from a connected GitHub repo, but
+// this was previously never read at all -- a Railway build with no git
+// metadata in the remote build context (and no BUILD_COMMIT_SHA override
+// configured) reported 'unknown' even though Railway had already supplied
+// the exact SHA.
+test('falls back to RAILWAY_GIT_COMMIT_SHA when no BUILD_COMMIT_SHA override is set', () => {
+  const info = computeBuildInfo({
+    version: '1.0.0',
+    envCommitSha: undefined,
+    railwayCommitSha: 'railwaysha123',
+    gitRevParseHead: throwing,
+    gitStatusPorcelain: () => '',
+  });
+  assert.equal(info.commitSha, 'railwaysha123');
+});
+
+test('an explicit BUILD_COMMIT_SHA override still wins over RAILWAY_GIT_COMMIT_SHA', () => {
+  const info = computeBuildInfo({
+    version: '1.0.0',
+    envCommitSha: 'explicit-override',
+    railwayCommitSha: 'railwaysha123',
+    gitRevParseHead: throwing,
+    gitStatusPorcelain: () => '',
+  });
+  assert.equal(info.commitSha, 'explicit-override');
+});
+
+test('falls back to git rev-parse when neither BUILD_COMMIT_SHA nor RAILWAY_GIT_COMMIT_SHA is set', () => {
+  const info = computeBuildInfo({
+    version: '1.0.0',
+    envCommitSha: undefined,
+    railwayCommitSha: undefined,
+    gitRevParseHead: () => 'fromgit123',
+    gitStatusPorcelain: () => '',
+  });
+  assert.equal(info.commitSha, 'fromgit123');
+});
+
 test('falls back to git rev-parse HEAD when no env override is set', () => {
   const info = computeBuildInfo({
     version: '1.0.0',

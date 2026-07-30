@@ -21,19 +21,29 @@ import { fileURLToPath } from 'node:url';
  * without a real subprocess or a real package.json on disk.
  * @param {object} input
  * @param {string} input.version - from package.json
- * @param {string} [input.envCommitSha] - process.env.BUILD_COMMIT_SHA
+ * @param {string} [input.envCommitSha] - process.env.BUILD_COMMIT_SHA -- an
+ *   explicit, provider-neutral override; wins over everything, including
+ *   Railway's own variable, since an operator setting this directly is a
+ *   deliberate choice that shouldn't be silently outranked.
+ * @param {string} [input.railwayCommitSha] - process.env.RAILWAY_GIT_COMMIT_SHA
+ *   -- Railway provides this automatically for builds/deployments
+ *   originating from a connected GitHub repo (https://docs.railway.com/variables/reference),
+ *   but not for every build type (e.g. a bare `railway up` from a local
+ *   directory with no git metadata in the upload), so it's read as one
+ *   possible source, not assumed always-present.
  * @param {() => string} input.gitRevParseHead - throws on failure
  * @param {() => string} input.gitStatusPorcelain - throws on failure
  * @returns {{version: string, commitSha: string, dirty: boolean|'unknown'}}
  */
-export function computeBuildInfo({ version, envCommitSha, gitRevParseHead, gitStatusPorcelain }) {
-  // Explicit env override first, so any CI/deployment environment can
-  // inject a known-good value without relying on git metadata being
-  // present in the build context at all. Railway's RAILWAY_GIT_COMMIT_SHA
-  // is one possible source for this, but it is not guaranteed for every
-  // build type, so it is read as one option a deployment can set, not
-  // assumed always-present.
-  let commitSha = envCommitSha || '';
+export function computeBuildInfo({ version, envCommitSha, railwayCommitSha, gitRevParseHead, gitStatusPorcelain }) {
+  // Precedence: explicit BUILD_COMMIT_SHA override > Railway's own
+  // RAILWAY_GIT_COMMIT_SHA > git rev-parse HEAD > 'unknown'. PR review
+  // finding: this previously skipped straight to git rev-parse whenever
+  // BUILD_COMMIT_SHA wasn't set, so a Railway deployment with git metadata
+  // absent from the remote build context (and no custom alias configured)
+  // reported 'unknown' even though Railway had already supplied the exact
+  // SHA via its own variable.
+  let commitSha = envCommitSha || railwayCommitSha || '';
   let dirty = false;
 
   if (!commitSha) {
@@ -74,6 +84,7 @@ if (isMain) {
   const info = computeBuildInfo({
     version: pkg.version,
     envCommitSha: process.env.BUILD_COMMIT_SHA,
+    railwayCommitSha: process.env.RAILWAY_GIT_COMMIT_SHA,
     gitRevParseHead: () => execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }),
     gitStatusPorcelain: () => execFileSync('git', ['status', '--porcelain'], { cwd: repoRoot, encoding: 'utf8' }),
   });

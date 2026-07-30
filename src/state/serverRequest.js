@@ -104,6 +104,14 @@ export function mapServerJsonResponse(ok, status, body, ErrorClass, headers) {
     let retryable;
     if (diagnostic && typeof diagnostic.retryable === 'boolean') {
       retryable = diagnostic.retryable;
+    } else if (typeof safeBody.retryable === 'boolean') {
+      // MOO-72 Commit 8 PR review: a route without a structured diagnostic
+      // can still say so explicitly at the top level -- e.g. the disabled-
+      // layer 503s (server/index.js) send `{ retryable: false }` directly,
+      // since a disabled layer will never become available by retrying.
+      // Without this, the status-based 5xx default below overrode that
+      // explicit signal and told the UI it was retryable anyway.
+      retryable = safeBody.retryable;
     } else if (status === 429) {
       retryable = true;
     } else if (status >= 500) {
