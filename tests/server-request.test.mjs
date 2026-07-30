@@ -42,6 +42,92 @@ test('mapServerJsonResponse: 429 without a structured diagnostic defaults retrya
   );
 });
 
+// MOO-72 Commit 8: previously only 429 was read for Retry-After at all --
+// the concurrency limiter's 503 was marked retryable but the client
+// silently dropped the delay.
+test('mapServerJsonResponse: a 503 without a structured diagnostic also honors Retry-After', () => {
+  assert.throws(
+    () => mapServerJsonResponse(false, 503, { error: 'at capacity', retryable: true }, TestClientError, fakeHeaders({ 'Retry-After': '2' })),
+    (err) => {
+      assert.equal(err.retryable, true);
+      assert.equal(err.retryAfterMs, 2000);
+      return true;
+    }
+  );
+});
+
+test('mapServerJsonResponse: a 503 with no Retry-After header falls back to the body\'s own retryAfterMs', () => {
+  assert.throws(
+    () => mapServerJsonResponse(false, 503, { error: 'at capacity', retryable: true, retryAfterMs: 2000 }, TestClientError, fakeHeaders()),
+    (err) => {
+      assert.equal(err.retryAfterMs, 2000);
+      return true;
+    }
+  );
+});
+
+test('mapServerJsonResponse: a 503 with neither a header nor a body retryAfterMs yields null, not a crash', () => {
+  assert.throws(
+    () => mapServerJsonResponse(false, 503, { error: 'server error' }, TestClientError, fakeHeaders()),
+    (err) => {
+      assert.equal(err.retryAfterMs, null);
+      assert.equal(err.retryable, true, '5xx still defaults retryable even with no diagnostic');
+      return true;
+    }
+  );
+});
+
+// MOO-72 Commit 8 PR review: a disabled-layer 503 (server/index.js) sends
+// `{ retryable: false }` at the top level with no structured diagnostic --
+// the status-based 5xx default previously overrode that explicit signal.
+test('mapServerJsonResponse: an explicit top-level retryable:false on a 503 (disabled layer) is honored, not overridden by the 5xx default', () => {
+  assert.throws(
+    () => mapServerJsonResponse(false, 503, { error: 'The file layer is currently disabled', retryable: false }, TestClientError, fakeHeaders()),
+    (err) => {
+      assert.equal(err.retryable, false);
+      return true;
+    }
+  );
+});
+
+test('mapServerJsonResponse: an explicit top-level retryable:true on a 503 still works as before', () => {
+  assert.throws(
+    () => mapServerJsonResponse(false, 503, { error: 'at capacity', retryable: true }, TestClientError, fakeHeaders({ 'Retry-After': '2' })),
+    (err) => {
+      assert.equal(err.retryable, true);
+      assert.equal(err.retryAfterMs, 2000);
+      return true;
+    }
+  );
+});
+
+test('mapServerJsonResponse: a diagnostic-level retryable still takes precedence over a top-level one', () => {
+  assert.throws(
+    () =>
+      mapServerJsonResponse(
+        false,
+        503,
+        { error: 'x', retryable: false, diagnostics: [{ category: 'timeout', retryable: true }] },
+        TestClientError
+      ),
+    (err) => {
+      assert.equal(err.retryable, true);
+      return true;
+    }
+  );
+});
+
+test('mapServerJsonResponse: a 400 never reads Retry-After even if a header happens to be present', () => {
+  assert.throws(
+    () => mapServerJsonResponse(false, 400, { error: 'bad input' }, TestClientError, fakeHeaders({ 'Retry-After': '99' })),
+    (err) => {
+      assert.equal(err.retryable, false);
+      assert.equal(err.retryAfterMs, null);
+      return true;
+    }
+  );
+});
+
 test('mapServerJsonResponse: an unstructured 5xx defaults retryable', () => {
   assert.throws(
     () => mapServerJsonResponse(false, 502, null, TestClientError),

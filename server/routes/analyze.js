@@ -16,6 +16,7 @@ import { relative, resolve, sep } from 'node:path';
 import { analyzeDirectory } from '../lib/analyzer-bridge.js';
 import { createRequestLogger } from '../lib/logger.js';
 import { readJsonBody, BodyTooLargeError } from '../lib/http-body.js';
+import { sendCapacityResponse } from '../lib/concurrency-limiter.js';
 
 function sendJson(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -59,8 +60,8 @@ export async function resolveWithinRepo(repoRoot, requestedPath) {
   return realTarget;
 }
 
-/** @param {{config: object, workspaceManager: import('../lib/workspace.js').WorkspaceManager}} deps */
-export function createAnalyzeHandler({ config, workspaceManager }) {
+/** @param {{config: object, workspaceManager: import('../lib/workspace.js').WorkspaceManager, concurrencyLimiter: import('../lib/concurrency-limiter.js').ConcurrencyLimiter}} deps */
+export function createAnalyzeHandler({ config, workspaceManager, concurrencyLimiter }) {
   return async function handleAnalyze(req, res, requestId) {
     const log = createRequestLogger(requestId);
     let body;
@@ -84,6 +85,14 @@ export function createAnalyzeHandler({ config, workspaceManager }) {
       return sendJson(res, 400, { error: 'path must resolve within the repository' });
     }
 
+    // MOO-72 Commit 8: this legacy route has no cache/dedup layer -- every
+    // request runs the full analyzer, so acquire before the expensive work.
+    const { acquired, release } = concurrencyLimiter.tryAcquire();
+    if (!acquired) {
+      log.warn('rejected analyze request: at capacity');
+      return sendCapacityResponse(res, { requestId, sessionId: null });
+    }
+
     let workspace;
     try {
       workspace = await workspaceManager.createRequestWorkspace(requestId);
@@ -101,6 +110,7 @@ export function createAnalyzeHandler({ config, workspaceManager }) {
       log.error('analysis failed', { message: err && err.message });
       sendJson(res, 500, { error: 'Analysis failed', requestId });
     } finally {
+      release();
       if (workspace) {
         await workspace.cleanup().catch((err) => {
           log.error('workspace cleanup failed', { message: err && err.message });

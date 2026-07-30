@@ -21,6 +21,16 @@ function parseList(raw) {
   return raw.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+// MOO-72 Commit 8: same strict-enum treatment as CACHE_ENABLED/LOG_LEVEL --
+// a typo must produce a startup error, not a silently wrong default.
+function parseStrictBool(name, raw, defaultValue, errors) {
+  if (raw == null || raw === '') return defaultValue;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  errors.push(`${name} must be exactly "true" or "false", got: ${JSON.stringify(raw)}`);
+  return defaultValue;
+}
+
 /**
  * @param {object} [options]
  * @param {string} options.repoRoot - absolute path to the repo root (dist/, card/, src/ live under this)
@@ -181,6 +191,64 @@ export function loadConfig({ repoRoot, env = process.env }) {
     else errors.push(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}, got: ${JSON.stringify(env.LOG_LEVEL)}`);
   }
 
+  // MOO-72 Commit 8: feature flags. Each defaults to today's always-on
+  // behavior so an existing deployment's behavior doesn't change unless an
+  // operator explicitly opts in to disabling something.
+  const fileLayerEnabled = parseStrictBool('FILE_LAYER_ENABLED', env.FILE_LAYER_ENABLED, true, errors);
+  const functionLayerEnabled = parseStrictBool('FUNCTION_LAYER_ENABLED', env.FUNCTION_LAYER_ENABLED, true, errors);
+  // Gates server/routes/graph-file.js's pyan3-fails -> tree-sitter-only
+  // degrade path specifically. The function layer has no analogous fallback
+  // to gate (see graph-function.js's own header comment) -- there is no
+  // separate "renderer fallback" flag because no separate renderer-fallback
+  // subsystem exists.
+  const degradedAnalysisEnabled = parseStrictBool('DEGRADED_ANALYSIS_ENABLED', env.DEGRADED_ANALYSIS_ENABLED, true, errors);
+  // Defaults false, unlike the flags above: no experimental interaction
+  // exists yet, so there is nothing to safely default "on". Checked
+  // directly (grep for 'depth' in src/graph-ir/depthPolicy.js and
+  // server/lib/validate-file-request.js) whether a depth-beyond-'full' or
+  // similar opt-in surface already existed to gate -- it doesn't; depth is
+  // a fixed enum (modules/symbols/methods/full) with nothing past 'full'.
+  // This flag currently gates no behavior at all -- it exists so a future
+  // experimental interaction has a config knob to attach to from day one,
+  // called out explicitly here (and in this commit's PR description)
+  // rather than silently presented as complete. The next piece of code
+  // that wants an experimental/opt-in gate should read
+  // `config.experimentalInteractionsEnabled` rather than inventing a
+  // second flag.
+  const experimentalInteractionsEnabled = parseStrictBool(
+    'EXPERIMENTAL_INTERACTIONS_ENABLED',
+    env.EXPERIMENTAL_INTERACTIONS_ENABLED,
+    false,
+    errors
+  );
+
+  // MOO-72 Commit 8: no server-wide concurrency cap existed before this --
+  // only per-minute rate limiting and per-key request de-duplication, either
+  // of which coexists with an unbounded number of *distinct* concurrent
+  // analyses. Default of 4 is a conservative starting point, not a
+  // load-tested number: tree-sitter parsing runs synchronously in-process
+  // (blocks the single event loop thread while running) and Railway's
+  // default/hobby-tier containers commonly have 1-2 vCPUs. Meant to be
+  // tuned from real Railway metrics after deployment -- see docs/deployment.md.
+  const maxConcurrentAnalyses = env.MAX_CONCURRENT_ANALYSES ? Number(env.MAX_CONCURRENT_ANALYSES) : 4;
+  if (!Number.isInteger(maxConcurrentAnalyses) || maxConcurrentAnalyses <= 0) {
+    errors.push(`MAX_CONCURRENT_ANALYSES must be a positive integer, got: ${JSON.stringify(env.MAX_CONCURRENT_ANALYSES)}`);
+  }
+
+  // Previously a hardcoded default parameter in fetchAllContents
+  // (server/lib/github-analyzer-bridge.js) -- now operator-configurable.
+  const githubFetchConcurrency = env.GITHUB_FETCH_CONCURRENCY ? Number(env.GITHUB_FETCH_CONCURRENCY) : 8;
+  if (!Number.isInteger(githubFetchConcurrency) || githubFetchConcurrency <= 0) {
+    errors.push(`GITHUB_FETCH_CONCURRENCY must be a positive integer, got: ${JSON.stringify(env.GITHUB_FETCH_CONCURRENCY)}`);
+  }
+
+  // Previously a hardcoded default parameter in runPyan3
+  // (server/lib/pyan3Adapter.js) -- now operator-configurable.
+  const pyan3MaxBufferBytes = env.PYAN3_MAX_BUFFER_BYTES ? Number(env.PYAN3_MAX_BUFFER_BYTES) : 20 * 1024 * 1024;
+  if (!Number.isInteger(pyan3MaxBufferBytes) || pyan3MaxBufferBytes <= 0) {
+    errors.push(`PYAN3_MAX_BUFFER_BYTES must be a positive integer, got: ${JSON.stringify(env.PYAN3_MAX_BUFFER_BYTES)}`);
+  }
+
   if (errors.length > 0) {
     throw new ConfigError(errors);
   }
@@ -208,5 +276,12 @@ export function loadConfig({ repoRoot, env = process.env }) {
     cacheTtlMs,
     cacheEnabled,
     logLevel,
+    fileLayerEnabled,
+    functionLayerEnabled,
+    degradedAnalysisEnabled,
+    experimentalInteractionsEnabled,
+    maxConcurrentAnalyses,
+    githubFetchConcurrency,
+    pyan3MaxBufferBytes,
   };
 }

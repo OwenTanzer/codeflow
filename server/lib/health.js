@@ -18,6 +18,7 @@
 // says precisely what's true: these determine the 200/503 status here,
 // nothing more.
 import { access, constants } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isAuthorized } from './auth.js';
 
@@ -27,14 +28,40 @@ function sendJson(res, status, body) {
   res.end(payload);
 }
 
-/** @param {{config: object}} deps */
-export function createHealthHandler({ config }) {
+/**
+ * Read build-info.json (scripts/generate-build-info.mjs, run as part of
+ * `npm run build`) once at startup — MOO-72 Commit 8. Never throws: a
+ * missing file (e.g. `node server/index.js` run directly without a prior
+ * `npm run build`, as local dev sometimes does) falls back to 'unknown'
+ * rather than failing server startup over a provenance nicety.
+ * @param {string} repoRoot
+ * @returns {{version: string, commitSha: string, dirty: boolean|'unknown'}}
+ */
+export function readBuildInfo(repoRoot) {
+  try {
+    const raw = readFileSync(join(repoRoot, 'build-info.json'), 'utf8');
+    const parsed = JSON.parse(raw);
+    return {
+      version: typeof parsed.version === 'string' ? parsed.version : 'unknown',
+      commitSha: typeof parsed.commitSha === 'string' ? parsed.commitSha : 'unknown',
+      dirty: typeof parsed.dirty === 'boolean' ? parsed.dirty : 'unknown',
+    };
+  } catch {
+    return { version: 'unknown', commitSha: 'unknown', dirty: 'unknown' };
+  }
+}
+
+/** @param {{config: object, buildInfo: {version: string, commitSha: string, dirty: boolean|'unknown'}}} deps */
+export function createHealthHandler({ config, buildInfo }) {
   return async function handleHealth(req, res) {
     sendJson(res, 200, {
       status: 'ok',
       uptimeSeconds: Math.round(process.uptime()),
       nodeVersion: process.version,
       env: config.nodeEnv,
+      version: buildInfo.version,
+      commitSha: buildInfo.commitSha,
+      dirty: buildInfo.dirty,
     });
   };
 }
@@ -205,6 +232,23 @@ export function createReadinessHandler({
     checks.graphvizDot = withDetail(
       { applicable: false, gatesReadiness: false },
       { detail: 'not applicable -- pyan3 emits DOT text directly, parsed via the ts-graphviz JS library; no external graphviz/dot binary is invoked' },
+      authorized
+    );
+
+    // MOO-72 Commit 8: operational visibility into the feature flags,
+    // distinct from /api/capabilities (the client-facing contract the UI
+    // gates its own affordances on) -- this is for an operator checking
+    // readiness, not for the frontend.
+    checks.featureFlags = withDetail(
+      { ok: true, gatesReadiness: false },
+      {
+        detail: {
+          fileLayerEnabled: config.fileLayerEnabled,
+          functionLayerEnabled: config.functionLayerEnabled,
+          degradedAnalysisEnabled: config.degradedAnalysisEnabled,
+          experimentalInteractionsEnabled: config.experimentalInteractionsEnabled,
+        },
+      },
       authorized
     );
 

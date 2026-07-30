@@ -80,6 +80,15 @@ export function buildServerJsonRequest({ path, body, serverAuthToken, signal }) 
  * an unstructured server failure is more often transient than not);
  * anything else defaults non-retryable.
  *
+ * MOO-72 Commit 8: a 503 from the concurrency limiter (server/lib/
+ * concurrency-limiter.js) is retryable with a real delay too, same as a
+ * 429 -- previously only 429 was read for `Retry-After` at all, so a 503
+ * was marked retryable but the client silently dropped the delay. That
+ * limiter's response also carries `retryAfterMs` directly in the JSON body
+ * (its 503 has no fixed window the way the rate limiter's 429 does, so the
+ * header is a fixed short estimate) -- read as a fallback when no header
+ * value is present, rather than assumed absent.
+ *
  * @param {boolean} ok
  * @param {number} status
  * @param {object|null} body - null when the response body wasn't valid JSON
@@ -95,6 +104,14 @@ export function mapServerJsonResponse(ok, status, body, ErrorClass, headers) {
     let retryable;
     if (diagnostic && typeof diagnostic.retryable === 'boolean') {
       retryable = diagnostic.retryable;
+    } else if (typeof safeBody.retryable === 'boolean') {
+      // MOO-72 Commit 8 PR review: a route without a structured diagnostic
+      // can still say so explicitly at the top level -- e.g. the disabled-
+      // layer 503s (server/index.js) send `{ retryable: false }` directly,
+      // since a disabled layer will never become available by retrying.
+      // Without this, the status-based 5xx default below overrode that
+      // explicit signal and told the UI it was retryable anyway.
+      retryable = safeBody.retryable;
     } else if (status === 429) {
       retryable = true;
     } else if (status >= 500) {
@@ -102,8 +119,11 @@ export function mapServerJsonResponse(ok, status, body, ErrorClass, headers) {
     } else {
       retryable = false;
     }
-    const retryAfterHeader = status === 429 && headers && typeof headers.get === 'function' ? headers.get('Retry-After') : null;
-    const retryAfterMs = retryAfterHeader && !Number.isNaN(Number(retryAfterHeader)) ? Number(retryAfterHeader) * 1000 : null;
+    const readsRetryAfter = status === 429 || status === 503;
+    const retryAfterHeader = readsRetryAfter && headers && typeof headers.get === 'function' ? headers.get('Retry-After') : null;
+    const headerRetryAfterMs = retryAfterHeader && !Number.isNaN(Number(retryAfterHeader)) ? Number(retryAfterHeader) * 1000 : null;
+    const bodyRetryAfterMs = typeof safeBody.retryAfterMs === 'number' ? safeBody.retryAfterMs : null;
+    const retryAfterMs = headerRetryAfterMs ?? bodyRetryAfterMs;
     throw new ErrorClass(safeBody.error || `Request failed with status ${status}`, {
       status,
       category: diagnostic && diagnostic.category,

@@ -15,12 +15,13 @@ import { loadConfig, ConfigError } from './lib/config.js';
 import { log, configureLogger, generateRequestId } from './lib/logger.js';
 import { WorkspaceManager } from './lib/workspace.js';
 import { createStaticHandler } from './lib/static.js';
-import { createHealthHandler, createReadinessHandler } from './lib/health.js';
+import { createHealthHandler, createReadinessHandler, readBuildInfo } from './lib/health.js';
 import { isAuthorized } from './lib/auth.js';
 import { RateLimiter } from './lib/rate-limit.js';
 import { GraphCache } from './lib/graph-cache.js';
 import { Metrics } from './lib/metrics.js';
 import { InFlightRegistry } from './lib/inflight-registry.js';
+import { ConcurrencyLimiter } from './lib/concurrency-limiter.js';
 import { createAnalyzeHandler } from './routes/analyze.js';
 import { createAnalyzeRepoHandler } from './routes/analyze-repo.js';
 import { createGraphRepositoryHandler } from './routes/graph-repository.js';
@@ -242,6 +243,13 @@ async function main() {
   // isn't wired here too).
   const fileInflightRegistry = new InFlightRegistry();
 
+  // MOO-72 Commit 8: server-wide cap on concurrent expensive analyses,
+  // shared across all five analysis routes -- see server/lib/concurrency-limiter.js
+  // for why this exists (neither the rate limiter nor the in-flight
+  // registry above bound concurrent *distinct* work) and config.js's
+  // MAX_CONCURRENT_ANALYSES comment for how the default was derived.
+  const concurrencyLimiter = new ConcurrencyLimiter(config.maxConcurrentAnalyses);
+
   // MOO-72 Commit 5: folded into this existing interval rather than adding
   // a second timer -- one fewer moving piece, same 5-minute cadence
   // already established here. Guarded by `refreshInFlight` so an overlap
@@ -280,7 +288,9 @@ async function main() {
   metricsSummaryInterval.unref();
 
   const handleStatic = createStaticHandler(config.distDir);
-  const handleHealth = createHealthHandler({ config });
+  const buildInfo = readBuildInfo(repoRoot);
+  log('info', 'build info', buildInfo);
+  const handleHealth = createHealthHandler({ config, buildInfo });
   const handleReadiness = createReadinessHandler({
     config,
     healthCheckCache,
@@ -290,15 +300,23 @@ async function main() {
     getGithubReachableStatus: () => githubReachableStatus,
     pythonTreeSitterCapable: PYTHON_TREE_SITTER_CAPABLE,
   });
-  const handleAnalyze = createAnalyzeHandler({ config, workspaceManager });
-  const handleAnalyzeRepo = createAnalyzeRepoHandler({ config });
-  const handleGraphRepository = createGraphRepositoryHandler({ config, cache: graphCache, metrics });
-  const handleGraphFile = createGraphFileHandler({ config, workspaceManager, cache: graphCache, metrics, inflightRegistry: fileInflightRegistry });
+  const handleAnalyze = createAnalyzeHandler({ config, workspaceManager, concurrencyLimiter });
+  const handleAnalyzeRepo = createAnalyzeRepoHandler({ config, concurrencyLimiter });
+  const handleGraphRepository = createGraphRepositoryHandler({ config, cache: graphCache, metrics, concurrencyLimiter });
+  const handleGraphFile = createGraphFileHandler({
+    config,
+    workspaceManager,
+    cache: graphCache,
+    metrics,
+    inflightRegistry: fileInflightRegistry,
+    concurrencyLimiter,
+  });
   const handleGraphFunction = createGraphFunctionHandler({
     config,
     getCodeVisualizerAvailable: () => codeVisualizerAvailable,
     cache: graphCache,
     metrics,
+    concurrencyLimiter,
   });
 
   const server = createServer(async (req, res) => {
@@ -320,6 +338,17 @@ async function main() {
       } else if (isApiRoute && !checkRateLimit(rateLimiter, req, res).allowed) {
         log('warn', 'rejected rate-limited request', { requestId, path: url.pathname });
         sendJson(res, 429, { error: 'Rate limit exceeded, try again shortly' });
+      } else if (url.pathname === '/api/capabilities' && req.method === 'GET') {
+        // MOO-72 Commit 8: the client-visible half of the feature flags --
+        // the UI fetches this at startup to hide/disable affordances for a
+        // disabled layer, rather than leaving a still-clickable control
+        // that just 503s.
+        sendJson(res, 200, {
+          fileLayerEnabled: config.fileLayerEnabled,
+          functionLayerEnabled: config.functionLayerEnabled,
+          degradedAnalysisEnabled: config.degradedAnalysisEnabled,
+          experimentalInteractionsEnabled: config.experimentalInteractionsEnabled,
+        });
       } else if (url.pathname === '/api/analyze' && req.method === 'POST') {
         await handleAnalyze(req, res, requestId);
       } else if (url.pathname === '/api/analyze-repo' && req.method === 'POST') {
@@ -327,9 +356,17 @@ async function main() {
       } else if (url.pathname === '/api/graph/repository' && req.method === 'POST') {
         await handleGraphRepository(req, res, requestId);
       } else if (url.pathname === '/api/graph/file' && req.method === 'POST') {
-        await handleGraphFile(req, res, requestId);
+        if (!config.fileLayerEnabled) {
+          sendJson(res, 503, { error: 'The file layer is currently disabled', retryable: false, requestId });
+        } else {
+          await handleGraphFile(req, res, requestId);
+        }
       } else if (url.pathname === '/api/graph/function' && req.method === 'POST') {
-        await handleGraphFunction(req, res, requestId);
+        if (!config.functionLayerEnabled) {
+          sendJson(res, 503, { error: 'The function layer is currently disabled', retryable: false, requestId });
+        } else {
+          await handleGraphFunction(req, res, requestId);
+        }
       } else if (isApiRoute) {
         sendJson(res, 404, { error: 'Not found' });
       } else {

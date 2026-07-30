@@ -19,6 +19,15 @@ import test from 'node:test';
 import { GraphCache } from '../server/lib/graph-cache.js';
 import { Metrics } from '../server/lib/metrics.js';
 import { createGraphRepositoryHandler } from '../server/routes/graph-repository.js';
+import { ConcurrencyLimiter } from '../server/lib/concurrency-limiter.js';
+
+// MOO-72 Commit 8: createGraphRepositoryHandler now requires a
+// concurrencyLimiter dependency -- a large cap here since this file's own
+// concern is cancellation, not concurrency limiting, and every call in
+// this file should always be able to acquire a slot.
+function freshConcurrencyLimiter() {
+  return new ConcurrencyLimiter(1000);
+}
 
 const SHA = 'f'.repeat(40);
 const CONFIG = {
@@ -108,7 +117,7 @@ test('a real client abort during the GitHub-fetch phase is classified cancelled 
 
   const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled: true });
   const metrics = new Metrics();
-  const handler = createGraphRepositoryHandler({ config: CONFIG, cache, metrics });
+  const handler = createGraphRepositoryHandler({ config: CONFIG, cache, metrics, concurrencyLimiter: freshConcurrencyLimiter() });
   const server = await startServer(handler);
   t.after(() => server.close());
 
@@ -145,7 +154,7 @@ test('a real client abort during the GitHub-fetch phase is classified cancelled 
 test('destroying the socket mid-body-read is classified cancelled, not validation_error', async (t) => {
   const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled: true });
   const metrics = new Metrics();
-  const handler = createGraphRepositoryHandler({ config: CONFIG, cache, metrics });
+  const handler = createGraphRepositoryHandler({ config: CONFIG, cache, metrics, concurrencyLimiter: freshConcurrencyLimiter() });
   const server = await startServer(handler);
   t.after(() => server.close());
 
@@ -180,7 +189,7 @@ test('a normal, fully-completed request is never misclassified as cancelled', as
 
   const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled: true });
   const metrics = new Metrics();
-  const handler = createGraphRepositoryHandler({ config: CONFIG, cache, metrics });
+  const handler = createGraphRepositoryHandler({ config: CONFIG, cache, metrics, concurrencyLimiter: freshConcurrencyLimiter() });
   const server = await startServer(handler);
   t.after(() => server.close());
 

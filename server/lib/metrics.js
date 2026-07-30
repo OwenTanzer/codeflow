@@ -34,6 +34,10 @@ const RESULT_STATES = new Set([
   'contract_violation',
   'dependency_unavailable',
   'internal_error',
+  // MOO-72 Commit 8: the concurrency limiter rejected this request before
+  // any expensive work started -- a distinct failure-hotspot signal from
+  // 'timeout' (which only ever fires after work has actually begun).
+  'at_capacity',
 ]);
 
 // Only success/partial_success ever reach a cache lookup in any of the

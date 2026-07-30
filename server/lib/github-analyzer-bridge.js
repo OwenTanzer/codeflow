@@ -358,7 +358,13 @@ async function fetchBlobContent(owner, repo, sha) {
   return data.content || '';
 }
 
-/** Fetch blob contents with limited concurrency — avoid firing hundreds of requests at once. */
+/**
+ * Fetch blob contents with limited concurrency — avoid firing hundreds of
+ * requests at once. The `8` default was previously hardcoded with no
+ * override; every call site now passes `config.githubFetchConcurrency`
+ * explicitly (MOO-72 Commit 8) -- this default only still matters for a
+ * caller that omits the argument entirely (e.g. a direct unit test).
+ */
 export async function fetchAllContents(owner, repo, files, concurrency = 8) {
   const results = new Array(files.length);
   let next = 0;
@@ -456,7 +462,7 @@ export async function fetchAndAnalyzeRepo(request, refResult, config) {
     maxRepoBytes: config.maxRepoBytes,
     compiledExcludePatterns,
   });
-  const contents = await fetchAllContents(owner, repo, files);
+  const contents = await fetchAllContents(owner, repo, files, config.githubFetchConcurrency);
 
   const analyzed = [];
   const allFns = [];

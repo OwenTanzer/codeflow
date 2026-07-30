@@ -272,3 +272,69 @@ test('loadConfig accepts explicit cache overrides', async () => {
     assert.equal(config.cacheTtlMs, 5000);
   });
 });
+
+// MOO-72 Commit 8: feature flags and resource-limit knobs.
+test('loadConfig defaults every Commit 8 feature flag to its documented value', async () => {
+  await withBuiltRepo((repoRoot) => {
+    const config = loadConfig({ repoRoot, env: VALID_ENV });
+    assert.equal(config.fileLayerEnabled, true);
+    assert.equal(config.functionLayerEnabled, true);
+    assert.equal(config.degradedAnalysisEnabled, true);
+    // Unlike the other three flags, this one defaults false -- no
+    // experimental interaction exists yet to safely default "on".
+    assert.equal(config.experimentalInteractionsEnabled, false);
+  });
+});
+
+test('loadConfig accepts the two valid spellings for each Commit 8 boolean flag', async () => {
+  await withBuiltRepo((repoRoot) => {
+    for (const key of ['FILE_LAYER_ENABLED', 'FUNCTION_LAYER_ENABLED', 'DEGRADED_ANALYSIS_ENABLED', 'EXPERIMENTAL_INTERACTIONS_ENABLED']) {
+      const trueConfig = loadConfig({ repoRoot, env: { ...VALID_ENV, [key]: 'true' } });
+      const falseConfig = loadConfig({ repoRoot, env: { ...VALID_ENV, [key]: 'false' } });
+      assert.ok(typeof trueConfig !== 'undefined' && typeof falseConfig !== 'undefined');
+    }
+  });
+});
+
+test('loadConfig rejects a mistyped Commit 8 boolean flag rather than silently keeping the default', async () => {
+  await withBuiltRepo((repoRoot) => {
+    for (const key of ['FILE_LAYER_ENABLED', 'FUNCTION_LAYER_ENABLED', 'DEGRADED_ANALYSIS_ENABLED', 'EXPERIMENTAL_INTERACTIONS_ENABLED']) {
+      assert.throws(
+        () => loadConfig({ repoRoot, env: { ...VALID_ENV, [key]: 'fasle' } }),
+        new RegExp(`${key} must be exactly "true" or "false"`),
+        `expected ${key}=fasle to be rejected`
+      );
+    }
+  });
+});
+
+test('loadConfig defaults MAX_CONCURRENT_ANALYSES/GITHUB_FETCH_CONCURRENCY/PYAN3_MAX_BUFFER_BYTES and respects overrides', async () => {
+  await withBuiltRepo((repoRoot) => {
+    const defaultConfig = loadConfig({ repoRoot, env: VALID_ENV });
+    assert.equal(defaultConfig.maxConcurrentAnalyses, 4);
+    assert.equal(defaultConfig.githubFetchConcurrency, 8);
+    assert.equal(defaultConfig.pyan3MaxBufferBytes, 20 * 1024 * 1024);
+
+    const overridden = loadConfig({
+      repoRoot,
+      env: { ...VALID_ENV, MAX_CONCURRENT_ANALYSES: '2', GITHUB_FETCH_CONCURRENCY: '3', PYAN3_MAX_BUFFER_BYTES: '1024' },
+    });
+    assert.equal(overridden.maxConcurrentAnalyses, 2);
+    assert.equal(overridden.githubFetchConcurrency, 3);
+    assert.equal(overridden.pyan3MaxBufferBytes, 1024);
+  });
+});
+
+test('loadConfig rejects invalid MAX_CONCURRENT_ANALYSES/GITHUB_FETCH_CONCURRENCY/PYAN3_MAX_BUFFER_BYTES', async () => {
+  await withBuiltRepo((repoRoot) => {
+    for (const key of ['MAX_CONCURRENT_ANALYSES', 'GITHUB_FETCH_CONCURRENCY', 'PYAN3_MAX_BUFFER_BYTES']) {
+      for (const bad of ['0', '-1', 'nope']) {
+        assert.throws(
+          () => loadConfig({ repoRoot, env: { ...VALID_ENV, [key]: bad } }),
+          new RegExp(`${key} must be a positive integer`),
+          `expected ${key}=${JSON.stringify(bad)} to be rejected`
+        );
+      }
+    }
+  });
+});

@@ -18,6 +18,14 @@ import { Metrics } from '../server/lib/metrics.js';
 import { InFlightRegistry } from '../server/lib/inflight-registry.js';
 import { WorkspaceManager } from '../server/lib/workspace.js';
 import { createGraphFileHandler } from '../server/routes/graph-file.js';
+import { ConcurrencyLimiter } from '../server/lib/concurrency-limiter.js';
+
+// MOO-72 Commit 8: createGraphFileHandler now requires a concurrencyLimiter
+// dependency -- a large cap here since this file's own concern is
+// in-flight de-duplication, not concurrency limiting.
+function freshConcurrencyLimiter() {
+  return new ConcurrencyLimiter(1000);
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SHA = 'd'.repeat(40);
@@ -109,6 +117,7 @@ test('two concurrent requests for the same file@revision coalesce onto one pyan3
     cache,
     metrics,
     inflightRegistry,
+    concurrencyLimiter: freshConcurrencyLimiter(),
   });
 
   const capture = captureWrites();
@@ -183,6 +192,7 @@ test('two concurrent requests for the same file@revision at DIFFERENT depths sti
     cache,
     metrics,
     inflightRegistry,
+    concurrencyLimiter: freshConcurrencyLimiter(),
   });
 
   const capture = captureWrites();

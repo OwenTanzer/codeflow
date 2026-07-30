@@ -20,6 +20,14 @@ import test from 'node:test';
 import { GraphCache } from '../server/lib/graph-cache.js';
 import { Metrics } from '../server/lib/metrics.js';
 import { createGraphRepositoryHandler } from '../server/routes/graph-repository.js';
+import { ConcurrencyLimiter } from '../server/lib/concurrency-limiter.js';
+
+// MOO-72 Commit 8: createGraphRepositoryHandler now requires a
+// concurrencyLimiter dependency -- a large cap here since this file's own
+// concern is caching, not concurrency limiting.
+function freshConcurrencyLimiter() {
+  return new ConcurrencyLimiter(1000);
+}
 
 const SHA = 'c'.repeat(40);
 
@@ -93,7 +101,7 @@ function fakeResponse() {
 function makeHarness({ enabled = true } = {}) {
   const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled });
   const metrics = new Metrics();
-  const handler = createGraphRepositoryHandler({ config: CONFIG, cache, metrics });
+  const handler = createGraphRepositoryHandler({ config: CONFIG, cache, metrics, concurrencyLimiter: freshConcurrencyLimiter() });
   const github = stubGitHub();
 
   return {
@@ -236,7 +244,7 @@ test('CACHE_ENABLED=false leaves every request a miss and stores nothing', async
 
 test('an expired entry re-runs the analysis instead of serving stale content', async (t) => {
   const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 1000, enabled: true });
-  const handler = createGraphRepositoryHandler({ config: CONFIG, cache, metrics: new Metrics() });
+  const handler = createGraphRepositoryHandler({ config: CONFIG, cache, metrics: new Metrics(), concurrencyLimiter: freshConcurrencyLimiter() });
   const github = stubGitHub();
   t.after(github.restore);
 
