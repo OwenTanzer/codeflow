@@ -46,6 +46,7 @@ import { AnalysisContextError } from '../../src/graph-ir/githubContext.js';
 import { makeCoordinate } from '../../src/graph-ir/sourceCoordinate.js';
 import { createRequestAbortSignal, throwIfCancelled, RequestCancelledError } from '../lib/cancellation.js';
 import { isValidSessionId } from '../lib/session-id.js';
+import { sendCapacityResponse } from '../lib/concurrency-limiter.js';
 
 const ANALYZER = { name: 'codeflow-codevisualizer-adapter', version: '1.0.0' };
 
@@ -139,8 +140,8 @@ export function resolveFunctionSymbol(entries, symbolPath) {
   return { outcome: 'matched', entry: matches[0] };
 }
 
-/** @param {{config: object, getCodeVisualizerAvailable: () => boolean, cache: import('../lib/graph-cache.js').GraphCache, metrics: import('../lib/metrics.js').Metrics}} deps */
-export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable, cache, metrics }) {
+/** @param {{config: object, getCodeVisualizerAvailable: () => boolean, cache: import('../lib/graph-cache.js').GraphCache, metrics: import('../lib/metrics.js').Metrics, concurrencyLimiter: import('../lib/concurrency-limiter.js').ConcurrencyLimiter}} deps */
+export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable, cache, metrics, concurrencyLimiter }) {
   return async function handleGraphFunction(req, res, requestId) {
     let log = createRequestLogger(requestId, { layer: 'function' });
 
@@ -260,7 +261,7 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
               throw new ValidationError(`"${request.path}" is not a Python file — the function layer only supports .py files`);
             }
 
-            const [content] = await fetchAllContents(owner, repo, [entry]);
+            const [content] = await fetchAllContents(owner, repo, [entry], config.githubFetchConcurrency);
             return { sourceOwner: owner, sourceRepo: repo, resolvedSha, path: entry.path, content: content || '' };
           })(),
           {
@@ -425,6 +426,19 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
         }));
       }
 
+      // MOO-72 Commit 8: acquired only past the cache check above -- a
+      // cache hit already returned and never reaches CodeVisualizer.
+      // Released in the finally below regardless of how the CodeVisualizer
+      // call and graph construction exit.
+      const { acquired, release } = concurrencyLimiter.tryAcquire();
+      if (!acquired) {
+        const durationMs = Date.now() - startedAtMs;
+        log.warn('rejected graph-function request: at capacity', { durationMs, resultState: 'at_capacity' });
+        metrics.record({ layer: 'function', resultState: 'at_capacity', durationMs });
+        return sendCapacityResponse(res, { requestId, sessionId: request.sessionId });
+      }
+
+      try {
       // CodeVisualizer call: convert the symbol index's line/column
       // range into the flat index @codevisualizer/core expects, then
       // request the exact function by that range (never by position or
@@ -560,6 +574,9 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
       });
       metrics.record({ layer: 'function', resultState: 'success', durationMs, cacheStatus: 'miss' });
       sendJson(res, 200, adapterResult);
+      } finally {
+        release();
+      }
     } catch (err) {
       const durationMs = Date.now() - startedAtMs;
       if (err instanceof RequestCancelledError) {

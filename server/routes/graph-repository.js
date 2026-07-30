@@ -26,6 +26,7 @@ import { normalizeContext, AnalysisContextError } from '../../src/graph-ir/githu
 import { GRAPH_IR_SCHEMA_VERSION } from '../../src/graph-ir/graphIR.js';
 import { AdapterError, buildAdapterResult, AdapterResultError, sanitizeDiagnostic } from '../../src/graph-ir/adapterResult.js';
 import { buildCacheKey } from '../../src/graph-ir/cacheKey.js';
+import { sendCapacityResponse } from '../lib/concurrency-limiter.js';
 
 const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.2.0' };
 
@@ -162,8 +163,8 @@ export function cacheKeyRequestIdentity(context) {
   };
 }
 
-/** @param {{config: object, cache: import('../lib/graph-cache.js').GraphCache, metrics: import('../lib/metrics.js').Metrics}} deps */
-export function createGraphRepositoryHandler({ config, cache, metrics }) {
+/** @param {{config: object, cache: import('../lib/graph-cache.js').GraphCache, metrics: import('../lib/metrics.js').Metrics, concurrencyLimiter: import('../lib/concurrency-limiter.js').ConcurrencyLimiter}} deps */
+export function createGraphRepositoryHandler({ config, cache, metrics, concurrencyLimiter }) {
   return async function handleGraphRepository(req, res, requestId) {
     let log = createRequestLogger(requestId, { layer: 'repository' });
 
@@ -379,6 +380,19 @@ export function createGraphRepositoryHandler({ config, cache, metrics }) {
         throw err;
       }
 
+      // MOO-72 Commit 8: acquired only once we're past the cache check --
+      // a cache hit already returned above and never does the expensive
+      // work this limiter exists to bound. Released in the finally below
+      // regardless of how phases 1/2 exit (success, thrown error, cancel).
+      const { acquired, release } = concurrencyLimiter.tryAcquire();
+      if (!acquired) {
+        const durationMs = Date.now() - startedAtMs;
+        log.warn('rejected graph-repository request: at capacity', { durationMs, resultState: 'at_capacity' });
+        metrics.record({ layer: 'repository', resultState: 'at_capacity', durationMs });
+        return sendCapacityResponse(res, { requestId, sessionId: request.sessionId });
+      }
+
+      try {
       // Phase 1: fetch + parse (GitHub API calls, Parser.extract on each
       // file's content). Failures here are about the repository's own state
       // or content -- github_access, timeout, or parser_failure -- not a bug
@@ -486,6 +500,9 @@ export function createGraphRepositoryHandler({ config, cache, metrics }) {
         log.error('graph-repository internal error', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
         metrics.record({ layer: 'repository', resultState: 'internal_error', durationMs });
         sendError(res, 500, 'Analysis failed', 'internal_error', requestId, { sessionId: request.sessionId });
+      }
+      } finally {
+        release();
       }
     } finally {
       cleanup();

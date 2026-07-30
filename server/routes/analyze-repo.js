@@ -11,14 +11,15 @@ import { isRepoAllowed } from '../lib/allowlist.js';
 import { analyzeGithubRepo, GithubFetchError } from '../lib/github-analyzer-bridge.js';
 import { createRequestLogger } from '../lib/logger.js';
 import { readJsonBody, BodyTooLargeError } from '../lib/http-body.js';
+import { sendCapacityResponse } from '../lib/concurrency-limiter.js';
 
 function sendJson(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(body));
 }
 
-/** @param {{config: object}} deps */
-export function createAnalyzeRepoHandler({ config }) {
+/** @param {{config: object, concurrencyLimiter: import('../lib/concurrency-limiter.js').ConcurrencyLimiter}} deps */
+export function createAnalyzeRepoHandler({ config, concurrencyLimiter }) {
   return async function handleAnalyzeRepo(req, res, requestId) {
     const log = createRequestLogger(requestId);
 
@@ -53,6 +54,14 @@ export function createAnalyzeRepoHandler({ config }) {
 
     log.info('analyze-repo request accepted', { owner: request.owner, repo: request.repo, ref: request.ref, pr: request.pr });
 
+    // MOO-72 Commit 8: this legacy route has no cache/dedup layer at all --
+    // every request is expensive work, so the slot is acquired immediately.
+    const { acquired, release } = concurrencyLimiter.tryAcquire();
+    if (!acquired) {
+      log.warn('rejected analyze-repo request: at capacity');
+      return sendCapacityResponse(res, { requestId, sessionId: null });
+    }
+
     try {
       const { result, resolvedRef, fileCount, skippedOversizedFiles } = await analyzeGithubRepo(request, config);
       log.info('github analysis complete', {
@@ -69,6 +78,8 @@ export function createAnalyzeRepoHandler({ config }) {
       }
       log.error('analysis failed', { message: err && err.message });
       sendJson(res, 500, { error: 'Analysis failed', requestId });
+    } finally {
+      release();
     }
   };
 }

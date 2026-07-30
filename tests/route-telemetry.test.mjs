@@ -26,6 +26,14 @@ import { WorkspaceManager } from '../server/lib/workspace.js';
 import { createGraphRepositoryHandler } from '../server/routes/graph-repository.js';
 import { createGraphFileHandler } from '../server/routes/graph-file.js';
 import { createGraphFunctionHandler } from '../server/routes/graph-function.js';
+import { ConcurrencyLimiter } from '../server/lib/concurrency-limiter.js';
+
+// MOO-72 Commit 8: all three handlers now require a concurrencyLimiter
+// dependency -- a large cap here since this file's own concern is
+// telemetry, not concurrency limiting.
+function freshConcurrencyLimiter() {
+  return new ConcurrencyLimiter(1000);
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SHA = 'd'.repeat(40);
@@ -141,6 +149,11 @@ const REPO_CONFIG = {
   maxRepoFiles: 750,
   maxFileBytes: 1_000_000,
   maxRepoBytes: 25_000_000,
+  // MOO-72 Commit 8: matches loadConfig's real default (true) -- this
+  // plain test config bypasses loadConfig entirely, so it must set this
+  // explicitly or graph-file.js's DEGRADED_ANALYSIS_ENABLED check would
+  // wrongly treat the undefined field as "disabled".
+  degradedAnalysisEnabled: true,
 };
 const BASE_REPO_REQUEST = { owner: 'octocat', repo: 'Hello-World' };
 
@@ -149,7 +162,7 @@ test('repository layer: a fresh success is recorded once, with cacheStatus miss,
   t.after(restore);
   const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled: true });
   const metrics = new Metrics();
-  const handler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics });
+  const handler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics, concurrencyLimiter: freshConcurrencyLimiter() });
   const capture = captureWrites();
   const res = fakeResponse();
   try {
@@ -170,14 +183,14 @@ test('repository layer: a repeat request is a cache hit, recorded once, with cac
   t.after(restore);
   const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled: true });
   const missMetrics = new Metrics();
-  const handler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics: missMetrics });
+  const handler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics: missMetrics, concurrencyLimiter: freshConcurrencyLimiter() });
 
   // Prime the cache with a first (miss) request, using its own Metrics
   // instance so it doesn't pollute the hit assertion below.
   await handler(fakeRequest(BASE_REPO_REQUEST), fakeResponse(), 'req-prime');
 
   const hitMetrics = new Metrics();
-  const hitHandler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics: hitMetrics });
+  const hitHandler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics: hitMetrics, concurrencyLimiter: freshConcurrencyLimiter() });
   const capture = captureWrites();
   const res = fakeResponse();
   try {
@@ -195,7 +208,7 @@ test('repository layer: a repeat request is a cache hit, recorded once, with cac
 test('repository layer: a validation failure is recorded once as validation_error, no network reached', async () => {
   const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled: true });
   const metrics = new Metrics();
-  const handler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics });
+  const handler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics, concurrencyLimiter: freshConcurrencyLimiter() });
   const capture = captureWrites();
   const res = fakeResponse();
   try {
@@ -213,7 +226,7 @@ test('repository layer: a validation failure is recorded once as validation_erro
 test('repository layer: a validation failure for one field still echoes an independently-valid sessionId from the raw body', async () => {
   const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled: true });
   const metrics = new Metrics();
-  const handler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics });
+  const handler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics, concurrencyLimiter: freshConcurrencyLimiter() });
   const sessionId = 'a1b2c3d4-e5f6-4789-a012-3456789abcde';
   const res = fakeResponse();
   // `repo` is missing -- validation fails on an unrelated field, but the
@@ -228,7 +241,7 @@ test('repository layer: a validation failure for one field still echoes an indep
 test('repository layer: a malformed sessionId is never echoed back as-is on a validation error', async () => {
   const cache = new GraphCache({ maxItems: 10, maxBytes: 50_000_000, ttlMs: 60_000, enabled: true });
   const metrics = new Metrics();
-  const handler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics });
+  const handler = createGraphRepositoryHandler({ config: REPO_CONFIG, cache, metrics, concurrencyLimiter: freshConcurrencyLimiter() });
   const res = fakeResponse();
   await handler(fakeRequest({ owner: 'octocat', sessionId: 'garbage-not-a-uuid' }), res, 'req-echo-bad');
   assert.equal(res.statusCode, 400);
@@ -246,6 +259,7 @@ test('repository layer: ref resolution timing out is recorded once as timeout', 
     config: { ...REPO_CONFIG, graphAnalysisTimeoutMs: 5 },
     cache,
     metrics,
+    concurrencyLimiter: freshConcurrencyLimiter(),
   });
   const capture = captureWrites();
   const res = fakeResponse();
@@ -268,6 +282,7 @@ test('function layer: CodeVisualizer unavailable is recorded once as dependency_
     getCodeVisualizerAvailable: () => false,
     cache,
     metrics,
+    concurrencyLimiter: freshConcurrencyLimiter(),
   });
   const capture = captureWrites();
   const res = fakeResponse();
@@ -318,6 +333,7 @@ test('file layer: a real pyan3 failure completes as exactly one partial_success'
     cache,
     metrics,
     inflightRegistry: new InFlightRegistry(),
+    concurrencyLimiter: freshConcurrencyLimiter(),
   });
   const capture = captureWrites();
   const res = fakeResponse();

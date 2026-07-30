@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { createReadinessHandler, isSupportedNodeVersion } from '../server/lib/health.js';
+import { createReadinessHandler, createHealthHandler, isSupportedNodeVersion, readBuildInfo } from '../server/lib/health.js';
 import { GraphCache } from '../server/lib/graph-cache.js';
 
 const AUTH_TOKEN = 'test-auth-token';
@@ -285,4 +285,96 @@ test('graphvizDot is always reported as not-applicable rather than a passed chec
     assert.equal(res.body.checks.graphvizDot.gatesReadiness, false);
     assert.equal(res.body.status, 'ready');
   });
+});
+
+// --- MOO-72 Commit 8: featureFlags check ------------------------------------
+
+test('featureFlags reports the four Commit 8 flags to an authenticated caller, and never gates readiness', async () => {
+  await withBuiltRepo(async (baseConfig) => {
+    const config = {
+      ...baseConfig,
+      fileLayerEnabled: false,
+      functionLayerEnabled: true,
+      degradedAnalysisEnabled: true,
+      experimentalInteractionsEnabled: false,
+    };
+    const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache() });
+    const res = fakeRes();
+    await handler(fakeReq(true), res);
+    assert.equal(res.body.checks.featureFlags.ok, true);
+    assert.equal(res.body.checks.featureFlags.gatesReadiness, false);
+    assert.deepEqual(res.body.checks.featureFlags.detail, {
+      fileLayerEnabled: false,
+      functionLayerEnabled: true,
+      degradedAnalysisEnabled: true,
+      experimentalInteractionsEnabled: false,
+    });
+    assert.equal(res.body.status, 'ready', 'a disabled layer is an operator choice, not a readiness failure');
+  });
+});
+
+test('featureFlags detail is omitted from an unauthenticated response', async () => {
+  await withBuiltRepo(async (baseConfig) => {
+    const config = { ...baseConfig, fileLayerEnabled: false };
+    const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache() });
+    const res = fakeRes();
+    await handler(fakeReq(false), res);
+    assert.equal(res.body.checks.featureFlags.ok, true);
+    assert.equal(res.body.checks.featureFlags.detail, undefined);
+  });
+});
+
+// --- MOO-72 Commit 8: readBuildInfo / healthz version-provenance fields ------
+
+test('readBuildInfo returns unknown/false-safe defaults when build-info.json does not exist', async () => {
+  const repoRoot = await mkdtemp(join(tmpdir(), 'codeflow-buildinfo-missing-'));
+  try {
+    const info = readBuildInfo(repoRoot);
+    assert.equal(info.version, 'unknown');
+    assert.equal(info.commitSha, 'unknown');
+    assert.equal(info.dirty, 'unknown');
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('readBuildInfo reads a real build-info.json written by generate-build-info.mjs', async () => {
+  const repoRoot = await mkdtemp(join(tmpdir(), 'codeflow-buildinfo-'));
+  try {
+    await writeFile(
+      join(repoRoot, 'build-info.json'),
+      JSON.stringify({ version: '1.2.3', commitSha: 'abc1234', dirty: true, builtAt: '2026-01-01T00:00:00.000Z' })
+    );
+    const info = readBuildInfo(repoRoot);
+    assert.equal(info.version, '1.2.3');
+    assert.equal(info.commitSha, 'abc1234');
+    assert.equal(info.dirty, true);
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('readBuildInfo falls back to unknown fields on malformed JSON rather than throwing', async () => {
+  const repoRoot = await mkdtemp(join(tmpdir(), 'codeflow-buildinfo-malformed-'));
+  try {
+    await writeFile(join(repoRoot, 'build-info.json'), '{not valid json');
+    const info = readBuildInfo(repoRoot);
+    assert.equal(info.version, 'unknown');
+    assert.equal(info.commitSha, 'unknown');
+    assert.equal(info.dirty, 'unknown');
+  } finally {
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('/healthz includes version/commitSha/dirty from the injected buildInfo', async () => {
+  const handler = createHealthHandler({
+    config: { nodeEnv: 'test' },
+    buildInfo: { version: '1.2.3', commitSha: 'abc1234', dirty: false },
+  });
+  const res = fakeRes();
+  await handler({}, res);
+  assert.equal(res.body.version, '1.2.3');
+  assert.equal(res.body.commitSha, 'abc1234');
+  assert.equal(res.body.dirty, false);
 });

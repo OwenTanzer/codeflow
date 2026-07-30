@@ -45,6 +45,7 @@ import { AnalysisContextError, assertContextPropagation } from '../../src/graph-
 import { makeCoordinate, normalizePath } from '../../src/graph-ir/sourceCoordinate.js';
 import { createRequestAbortSignal, throwIfCancelled, RequestCancelledError } from '../lib/cancellation.js';
 import { isValidSessionId } from '../lib/session-id.js';
+import { sendCapacityResponse, ConcurrencyLimitError } from '../lib/concurrency-limiter.js';
 import { relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -75,12 +76,13 @@ function sendError(res, status, message, category, requestId, options = {}) {
  * @param {{dir: string}} input.workspace
  * @param {string[]} input.absolutePaths
  * @param {number} input.timeoutMs
+ * @param {number} [input.maxBuffer] - MOO-72 Commit 8: config.pyan3MaxBufferBytes, previously a hardcoded default inside runPyan3 itself
  * @param {AbortSignal} [input.signal] - MOO-72 Commit 4: threaded straight into execFile; undefined is a no-op
  * @returns {Promise<{pyanNodes: object[], pyanEdges: object[], warnings: string[], failedCategory: string|null}>}
  */
-export async function runPyan3ForFile({ pythonBin, workspace, absolutePaths, timeoutMs, signal }) {
+export async function runPyan3ForFile({ pythonBin, workspace, absolutePaths, timeoutMs, maxBuffer, signal }) {
   try {
-    const pyanResult = await runPyan3({ pythonBin, workspace, absolutePaths, timeoutMs, signal });
+    const pyanResult = await runPyan3({ pythonBin, workspace, absolutePaths, timeoutMs, maxBuffer, signal });
     const digraph = parseDotGraph(pyanResult.dot);
     return {
       pyanNodes: extractPyanNodes(digraph),
@@ -125,14 +127,15 @@ export async function runPyan3ForFile({ pythonBin, workspace, absolutePaths, tim
  * @param {import('../lib/workspace.js').WorkspaceManager} input.workspaceManager
  * @param {{path: string, content: string}[]} input.files
  * @param {number} input.timeoutMs
+ * @param {number} [input.maxBuffer] - MOO-72 Commit 8: config.pyan3MaxBufferBytes
  * @param {AbortSignal} input.internalSignal - the InFlightRegistry's own controller signal, fires only once every waiter has detached
  * @returns {Promise<{pyanNodes: object[], pyanEdges: object[], warnings: string[], failedCategory: string|null}>}
  */
-export async function runSharedPyan3Analysis({ pythonBin, workspaceManager, files, timeoutMs, internalSignal }) {
+export async function runSharedPyan3Analysis({ pythonBin, workspaceManager, files, timeoutMs, maxBuffer, internalSignal }) {
   const workspace = await workspaceManager.createRequestWorkspace(randomUUID());
   try {
     const absolutePaths = await stagePythonFiles(workspace, files);
-    const outcome = await runPyan3ForFile({ pythonBin, workspace, absolutePaths, timeoutMs, signal: internalSignal });
+    const outcome = await runPyan3ForFile({ pythonBin, workspace, absolutePaths, timeoutMs, maxBuffer, signal: internalSignal });
     const pyanNodes = outcome.pyanNodes.map((node) =>
       node.path ? { ...node, path: normalizePath(relative(workspace.dir, node.path)) } : node
     );
@@ -183,6 +186,23 @@ export function enforceFileRequestLimits(targetFiles, { maxRepoFiles, maxFileByt
     );
   }
   return files;
+}
+
+/**
+ * Maps a pyan3 failedCategory to a valid metrics resultState — MOO-72
+ * Commit 8, used when DEGRADED_ANALYSIS_ENABLED=false surfaces the pyan3
+ * failure as a real error instead of degrading. Only 'timeout' and
+ * 'parser_failure' are valid metrics resultStates among pyan3's possible
+ * failedCategory values (see server/lib/metrics.js's RESULT_STATES) --
+ * anything else (e.g. 'subprocess_failure') buckets under 'internal_error'
+ * for metrics purposes, same as an unexpected failure elsewhere in this
+ * route. The response's own diagnostic category is unaffected by this and
+ * still reports the real failedCategory.
+ * @param {string} failedCategory
+ * @returns {string}
+ */
+export function pyan3FailureResultState(failedCategory) {
+  return failedCategory === 'timeout' || failedCategory === 'parser_failure' ? failedCategory : 'internal_error';
 }
 
 /**
@@ -255,8 +275,8 @@ export function resolveFileTarget({ treeFiles, requestedPath }) {
   throw new ValidationError(`"${requestedPath}" was not found in this revision`);
 }
 
-/** @param {{config: object, workspaceManager: import('../lib/workspace.js').WorkspaceManager, cache: import('../lib/graph-cache.js').GraphCache, metrics: import('../lib/metrics.js').Metrics, inflightRegistry: import('../lib/inflight-registry.js').InFlightRegistry}} deps */
-export function createGraphFileHandler({ config, workspaceManager, cache, metrics, inflightRegistry }) {
+/** @param {{config: object, workspaceManager: import('../lib/workspace.js').WorkspaceManager, cache: import('../lib/graph-cache.js').GraphCache, metrics: import('../lib/metrics.js').Metrics, inflightRegistry: import('../lib/inflight-registry.js').InFlightRegistry, concurrencyLimiter: import('../lib/concurrency-limiter.js').ConcurrencyLimiter}} deps */
+export function createGraphFileHandler({ config, workspaceManager, cache, metrics, inflightRegistry, concurrencyLimiter }) {
   return async function handleGraphFile(req, res, requestId) {
     let log = createRequestLogger(requestId, { layer: 'file' });
 
@@ -383,7 +403,7 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
             if (limitedFiles.length === 0) {
               throw new ValidationError(`"${request.path}" has no files remaining after applying size limits`);
             }
-            const contents = await fetchAllContents(owner, repo, limitedFiles);
+            const contents = await fetchAllContents(owner, repo, limitedFiles, config.githubFetchConcurrency);
             return {
               sourceOwner: owner,
               sourceRepo: repo,
@@ -562,20 +582,65 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
       // at the completion log, with the real joined.stats -- not
       // fabricated placeholder counts at this earlier point.
       const inflightBefore = inflightRegistry.has(pyan3InflightKey);
-      const pyanOutcome = await inflightRegistry.subscribe(
-        pyan3InflightKey,
-        (internalSignal) =>
-          runSharedPyan3Analysis({
-            pythonBin: config.pythonBin,
-            workspaceManager,
-            files: resolved.files,
-            timeoutMs: config.pyan3TimeoutMs,
-            internalSignal,
-          }),
-        signal
-      );
+      let pyanOutcome;
+      try {
+        pyanOutcome = await inflightRegistry.subscribe(
+          pyan3InflightKey,
+          (internalSignal) => {
+            // MOO-72 Commit 8: acquired only inside the factory, which
+            // InFlightRegistry invokes at most once per shared key -- a
+            // subscriber joining someone else's already-running operation
+            // never reaches this closure body at all, so only the
+            // operation's actual creator ever consumes a slot.
+            const { acquired, release } = concurrencyLimiter.tryAcquire();
+            if (!acquired) throw new ConcurrencyLimitError();
+            return runSharedPyan3Analysis({
+              pythonBin: config.pythonBin,
+              workspaceManager,
+              files: resolved.files,
+              timeoutMs: config.pyan3TimeoutMs,
+              maxBuffer: config.pyan3MaxBufferBytes,
+              internalSignal,
+            }).finally(release);
+          },
+          signal
+        );
+      } catch (err) {
+        if (err instanceof ConcurrencyLimitError) {
+          const durationMs = Date.now() - startedAtMs;
+          log.warn('rejected graph-file request: at capacity', { durationMs, resultState: 'at_capacity' });
+          metrics.record({ layer: 'file', resultState: 'at_capacity', durationMs });
+          return sendCapacityResponse(res, { requestId, sessionId: request.sessionId });
+        }
+        throw err;
+      }
       const inflightStatus = inflightBefore ? 'coalesced' : 'executed';
       if (pyanOutcome.failedCategory) {
+        // MOO-72 Commit 8: DEGRADED_ANALYSIS_ENABLED=false means an operator
+        // wants to know immediately when pyan3 fails, rather than silently
+        // serving a lower-confidence tree-sitter-only graph. Checked here,
+        // after the shared pyan3 operation has already run (so a
+        // subscriber coalesced onto someone else's now-known outcome gets
+        // the same decision a fresh caller would).
+        if (!config.degradedAnalysisEnabled) {
+          const durationMs = Date.now() - startedAtMs;
+          const resultState = pyan3FailureResultState(pyanOutcome.failedCategory);
+          log.warn('rejected graph-file request: pyan3 failed and DEGRADED_ANALYSIS_ENABLED is false', {
+            failureCategory: pyanOutcome.failedCategory,
+            path: request.path,
+            durationMs,
+            resultState,
+          });
+          metrics.record({ layer: 'file', resultState, durationMs });
+          return sendError(
+            res,
+            502,
+            `pyan3 analysis failed (${pyanOutcome.failedCategory}) and DEGRADED_ANALYSIS_ENABLED is false, so no tree-sitter-only fallback was served.`,
+            pyanOutcome.failedCategory,
+            requestId,
+            { sessionId: request.sessionId }
+          );
+        }
         log.warn('pyan3 analysis degraded; falling back to tree-sitter-only graph', {
           component: 'pyan3',
           componentState: 'degraded',

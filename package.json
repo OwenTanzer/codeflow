@@ -1,5 +1,6 @@
 {
   "name": "codeflow",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "CodeFlow application shell — build/dev tooling. See README.md for the app itself and card/ for the GitHub Action.",
@@ -8,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "npm run setup:codevisualizer && vite build",
+    "build": "npm run setup:codevisualizer && node scripts/generate-build-info.mjs && vite build",
     "preview": "vite preview",
     "start": "node server/index.js",
     "test": "node --test tests/*.test.mjs",

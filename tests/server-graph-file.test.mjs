@@ -11,7 +11,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { resolveFileTarget, runPyan3ForFile, runSharedPyan3Analysis, enforceFileRequestLimits, assertRevisionStillExpected } from '../server/routes/graph-file.js';
+import { resolveFileTarget, runPyan3ForFile, runSharedPyan3Analysis, enforceFileRequestLimits, assertRevisionStillExpected, pyan3FailureResultState } from '../server/routes/graph-file.js';
 import { AnalysisContextError } from '../src/graph-ir/githubContext.js';
 import { validateFileRequest } from '../server/lib/validate-file-request.js';
 import { ValidationError } from '../server/lib/validate-repo-request.js';
@@ -328,4 +328,16 @@ test('assertRevisionStillExpected: rejects when the resolved source repository c
       ),
     AnalysisContextError
   );
+});
+
+// --- MOO-72 Commit 8: pyan3FailureResultState (DEGRADED_ANALYSIS_ENABLED=false) ---
+
+test('pyan3FailureResultState maps timeout and parser_failure through unchanged', () => {
+  assert.equal(pyan3FailureResultState('timeout'), 'timeout');
+  assert.equal(pyan3FailureResultState('parser_failure'), 'parser_failure');
+});
+
+test('pyan3FailureResultState buckets any other failedCategory under internal_error for metrics purposes', () => {
+  assert.equal(pyan3FailureResultState('subprocess_failure'), 'internal_error');
+  assert.equal(pyan3FailureResultState('anything_else'), 'internal_error');
 });

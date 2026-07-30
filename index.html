@@ -664,6 +664,7 @@ import { renderFunctionGraph } from './src/render/functionGraph.js';
 import { buildFunctionRenderModel } from './src/render/functionRenderModel.js';
 import { fetchFunctionGraph, GraphFunctionClientError } from './src/state/graphFunctionClient.js';
 import { AnalysisSession } from './src/state/analysisSession.js';
+import { fetchCapabilities } from './src/state/capabilitiesClient.js';
 Object.assign(window, analyzer, {
   renderRepositoryGraph, renderFileGraph, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute,
   adaptRepositoryAnalysis, repositoryGraphToViewModel, normalizeContext, calcBlastFromGraph,
@@ -1332,17 +1333,32 @@ function FileLayerPanel(props){
         // session contract rather than by this panel remembering to
         // copy every field correctly.
         var descriptor=session.describeFileRequest(path,undefined);
-        fetchFileGraph({
-            ...descriptor.params,
-            signal:descriptor.signal,
-            serverAuthToken:committedToken,
-        }).then(function(result){
-            if(!session.isCurrent('file',descriptor.generation,descriptor.epoch))return;
-            setFileGraph(result.graph);
-            setFileGraphLoading(false);
-            var key=result.cache&&result.cache.key;
-            cacheGraph(key,result.graph);
-            if(key)recordPanelState({graphCacheKey:key});
+        // MOO-72 Commit 8: checked before the real fetch so a disabled file
+        // layer shows a clear message instead of a raw 503 -- fetchCapabilities
+        // is tolerant of its own failure (returns null), which is treated as
+        // "unknown, don't restrict anything" so a capabilities-fetch problem
+        // never itself blocks a working file layer.
+        fetchCapabilities(committedToken).then(function(caps){
+            if(caps&&caps.fileLayerEnabled===false){
+                setFileGraphLoading(false);
+                setFileGraphError('The file layer is currently disabled by the server operator.');
+                setFileGraphErrorStatus(503);
+                setFileGraphErrorRetryable(false);
+                setFileGraphErrorRetryAfterMs(null);
+                return;
+            }
+            return fetchFileGraph({
+                ...descriptor.params,
+                signal:descriptor.signal,
+                serverAuthToken:committedToken,
+            }).then(function(result){
+                if(!session.isCurrent('file',descriptor.generation,descriptor.epoch))return;
+                setFileGraph(result.graph);
+                setFileGraphLoading(false);
+                var key=result.cache&&result.cache.key;
+                cacheGraph(key,result.graph);
+                if(key)recordPanelState({graphCacheKey:key});
+            });
         }).catch(function(err){
             // Cancellation (superseded by a newer request, or this effect
             // tearing down) is silent, never a user-visible error.
@@ -1555,19 +1571,36 @@ function FunctionLayerPanel(props){
         // adopted repository context -- see FileLayerPanel's matching
         // comment.
         var descriptor=session.describeFunctionRequest(path,coordinate.symbolPath);
-        fetchFunctionGraph({
-            ...descriptor.params,
-            signal:descriptor.signal,
-            serverAuthToken:committedToken,
-        }).then(function(result){
-            if(!session.isCurrent('function',descriptor.generation,descriptor.epoch))return;
-            setFunctionGraph(result.graph);
-            setLoadingGraph(false);
-            // Record against the breadcrumb entry so back/forward can restore
-            // this exact graph.
-            var key=result.cache&&result.cache.key;
-            cacheGraph(key,result.graph);
-            if(key)recordPanelState({graphCacheKey:key});
+        // MOO-72 Commit 8: same "check before the real fetch" pattern as
+        // FileLayerPanel's matching comment -- fetchCapabilities is
+        // tolerant of its own failure (null), so a capabilities-fetch
+        // problem never itself blocks a working function layer.
+        fetchCapabilities(committedToken).then(function(caps){
+            if(caps&&caps.functionLayerEnabled===false){
+                setLoadingGraph(false);
+                setGraphError({
+                    message:'The function layer is currently disabled by the server operator.',
+                    status:503,
+                    category:null,
+                    retryable:false,
+                    retryAfterMs:null,
+                });
+                return;
+            }
+            return fetchFunctionGraph({
+                ...descriptor.params,
+                signal:descriptor.signal,
+                serverAuthToken:committedToken,
+            }).then(function(result){
+                if(!session.isCurrent('function',descriptor.generation,descriptor.epoch))return;
+                setFunctionGraph(result.graph);
+                setLoadingGraph(false);
+                // Record against the breadcrumb entry so back/forward can restore
+                // this exact graph.
+                var key=result.cache&&result.cache.key;
+                cacheGraph(key,result.graph);
+                if(key)recordPanelState({graphCacheKey:key});
+            });
         }).catch(function(err){
             // Cancellation (superseded by a newer request, or this effect
             // tearing down) is silent, never a user-visible error.
@@ -1791,6 +1824,14 @@ function App(){
     // scoped to a revision that no longer applies.
     var graphCacheRef=useRef(null);
     if(!graphCacheRef.current)graphCacheRef.current=new Map();
+    // MOO-72 Commit 8: release/commit-provenance display. /healthz is
+    // public/unauthenticated (unlike /api/capabilities), so this needs no
+    // server token and can run once on mount regardless of whether the user
+    // has entered one yet.
+    var _bi=useState(null),buildInfo=_bi[0],setBuildInfo=_bi[1];
+    useEffect(function(){
+        fetch('/healthz').then(function(res){return res.json();}).then(setBuildInfo).catch(function(){});
+    },[]);
     function cacheGraph(cacheKey,graph){if(cacheKey)graphCacheRef.current.set(cacheKey,graph);}
     function readCachedGraph(cacheKey){return cacheKey?graphCacheRef.current.get(cacheKey)||null:null;}
     // MOO-69 PR review: guards against a slower, still-in-flight repository/
@@ -5700,7 +5741,10 @@ function App(){
                 )
             )
         ),
-        error&&React.createElement('div',{style:{position:'fixed',bottom:20,right:20,background:'var(--red)',color:'white',padding:'12px 20px',borderRadius:8,zIndex:1000,maxWidth:350},'role':'alert'},[error,React.createElement('button',{'aria-label':'Dismiss error','onClick':function(){setError(null);},style:{marginLeft:12,background:'none',border:'none',color:'white',cursor:'pointer',fontSize:16}},'×')])
+        error&&React.createElement('div',{style:{position:'fixed',bottom:20,right:20,background:'var(--red)',color:'white',padding:'12px 20px',borderRadius:8,zIndex:1000,maxWidth:350},'role':'alert'},[error,React.createElement('button',{'aria-label':'Dismiss error','onClick':function(){setError(null);},style:{marginLeft:12,background:'none',border:'none',color:'white',cursor:'pointer',fontSize:16}},'×')]),
+        buildInfo&&React.createElement('div',{style:{position:'fixed',bottom:4,left:8,fontSize:10,color:'var(--t3)',opacity:0.6,zIndex:1,pointerEvents:'none',fontFamily:'monospace'}},
+            'v'+(buildInfo.version||'unknown')+' · '+(buildInfo.commitSha&&buildInfo.commitSha!=='unknown'?buildInfo.commitSha.slice(0,7):'unknown')+(buildInfo.dirty===true?'*':'')
+        )
     );
 }
 
