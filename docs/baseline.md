@@ -698,6 +698,13 @@ MOO-72, after all layers (repository/file/function views) are actually
 operational. This is intentionally just the recorded procedure, not a
 blocker for MOO-68 to begin.
 
+**Update (MOO-72 Commit 9): this cutover has since actually happened.**
+See `docs/deployment.md`'s "Cutover baseline" section for the as-executed
+record (date, deployment ID, commit SHA, live-verified `/healthz` result).
+This section's own text above is left as-written — an accurate account of
+the state at the time it was recorded — rather than rewritten after the
+fact.
+
 ### Post-deployment update — allowlist widened to any owner
 
 Requested after the initial deploy: analyze other users' repos too, not
