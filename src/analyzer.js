@@ -3702,10 +3702,27 @@ function makeArchitectureBlocks(facts,files,warnings){
     candidates.sort(function(a,b){
         return blockPriority(a.kind)-blockPriority(b.kind)||a.path.localeCompare(b.path);
     });
-    if(candidates.length>ARCHITECTURE_MAX_BLOCKS){
-        warnings.push('Diagram capped at '+ARCHITECTURE_MAX_BLOCKS+' blocks; '+(candidates.length-ARCHITECTURE_MAX_BLOCKS)+' directly related items were omitted for readability.');
-        candidates=candidates.slice(0,ARCHITECTURE_MAX_BLOCKS);
+    // Test/fixture/build-output blocks are hidden by default and only ever
+    // shown when the user opts in via includeTests/includeBuildOutput
+    // (getVisibleArchitectureBlocks) -- they must not compete with the
+    // always-visible core blocks for the same ARCHITECTURE_MAX_BLOCKS
+    // budget. Sorting them last and slicing one combined list means a repo
+    // whose core alone is under the cap can still have its opt-in blocks
+    // silently truncated to zero once core+optional exceeds it (this
+    // repo's own growth did exactly that -- see
+    // tests/architecture-diagram.test.mjs's "can include tests" case).
+    // Cap each set independently instead.
+    var optionalCandidates=candidates.filter(function(fact){return fact.isTest||fact.isFixture||fact.isBuildOutput;});
+    var coreCandidates=candidates.filter(function(fact){return !fact.isTest&&!fact.isFixture&&!fact.isBuildOutput;});
+    if(coreCandidates.length>ARCHITECTURE_MAX_BLOCKS){
+        warnings.push('Diagram capped at '+ARCHITECTURE_MAX_BLOCKS+' blocks; '+(coreCandidates.length-ARCHITECTURE_MAX_BLOCKS)+' directly related items were omitted for readability.');
+        coreCandidates=coreCandidates.slice(0,ARCHITECTURE_MAX_BLOCKS);
     }
+    if(optionalCandidates.length>ARCHITECTURE_MAX_BLOCKS){
+        warnings.push('Test/fixture/build-output overlay capped at '+ARCHITECTURE_MAX_BLOCKS+' blocks; '+(optionalCandidates.length-ARCHITECTURE_MAX_BLOCKS)+' items were omitted for readability.');
+        optionalCandidates=optionalCandidates.slice(0,ARCHITECTURE_MAX_BLOCKS);
+    }
+    candidates=coreCandidates.concat(optionalCandidates);
     var usedIds=Object.create(null);
     var profile=(facts[0]&&facts[0].profile)||'generic';
     var blocks=candidates.map(function(fact){
