@@ -34,7 +34,7 @@ async function collectRepoFiles(root) {
     // npm install. Walking into it here would analyze that repo's
     // architecture instead of this one's -- its hundreds of
     // core/module-classified files were crowding out this repo's own
-    // test/fixture-kind blocks past ARCHITECTURE_MAX_BLOCKS (64) in a
+    // test/fixture-kind blocks past ARCHITECTURE_MAX_BLOCKS (72) in a
     // clean CI install, since this test's own walk has no other way to
     // know it's a foreign, provisioned tree rather than part of this
     // codebase.
@@ -170,12 +170,17 @@ test('codeflow architecture diagram can include tests', async () => {
   const withTests = blockPaths(diagram, true);
 
   // Not a specific hardcoded test file: this repo's own file count grows
-  // over time (MOO-72 Commit 1A alone added six files), and
-  // ARCHITECTURE_MAX_BLOCKS caps the diagram at 64 blocks -- asserting one
-  // exact filename survives that cutoff is exactly the kind of assertion
-  // repo growth breaks without any real regression. The test's actual
-  // subject is "the includeTests flag surfaces test files at all," which
-  // any test-classified path proves.
+  // over time (MOO-72 Commit 1A alone added six files) -- asserting one
+  // exact filename survives is exactly the kind of assertion repo growth
+  // breaks without any real regression. The test's actual subject is "the
+  // includeTests flag surfaces test files at all," which any
+  // test-classified path proves. (Previously this could fail for a
+  // different reason: test/fixture blocks shared ARCHITECTURE_MAX_BLOCKS's
+  // cap with always-visible core blocks and were sorted last, so repo
+  // growth could silently truncate them to zero even though they're an
+  // opt-in overlay hidden by default anyway. makeArchitectureBlocks now
+  // caps the core and optional (test/fixture/build-output) sets
+  // independently -- see its own comment in src/analyzer.js.)
   assert.ok(withTests.some((path) => path.startsWith('tests/')), 'at least one tests/ path must be visible with includeTests=true');
   const mermaid = generateMermaidBlockDiagram(diagram, true, false);
   assert.match(mermaid, /Testing/);
