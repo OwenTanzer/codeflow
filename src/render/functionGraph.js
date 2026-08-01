@@ -49,8 +49,62 @@ const TERMINAL_R = 15;
 const BRANCH_R = 24;
 const MAX_LABEL = 20;
 
+// MOO-86: process/call (rect) node labels wrap onto a second line instead of
+// being hard-truncated at MAX_LABEL -- entry/exit and branch (diamond) nodes
+// keep single-line truncation, since their fixed circular/diamond footprint
+// (TERMINAL_R/BRANCH_R) has no extra room to grow into without colliding with
+// the shape's own point. MAX_CHARS_PER_LINE tracks MAX_LABEL (the width both
+// were tuned against is the same NODE_W), and LINE_H is small enough that a
+// wrapped two-line box (NODE_H + LINE_H) still fits inside RANK_HEIGHT's
+// (functionRenderModel.js) existing 60px-34px = 26px of slack per rank.
+const MAX_CHARS_PER_LINE = 18;
+const LINE_H = 12;
+const WORD_BREAK_PATTERN = /[\s_.\-(),:]/;
+
 function colorFor(d) {
   return COLOR_BY_KIND[d.kind] || COLOR_BY_KIND.process;
+}
+
+function isWrappable(d) {
+  return !d.isEntry && !d.isExit && d.shape !== 'diamond';
+}
+
+/**
+ * Split a label into at most two lines for a rect node, breaking near the
+ * midpoint on a word/punctuation boundary when one exists close by so a
+ * split doesn't land mid-identifier more than necessary. Each line is
+ * independently capped at MAX_CHARS_PER_LINE with an ellipsis, so a label
+ * that's still too long after wrapping degrades the same way single-line
+ * truncation always did, rather than overflowing the box.
+ * @returns {string[]} one entry (unwrapped) or two (wrapped)
+ */
+function wrapLabel(label) {
+  if (!label) return [''];
+  if (label.length <= MAX_CHARS_PER_LINE) return [label];
+  var mid = Math.ceil(label.length / 2);
+  var breakIndex = -1;
+  for (var offset = 0; offset <= 8; offset++) {
+    if (mid + offset < label.length && WORD_BREAK_PATTERN.test(label[mid + offset])) { breakIndex = mid + offset; break; }
+    if (mid - offset >= 0 && WORD_BREAK_PATTERN.test(label[mid - offset])) { breakIndex = mid - offset; break; }
+  }
+  var first = breakIndex > 0 ? label.slice(0, breakIndex).trim() : label.slice(0, MAX_CHARS_PER_LINE);
+  var rest = breakIndex > 0 ? label.slice(breakIndex + 1).trim() : label.slice(MAX_CHARS_PER_LINE);
+  if (first.length > MAX_CHARS_PER_LINE) first = first.slice(0, MAX_CHARS_PER_LINE - 1) + '…';
+  if (rest.length > MAX_CHARS_PER_LINE) rest = rest.slice(0, MAX_CHARS_PER_LINE - 1) + '…';
+  return [first, rest];
+}
+
+// Cached on the datum (one render pass per node) so shapePath/halfHeight and
+// the actual text rendering never compute -- and never disagree on -- the
+// line count independently.
+function linesFor(d) {
+  if (d._wrappedLines) return d._wrappedLines;
+  d._wrappedLines = isWrappable(d) ? wrapLabel(d.label) : [truncate(d.label)];
+  return d._wrappedLines;
+}
+
+function boxHeight(d) {
+  return linesFor(d).length > 1 ? NODE_H + LINE_H : NODE_H;
 }
 
 // Half-height of a node, needed to anchor edges on its boundary rather than
@@ -58,7 +112,7 @@ function colorFor(d) {
 function halfHeight(d) {
   if (d.isEntry || d.isExit) return TERMINAL_R;
   if (d.shape === 'diamond') return BRANCH_R;
-  return NODE_H / 2;
+  return boxHeight(d) / 2;
 }
 
 function halfWidth(d) {
@@ -77,7 +131,7 @@ function shapePath(d) {
     return 'M0,' + -b + 'L' + b + ',0L0,' + b + 'L' + -b + ',0Z';
   }
   var hw = NODE_W / 2;
-  var hh = NODE_H / 2;
+  var hh = boxHeight(d) / 2;
   return 'M' + -hw + ',' + -hh + 'H' + hw + 'V' + hh + 'H' + -hw + 'Z';
 }
 
@@ -247,13 +301,23 @@ export function renderFunctionGraph(options) {
       // file layer uses for nodes without relationship data.
       .attr('stroke-dasharray', function (d) { return d.isSynthetic ? '3,2' : null; });
 
+    // MOO-86: a label too wide for a rect node now wraps onto a second
+    // tspan (linesFor/wrapLabel above) instead of being cut off -- entry/
+    // exit/diamond nodes keep the old single-line truncation, since their
+    // shapes have no room to grow into.
     node.append('text').attr('class', 'fn-nl')
       .attr('text-anchor', 'middle')
-      .attr('dy', function (d) { return d.shape === 'diamond' && !d.isEntry && !d.isExit ? 3 : 3; })
       .attr('fill', textColor)
       .attr('font-size', '9px').attr('font-family', 'JetBrains Mono').attr('font-weight', '500')
       .attr('pointer-events', 'none')
-      .text(function (d) { return truncate(d.label); });
+      .each(function (d) {
+        var lines = linesFor(d);
+        var textSel = d3.select(this);
+        var startDy = lines.length > 1 ? 3 - LINE_H / 2 : 3;
+        lines.forEach(function (line, i) {
+          textSel.append('tspan').attr('x', 0).attr('dy', i === 0 ? startDy : LINE_H).text(line);
+        });
+      });
 
     node.on('click', function (e, d) {
       e.stopPropagation();

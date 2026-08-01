@@ -86,12 +86,19 @@ export function renderFileGraph(options) {
     var linkLayer = container.append('g');
     var nodeLayer = container.append('g');
 
+    // MOO-86 review: nodes read as a homogeneous mass at default D3 force
+    // parameters -- widened collision padding and stronger charge repulsion
+    // give individual nodes real breathing room, and a stronger groupId pull
+    // (0.2 -> 0.34) makes each file's own cluster visually cohere against its
+    // neighbors instead of every node drifting toward one shared center of
+    // mass. Convex-hull group outlines remain out of scope (see this file's
+    // header comment) -- this is force tuning, not new UI.
     var sim = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id(function (d) { return d.id; }).distance(60).strength(0.3))
-      .force('charge', d3.forceManyBody().strength(-180).distanceMax(400))
-      .force('collision', d3.forceCollide().radius(function (d) { return radiusFor(d) + 10; }))
-      .force('x', d3.forceX(function (d) { return d.groupId && centers[d.groupId] ? centers[d.groupId].x : w / 2; }).strength(function (d) { return d.groupId ? 0.2 : 0.05; }))
-      .force('y', d3.forceY(function (d) { return d.groupId && centers[d.groupId] ? centers[d.groupId].y : h / 2; }).strength(function (d) { return d.groupId ? 0.2 : 0.05; }));
+      .force('link', d3.forceLink(links).id(function (d) { return d.id; }).distance(80).strength(0.25))
+      .force('charge', d3.forceManyBody().strength(-260).distanceMax(500))
+      .force('collision', d3.forceCollide().radius(function (d) { return radiusFor(d) + 18; }))
+      .force('x', d3.forceX(function (d) { return d.groupId && centers[d.groupId] ? centers[d.groupId].x : w / 2; }).strength(function (d) { return d.groupId ? 0.34 : 0.05; }))
+      .force('y', d3.forceY(function (d) { return d.groupId && centers[d.groupId] ? centers[d.groupId].y : h / 2; }).strength(function (d) { return d.groupId ? 0.34 : 0.05; }));
     simRef.current = sim;
 
     var link = linkLayer.selectAll('path').data(links).join('path')
@@ -107,13 +114,34 @@ export function renderFileGraph(options) {
       .on('start', function (e, d) { if (!e.active) sim.alphaTarget(0.1).restart(); d.fx = d.x; d.fy = d.y; })
       .on('drag', function (e, d) { d.fx = e.x; d.fy = e.y; })
       .on('end', function (e, d) { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
-    node.on('click', function (e, d) { e.stopPropagation(); if (selectSymbolRef.current) selectSymbolRef.current(d.id); });
+    // MOO-86: single-click-to-highlight-relations, matching the repository
+    // layer's own click-highlight behavior -- this layer had none before,
+    // only hover tooltips and a select callback with no visual feedback on
+    // the graph itself.
+    var neighbors = new Map(nodes.map(function (n) { return [n.id, new Set([n.id])]; }));
+    links.forEach(function (l) {
+      var s = l.source && l.source.id ? l.source.id : l.source;
+      var t = l.target && l.target.id ? l.target.id : l.target;
+      if (neighbors.has(s)) neighbors.get(s).add(t);
+      if (neighbors.has(t)) neighbors.get(t).add(s);
+    });
+    function highlightRelations(id) {
+      var keep = id ? neighbors.get(id) : null;
+      node.attr('opacity', function (d) { return !keep || keep.has(d.id) ? 1 : 0.15; });
+      link.attr('stroke-opacity', function (d) {
+        if (!keep) return 0.5;
+        var s = d.source.id || d.source, t = d.target.id || d.target;
+        return s === id || t === id ? 0.9 : 0.05;
+      });
+    }
+
+    node.on('click', function (e, d) { e.stopPropagation(); highlightRelations(d.id); if (selectSymbolRef.current) selectSymbolRef.current(d.id); });
     node.on('dblclick', function (e, d) { e.stopPropagation(); if (activateSymbolRef && activateSymbolRef.current) activateSymbolRef.current(d.id); });
     node.on('mouseenter', function (e, d) {
       var r = svgEl.getBoundingClientRect();
       onHover({ x: e.clientX - r.left + 10, y: e.clientY - r.top, title: d.label, content: d.kind + (d.noRelationshipData ? ' (no relationship data)' : '') });
     }).on('mouseleave', function () { onHover(null); });
-    svg.on('click', function (e) { if (e.target === svgEl) { onBackgroundClick(); node.selectAll('.nc').attr('opacity', 1); } });
+    svg.on('click', function (e) { if (e.target === svgEl) { onBackgroundClick(); highlightRelations(null); } });
 
     node.append('path').attr('class', 'nc')
       .attr('d', function (d) { return shapePath(d.shape, radiusFor(d)); })
