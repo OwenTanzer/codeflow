@@ -8,17 +8,18 @@
 //
 // Usage:
 //   AUTH_TOKEN=... GITHUB_TOKEN=... npm start           # in one shell
-//   node tests/function-layer-smoke.mjs <url> <githubPat> <serverToken>
+//   node tests/function-layer-smoke.mjs <url> <serverToken>
 //
-// The GitHub PAT is the *client-side* credential the repository layer uses to
-// talk to GitHub directly; the server token is the private server's own
-// AUTH_TOKEN. They are different secrets and both are needed to reach the
-// function layer. Neither is logged.
+// MOO-86: the client-side GitHub PAT/App toolbar fields this script used to
+// fill in were removed -- ownership/blame and file-preview-fallback now run
+// server-side too, using the same server token below. The server token is
+// the private server's own AUTH_TOKEN, required for every /api/* call.
+// Never logged.
 import { chromium } from 'playwright';
 
-const [url = 'http://localhost:3000/', githubPat, serverToken] = process.argv.slice(2);
-if (!githubPat || !serverToken) {
-  console.error('usage: node tests/function-layer-smoke.mjs <url> <githubPat> <serverToken>');
+const [url = 'http://localhost:3000/', serverToken] = process.argv.slice(2);
+if (!serverToken) {
+  console.error('usage: node tests/function-layer-smoke.mjs <url> <serverToken>');
   process.exit(2);
 }
 
@@ -61,12 +62,7 @@ await page.goto(url, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(2000);
 
 // --- repository layer -------------------------------------------------------
-await step('select PAT auth, enter credentials, and the CodeFlow server token', async () => {
-  const authSelect = page.locator('select[aria-label="Authentication Method"]:visible').first();
-  await authSelect.selectOption('pat');
-  const pat = page.locator('input[aria-label="GitHub Token"]:visible').first();
-  await pat.waitFor({ state: 'visible', timeout: 5000 });
-  await pat.fill(githubPat);
+await step('enter the repository URL and the CodeFlow server token', async () => {
   await page.locator('input[aria-label="Repository URL"]:visible').first().fill(REPO);
   // MOO-72 Commit 1A moved repository analysis onto the server, which gates
   // it behind this same private-server token the file/function panels
