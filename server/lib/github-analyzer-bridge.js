@@ -535,3 +535,52 @@ export async function analyzeGithubRepo(request, config) {
   const refResult = await resolveGithubRef(request, config);
   return fetchAndAnalyzeRepo(request, refResult, config);
 }
+
+/**
+ * Tally commit authors for one file/path -- MOO-86. Server-side replacement
+ * for the legacy client-side GitHub.getBlame (src/analyzer.js), which ran
+ * this same GitHub Commits API call from the browser using a user-supplied
+ * PAT. Mirrors GitHub.getBlame's own tally/sort/percent logic exactly so the
+ * ownership UI's shape doesn't need to change.
+ * @param {{owner: string, repo: string, path: string, ref: string|null}} request
+ * @param {{githubToken: string}} config
+ * @returns {Promise<Array<{name: string, commits: number, percent: number}>>}
+ */
+export async function fetchCommitAuthorTally({ owner, repo, path, ref }, config) {
+  configureGithubClient({ token: config.githubToken });
+  const params = new URLSearchParams({ per_page: '50' });
+  if (path) params.set('path', path);
+  if (ref) params.set('sha', ref);
+  const commits = await apiRequest(`/repos/${owner}/${repo}/commits?${params.toString()}`, {
+    404: 'Ref or path not found',
+  });
+  const authors = {};
+  for (const c of commits) {
+    const name = c && c.commit && c.commit.author && c.commit.author.name;
+    if (!name) continue;
+    authors[name] = (authors[name] || 0) + 1;
+  }
+  const total = commits.length || 1;
+  return Object.entries(authors)
+    .map(([name, count]) => ({ name, commits: count, percent: Math.round((count / total) * 100) }))
+    .sort((a, b) => b.commits - a.commits);
+}
+
+/**
+ * Fetch one file's content at a given (or default-branch) ref -- MOO-86.
+ * Server-side replacement for the legacy client-side GitHub.getFile call the
+ * file-preview panel used as its GitHub-sourced fallback (server-sourced
+ * repositoryGraph responses never carry file content -- see
+ * repositoryGraphToViewModel.js). Reuses resolvePathEntry/fetchBlobContent
+ * rather than ever fetching a full recursive tree just to read one file.
+ * @param {{owner: string, repo: string, path: string, ref: string|null}} request
+ * @param {{githubToken: string}} config
+ * @returns {Promise<string|null>} null when the path doesn't resolve to a file
+ */
+export async function fetchSingleFileContent({ owner, repo, path, ref }, config) {
+  configureGithubClient({ token: config.githubToken });
+  const resolvedRef = ref || (await resolveRef({ owner, repo, ref: null, pr: null })).ref;
+  const entry = await resolvePathEntry({ owner, repo, resolvedRef, path });
+  if (!entry || entry.type !== 'blob') return null;
+  return fetchBlobContent(owner, repo, entry.sha);
+}

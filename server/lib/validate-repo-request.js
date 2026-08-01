@@ -26,19 +26,22 @@ export class ValidationError extends Error {
   }
 }
 
-function validateOwner(owner) {
+// Exported for server/lib/validate-github-meta-request.js (MOO-86) -- the
+// blame/file-content endpoints need the same owner/repo/ref checks without
+// duplicating these patterns.
+export function validateOwner(owner) {
   if (typeof owner !== 'string' || !OWNER_PATTERN.test(owner)) {
     throw new ValidationError('owner must be a valid GitHub username/org (alphanumeric and hyphens, max 39 chars)');
   }
 }
 
-function validateRepo(repo) {
+export function validateRepo(repo) {
   if (typeof repo !== 'string' || !REPO_PATTERN.test(repo) || repo === '.' || repo === '..') {
     throw new ValidationError('repo must be a valid GitHub repository name (alphanumeric, dots, hyphens, underscores, max 100 chars)');
   }
 }
 
-function validateRef(ref) {
+export function validateRef(ref) {
   if (typeof ref !== 'string' || !REF_PATTERN.test(ref) || ref.includes('..') || ref.startsWith('/') || ref.startsWith('-')) {
     throw new ValidationError('ref must be a valid branch name or commit SHA');
   }

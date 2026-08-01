@@ -23,7 +23,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js" integrity="sha512-M7nHCiNUOwFt6Us3r8alutZLm9qMt4s9951uo8jqO4UwJ1hziseL6O3ndFyigx6+LREfZqnhHxYjKRJ8ZQ69DQ==" crossorigin="anonymous"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3-sankey/0.12.3/d3-sankey.min.js" integrity="sha512-KK15oKpabNDaLpWinMtNfTqy/V7pzlc2FRG174PfASes7RRx6TAsua8HJdRTKo8+BLvPBKNIkL7kXWcz5HoqqA==" crossorigin="anonymous"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/acorn/8.11.3/acorn.min.js" integrity="sha512-qsbZzESFnMN1Zz5cujkpYFK7wysw2sDerv2/OUYiMMfEJY6h4h7o8vWytbAnPFUUpLhKfqmF+4BixPBBnbVUyg==" crossorigin="anonymous"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsrsasign/11.1.0/jsrsasign-all-min.js" integrity="sha512-Eu9j+HZBor7muHf6IDWoWZ8FKVr6nKe9eIIVR28NEte4Y4GiYRlke26XGdR/re81XE/FfLoLYYVkvNk5GY9RvQ==" crossorigin="anonymous"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" integrity="sha512-XMVd28F1oH/O71fzwBnV7HucLxVwtxf26XV8P4wPk26EDxuGZ91N8bsOttmnomcCD3CS5ZMRL50H0GgOHvegtg==" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/web-tree-sitter@0.20.8/tree-sitter.js" integrity="sha512-HHbWn9jEdYHHREfFtaPv+eEgSfUSWj/IMe8cOuGAaQNnr9NQiD5ihxOkj1IFu3YGYHB8DHyHfxqxI7kI0b4g5A==" crossorigin="anonymous"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" integrity="sha512-qZvrmS2ekKPF2mSznTQsxqPgnpkI4DNTlrdUmTzrDgektczlKNRRhy5X5AAOnx5S09ydFYWWNSfcEqDTTHgtNA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
@@ -665,6 +664,7 @@ import { buildFunctionRenderModel } from './src/render/functionRenderModel.js';
 import { fetchFunctionGraph, GraphFunctionClientError } from './src/state/graphFunctionClient.js';
 import { AnalysisSession } from './src/state/analysisSession.js';
 import { fetchCapabilities } from './src/state/capabilitiesClient.js';
+import { fetchBlame, fetchFileContentFromServer } from './src/state/githubMetaClient.js';
 Object.assign(window, analyzer, {
   renderRepositoryGraph, renderFileGraph, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute,
   adaptRepositoryAnalysis, repositoryGraphToViewModel, normalizeContext, calcBlastFromGraph,
@@ -1789,10 +1789,6 @@ function App(){
     // drill-down rather than resetting navigation.
     function handleServerTokenRejected(){setServerAuthToken('');setServerTokenRejected(true);}
     function handleChangeServerToken(){setServerAuthToken('');setServerTokenRejected(false);}
-    var _authMethod=useState('none'),authMethod=_authMethod[0],setAuthMethod=_authMethod[1];// 'none', 'pat', 'github_app'
-    var _appId=useState(''),appId=_appId[0],setAppId=_appId[1];
-    var _privateKey=useState(''),privateKey=_privateKey[0],setPrivateKey=_privateKey[1];
-    var _showKeyModal=useState(false),showKeyModal=_showKeyModal[0],setShowKeyModal=_showKeyModal[1];
     var _d=useState(false),loading=_d[0],setLoading=_d[1];
     var _e=useState(''),progress=_e[0],setProgress=_e[1];
     var _f=useState(null),error=_f[0],setError=_f[1];
@@ -2166,19 +2162,16 @@ function App(){
 
         // MOO-72 Commit 1A: repository analysis now runs through the
         // private CodeFlow server, which requires its own AUTH_TOKEN --
-        // gate on that instead of a GitHub credential. The GitHub PAT/App
-        // credential is no longer required to analyze a repository at all;
-        // it remains optional, used only by the still-client-side ownership/
-        // blame and file-preview-fallback features (see analyze()'s own
-        // comment further down).
+        // gate on that instead of a GitHub credential.
+        //
+        // MOO-86: the client-side GitHub PAT/App credential fields were
+        // removed entirely -- ownership/blame and file-preview-fallback now
+        // run server-side too (src/state/githubMetaClient.js), using the
+        // server's own GITHUB_TOKEN, same as this repository request.
         if(!serverAuthToken){
             setError('Enter the CodeFlow server token before analyzing a repository.');return;
         }
-        if(authMethod==='github_app'){
-            if(!appId){setError('Please enter the GitHub App ID');return;}
-            if(!privateKey){setError('Please set the GitHub App private key');return;}
-        }
-        
+
         resetAnalysisState();
         // MOO-72 Commit 1B: the session is created here, before the
         // repository request is even issued -- not after it succeeds. It
@@ -2196,43 +2189,14 @@ function App(){
         zipFileRef.current=null;
         setLoading(true);
         setProgress('Initializing...');
-        
-        // Configure GitHub authentication based on method
-        GitHub.token=null;
-        GitHub.appId=null;
-        GitHub.privateKey=null;
-        GitHub.installationToken=null;
-        
-        if(authMethod==='pat'){
-            GitHub.token=token;
-        }else if(authMethod==='github_app'){
-            GitHub.appId=appId;
-            GitHub.privateKey=privateKey;
-        }
-        
         setRepoInfo(p);
 
-        // Authentication promise - resolve immediately for no auth/PAT, authenticate for GitHub App
-        var authPromise;
-        if(authMethod==='github_app'){
-            setProgress('Authenticating with GitHub App...');
-            authPromise=GitHub.authenticateApp(p.owner,p.repo).catch(function(err){
-                throw new Error('GitHub App authentication failed: '+err.message);
-            });
-        }else{
-            authPromise=Promise.resolve();
-        }
-        
         // MOO-72 Commit 1A: repository analysis now runs server-side via
         // POST /api/graph/repository (the server's own GITHUB_TOKEN, own
         // file-count/size limits, own rate-limit headroom -- none of the
         // client-side revision-resolution/rate-limit-check/scan/per-file-
-        // fetch machinery this replaced applies any more). authPromise is
-        // still awaited first since GitHub App auth configures
-        // GitHub.installationToken, which the *legacy, still-client-side*
-        // ownership/blame and file-preview-fallback features use later in
-        // this session -- unrelated to this fetch, kept only for them.
-        authPromise.then(function(){
+        // fetch machinery this replaced applies any more).
+        Promise.resolve().then(function(){
             setProgress('Analyzing repository...');
             return fetchRepositoryGraph({
                 owner:p.owner,
@@ -2708,25 +2672,32 @@ function App(){
                 setLegendCollapsed(true);
             }
             // MOO-72 Commit 1A: server-sourced repository analysis has a
-            // real GraphIR to compute blast radius from directly (no
-            // GitHub.token needed either way); local/folder/ZIP analysis
-            // never builds one (see resetAnalysisState), so it keeps using
-            // the legacy connections/files-array algorithm. Same numbers
-            // either way -- see tests/blast-radius.test.mjs's parity proof.
+            // real GraphIR to compute blast radius from directly; local/
+            // folder/ZIP analysis never builds one (see resetAnalysisState),
+            // so it keeps using the legacy connections/files-array
+            // algorithm. Same numbers either way -- see
+            // tests/blast-radius.test.mjs's parity proof.
             var blast=repositoryGraph?calcBlastFromGraph(path,repositoryGraph):calcBlast(path,data.connections,data.files);
             setBlastRadius(blast);
             setOwnership(null);
             setExpandedFns(new Set());
             if(repoInfo&&!localSourceKind){
                 setOwnerLoading(true);
-                GitHub.getBlame(repoInfo.owner,repoInfo.repo,path).then(function(owners){setOwnership(owners);setOwnerLoading(false);}).catch(function(){setOwnerLoading(false);});
+                // MOO-86: runs server-side now (the server's own
+                // GITHUB_TOKEN), pinned to the same resolved revision the
+                // analysis actually ran against -- same source/ref choice
+                // openFilePreview's fallback below uses.
+                var blameOwner=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceOwner)||repoInfo.owner;
+                var blameRepo=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceRepo)||repoInfo.repo;
+                var blameRef=repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha;
+                fetchBlame({owner:blameOwner,repo:blameRepo,path:path,ref:blameRef,serverAuthToken:serverAuthToken}).then(function(owners){setOwnership(owners);setOwnerLoading(false);}).catch(function(){setOwnerLoading(false);});
             }else if(localSourceKind){
                 setOwnerLoading(false);
                 setOwnership([]);
             }
             updateGraphHighlight(path,blast);
         }
-    },[data,repositoryGraph,repoInfo,localSourceKind,isMobile]);
+    },[data,repositoryGraph,repoInfo,localSourceKind,isMobile,serverAuthToken]);
     selectFileRef.current=selectFile;
 
     // MOO-69 Commit 4: double-click drill-down. Reads only the already-built
@@ -2880,7 +2851,9 @@ function App(){
             var previewOwner=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceOwner)||repoInfo.owner;
             var previewRepo=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceRepo)||repoInfo.repo;
             var previewRef=repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha;
-            GitHub.getFile(previewOwner,previewRepo,path,previewRef).then(function(content){
+            // MOO-86: runs server-side now (the server's own GITHUB_TOKEN)
+            // instead of the removed client-side GitHub PAT field.
+            fetchFileContentFromServer({owner:previewOwner,repo:previewRepo,path:path,ref:previewRef,serverAuthToken:serverAuthToken}).then(function(content){
                 if(content){
                     setFilePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
                 }else{
@@ -4592,8 +4565,10 @@ function App(){
                 React.createElement('div',{className:'mobile-source-controls'},
                     // MOO-72 Commit 1A: same CodeFlow server token as the
                     // desktop layout above -- required to analyze a
-                    // repository, distinct from the GitHub Token/App inputs
-                    // in the secondary row below.
+                    // repository. MOO-86: this is now the only credential the
+                    // toolbar asks for at all -- the separate GitHub Token/App
+                    // fields were removed once ownership/blame and
+                    // file-preview-fallback moved server-side too.
                     React.createElement('input',{className:'repo-input',type:'password','aria-label':'CodeFlow Server Token',title:'Required to analyze a repository -- not your GitHub token',placeholder:'CodeFlow Server Token',value:serverAuthToken,onChange:function(e){commitServerAuthToken(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();},style:{borderColor:serverTokenRejected?'#f87171':undefined}}),
                     React.createElement('div',{className:'mobile-primary-row'},
                         React.createElement('input',{className:'repo-input','aria-label':'Repository URL',placeholder:'owner/repo or GitHub URL',value:repoUrl,onChange:function(e){setRepoUrl(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();}}),
@@ -4602,21 +4577,6 @@ function App(){
                         )
                     ),
                     React.createElement('div',{className:'mobile-secondary-row'},
-                        React.createElement('select',{className:'auth-select','aria-label':'Authentication Method',value:authMethod,onChange:function(e){setAuthMethod(e.target.value);}},
-                            React.createElement('option',{value:'none'},'No Auth'),
-                            React.createElement('option',{value:'pat'},'Token'),
-                            React.createElement('option',{value:'github_app'},'App')
-                        ),
-                        React.createElement('div',{className:'auth-inputs'},
-                            authMethod==='pat'&&React.createElement('input',{className:'repo-input',type:'password','aria-label':'GitHub Token',placeholder:'Personal Access Token',value:token,onChange:function(e){setToken(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();}}),
-                            authMethod==='github_app'&&React.createElement(React.Fragment,null,
-                                React.createElement('input',{className:'repo-input','aria-label':'App ID',placeholder:'App ID',value:appId,onChange:function(e){setAppId(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();}}),
-                                React.createElement('button',{className:'private-key-btn'+(privateKey?' has-key':''),'aria-label':'Set Private Key',onClick:function(){setShowKeyModal(true);},type:'button'},
-                                    React.createElement(Icon,{name:privateKey?'key':'shield',size:'m'}),
-                                    privateKey?'Key':'Private Key'
-                                )
-                            )
-                        ),
                         React.createElement('button',{className:'top-btn','aria-label':'Edit exclude patterns',onClick:function(){openExcludeModal();},disabled:loading,type:'button',style:customExcludeCount?{borderColor:'var(--acc)',color:'var(--acc)'}:null},
                             React.createElement(Icon,{name:'ban',size:'m'}),
                             'Excludes',
@@ -4648,30 +4608,15 @@ function App(){
             React.createElement('div',{className:'repo-input-group'},
                 // MOO-72 Commit 1A: the CodeFlow server's own AUTH_TOKEN,
                 // required for every /api/graph/* request (repository, file,
-                // and function). Deliberately a distinct field from the
-                // GitHub Token/App inputs below, which authenticate a
-                // *different* thing (this browser's own GitHub access, used
-                // only by the legacy ownership/blame and file-preview
-                // fallback features) -- conflating the two is exactly the
-                // "wrong token in the wrong prompt" confusion this cutover
-                // must not create.
+                // and function). MOO-86: this is now the only credential the
+                // toolbar asks for -- the separate GitHub Token/App inputs
+                // that used to authenticate this browser's own GitHub access
+                // (for the legacy ownership/blame and file-preview-fallback
+                // features) were removed once those features moved
+                // server-side too (src/state/githubMetaClient.js), using
+                // this same server token.
                 React.createElement('input',{className:'repo-input',type:'password','aria-label':'CodeFlow Server Token',title:'Required to analyze a repository -- not your GitHub token',placeholder:'CodeFlow Server Token',value:serverAuthToken,onChange:function(e){commitServerAuthToken(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();},style:{minWidth:140,borderColor:serverTokenRejected?'#f87171':undefined}}),
                 React.createElement('input',{className:'repo-input repo-url-input','aria-label':'Repository URL',placeholder:'owner/repo or GitHub URL',value:repoUrl,onChange:function(e){setRepoUrl(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();}}),
-                React.createElement('select',{className:'auth-select','aria-label':'Authentication Method',value:authMethod,onChange:function(e){setAuthMethod(e.target.value);}},
-                    React.createElement('option',{value:'none'},'No Auth'),
-                    React.createElement('option',{value:'pat'},'Token (PAT)'),
-                    React.createElement('option',{value:'github_app'},'GitHub App')
-                ),
-                React.createElement('div',{className:'auth-inputs'},
-                    authMethod==='pat'&&React.createElement('input',{className:'repo-input',type:'password','aria-label':'GitHub Token',placeholder:'Personal Access Token',value:token,onChange:function(e){setToken(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();},style:{minWidth:140}}),
-                    authMethod==='github_app'&&React.createElement(React.Fragment,null,
-                        React.createElement('input',{className:'repo-input','aria-label':'App ID',placeholder:'App ID',value:appId,onChange:function(e){setAppId(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();},style:{width:80}}),
-                        React.createElement('button',{className:'private-key-btn'+(privateKey?' has-key':''),'aria-label':'Set Private Key',onClick:function(){setShowKeyModal(true);},type:'button'},
-                            React.createElement(Icon,{name:privateKey?'key':'shield',size:'m'}),
-                            privateKey?'Key Set':'Private Key'
-                        )
-                    )
-                ),
                 React.createElement('button',{className:'top-btn','aria-label':'Edit exclude patterns',title:'Edit exclude patterns'+(customExcludeCount>0?' ('+customExcludeCount+')':''),onClick:function(){openExcludeModal();},disabled:loading,style:customExcludeCount?{borderColor:'var(--acc)',color:'var(--acc)'}:null},
                     React.createElement(Icon,{name:'ban',size:'m'}),
                     !data&&'Excludes',
@@ -5607,30 +5552,6 @@ function App(){
                 ),
                 React.createElement('div',{className:'modal-footer'},
                     React.createElement('button',{className:'top-btn primary',onClick:function(){setShowPrivacy(false);}},'Got it!')
-                )
-            )
-        ),
-        showKeyModal&&React.createElement('div',{className:'modal-overlay',onClick:function(){setShowKeyModal(false);}},
-            React.createElement('div',{className:'modal key-modal',onClick:function(e){e.stopPropagation();}},
-                React.createElement('div',{className:'modal-header'},React.createElement('div',{className:'modal-title'},iconLabel('key','GitHub App Private Key','m')),React.createElement('button',{className:'modal-close',onClick:function(){setShowKeyModal(false);}},'×')),
-                React.createElement('div',{className:'modal-body'},
-                    React.createElement('div',{className:'key-info'},
-                        'Paste the private key from your GitHub App. This key is stored only in memory and never leaves your browser.',
-                        React.createElement('br'),React.createElement('br'),
-                        'To get a private key:',React.createElement('br'),
-                        '1. Go to GitHub → Settings → Developer settings → GitHub Apps',React.createElement('br'),
-                        '2. Select your app → Generate a private key',React.createElement('br'),
-                        '3. Open the downloaded ',React.createElement('code',null,'.pem'),' file and paste its contents below'
-                    ),
-                    React.createElement('div',{className:'form-group'},
-                        React.createElement('label',{className:'form-label'},'Private Key (PEM format)'),
-                        React.createElement('textarea',{className:'form-input',placeholder:'-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----',value:privateKey,onChange:function(e){setPrivateKey(e.target.value);},rows:10})
-                    )
-                ),
-                React.createElement('div',{className:'modal-footer'},
-                    privateKey&&React.createElement('button',{className:'top-btn',onClick:function(){setPrivateKey('');},style:{marginRight:'auto'}},'Clear Key'),
-                    React.createElement('button',{className:'top-btn',onClick:function(){setShowKeyModal(false);}},'Cancel'),
-                    React.createElement('button',{className:'top-btn primary',onClick:function(){setShowKeyModal(false);}},'Save')
                 )
             )
         ),

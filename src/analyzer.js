@@ -2513,81 +2513,21 @@ function compileExcludePatterns(input){
 }
 
 var GitHub={
+    // MOO-86: appId/privateKey/installationToken and the GitHub App JWT
+    // auth methods that used them (generateJWT/getRepoInstallation/
+    // getInstallationToken/authenticateApp) were removed along with the
+    // client-side "GitHub App" toolbar option -- ownership/blame and
+    // file-preview-fallback (the only features that ever consumed a
+    // client-side credential) now run server-side with the server's own
+    // GITHUB_TOKEN (src/state/githubMetaClient.js). `token` remains: the
+    // legacy client-side PR-analysis path (analyzePR/analyzePRHead in
+    // index.html) still calls GitHub.getFile/getCommits/resolvePR directly,
+    // now always unauthenticated (GitHub's public rate limit) since there is
+    // no longer any UI to set it.
     token:'',
-    appId:null,
-    privateKey:null,
-    installationToken:null,
-    installationTokenExpiry:null,
     rateLimit:{remaining:60,limit:60,reset:0},
     requestTimeoutMs:15000,
-    
-    // Generate JWT for GitHub App authentication
-    generateJWT:function(){
-        if(!this.appId||!this.privateKey)return null;
-        try{
-            var now=Math.floor(Date.now()/1000);
-            var payload={
-                iat:now-60,// Issued at (60 seconds in past to account for clock drift)
-                exp:now+600,// Expires in 10 minutes (max allowed)
-                iss:this.appId
-            };
-            var header={alg:'RS256',typ:'JWT'};
-            var sHeader=JSON.stringify(header);
-            var sPayload=JSON.stringify(payload);
-            var jwt=KJUR.jws.JWS.sign('RS256',sHeader,sPayload,this.privateKey);
-            return jwt;
-        }catch(e){
-            console.error('JWT generation failed:',e);
-            return null;
-        }
-    },
-    
-    getRepoInstallation:function(owner,repo){
-        var jwt=this.generateJWT();
-        if(!jwt)return Promise.reject(new Error('Failed to generate JWT'));
-        return this.request(buildGitHubApiUrl(['repos',owner,repo,'installation']),{
-            headers:{
-                'Accept':'application/vnd.github.v3+json',
-                'Authorization':'Bearer '+jwt
-            }
-        },{401:'Invalid App credentials',404:'This GitHub App is not installed on the selected repository'});
-    },
-    
-    // Get installation access token
-    getInstallationToken:function(installationId){
-        var self=this;
-        var jwt=this.generateJWT();
-        if(!jwt)return Promise.reject(new Error('Failed to generate JWT'));
-        return this.request(buildGitHubApiUrl(['app','installations',String(installationId),'access_tokens']),{
-            method:'POST',
-            headers:{
-                'Accept':'application/vnd.github.v3+json',
-                'Authorization':'Bearer '+jwt
-            }
-        },{401:'Invalid App credentials',404:'Installation not found'}).then(function(data){
-            self.installationToken=data.token;
-            self.installationTokenExpiry=new Date(data.expires_at).getTime();
-            self.token=data.token;// Use installation token for API calls
-            return data.token;
-        });
-    },
-    
-    // Authenticate with GitHub App for a specific repo
-    authenticateApp:function(owner,repo){
-        var self=this;
-        // Check if we have a valid installation token
-        if(this.installationToken&&this.installationTokenExpiry&&Date.now()<this.installationTokenExpiry-60000){
-            this.token=this.installationToken;
-            return Promise.resolve(this.installationToken);
-        }
-        return this.getRepoInstallation(owner,repo).then(function(installation){
-            if(!installation||!installation.id){
-                throw new Error('No installation found for this repository');
-            }
-            return self.getInstallationToken(installation.id);
-        });
-    },
-    
+
     request:function(url,options,errorMap){
         var self=this;
         var h=Object.assign({'Accept':'application/vnd.github.v3+json'},options&&options.headers?options.headers:{});
@@ -2686,13 +2626,6 @@ var GitHub={
     getCommits:function(o,r,path,limit){
         if(this.rateLimit.remaining<20&&!this.token)return Promise.resolve([]);// Skip when rate limited
         return this.fetch(buildRepoApiUrl(o,r,['commits'],{per_page:limit||30,path:path||undefined})).catch(function(){return[];});
-    },
-    getBlame:function(o,r,path){
-        return this.getCommits(o,r,path,50).then(function(commits){
-            var authors={};
-            commits.forEach(function(c){var name=c.commit.author.name;authors[name]=(authors[name]||0)+1;});
-            return Object.entries(authors).map(function(e){return{name:e[0],commits:e[1],percent:Math.round(e[1]/commits.length*100)};}).sort(function(a,b){return b.commits-a.commits;});
-        }).catch(function(){return[];});
     },
     getPR:function(o,r,prNum){
         var self=this;

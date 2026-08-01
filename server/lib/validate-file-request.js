@@ -11,7 +11,10 @@ const DEPTH_MODES = new Set(['modules', 'symbols', 'methods', 'full']);
 const SHA_PATTERN = /^[0-9a-f]{7,40}$/i;
 const OWNER_REPO_PATTERN = /^[A-Za-z0-9._-]+$/;
 
-function validatePath(path) {
+// Exported for server/lib/validate-github-meta-request.js (MOO-86) -- the
+// blame/file-content endpoints need the same path normalization/traversal
+// checks without duplicating them.
+export function validatePath(path) {
   if (typeof path !== 'string' || path.length === 0) {
     throw new ValidationError('path is required and must be a non-empty string');
   }
