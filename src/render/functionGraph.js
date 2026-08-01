@@ -56,7 +56,7 @@ const MAX_LABEL = 20;
 // the shape's own point. MAX_CHARS_PER_LINE tracks MAX_LABEL (the width both
 // were tuned against is the same NODE_W), and LINE_H is small enough that a
 // wrapped two-line box (NODE_H + LINE_H) still fits inside RANK_HEIGHT's
-// (functionRenderModel.js) existing 60px-26px = 34px of slack per rank.
+// (functionRenderModel.js) existing 60px-34px = 26px of slack per rank.
 const MAX_CHARS_PER_LINE = 18;
 const LINE_H = 12;
 const WORD_BREAK_PATTERN = /[\s_.\-(),:]/;
