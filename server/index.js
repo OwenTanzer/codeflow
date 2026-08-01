@@ -27,6 +27,7 @@ import { createAnalyzeRepoHandler } from './routes/analyze-repo.js';
 import { createGraphRepositoryHandler } from './routes/graph-repository.js';
 import { createGraphFileHandler } from './routes/graph-file.js';
 import { createGraphFunctionHandler } from './routes/graph-function.js';
+import { createGithubBlameHandler, createGithubFileContentHandler } from './routes/github-meta.js';
 import { PYTHON_TREE_SITTER_CAPABLE } from './lib/github-analyzer-bridge.js';
 import { makeStatus, refreshDependencyStatuses } from './lib/dependency-status.js';
 import { initPythonLanguageService } from '@codevisualizer/core';
@@ -318,6 +319,12 @@ async function main() {
     metrics,
     concurrencyLimiter,
   });
+  // MOO-86: server-side replacements for the legacy client-side blame/
+  // file-preview-fallback features -- see routes/github-meta.js's own
+  // header comment for why these are deliberately lighter-weight than the
+  // three graph handlers above (no cache/concurrency-limiter/metrics).
+  const handleGithubBlame = createGithubBlameHandler({ config });
+  const handleGithubFileContent = createGithubFileContentHandler({ config });
 
   const server = createServer(async (req, res) => {
     const requestId = generateRequestId();
@@ -367,6 +374,10 @@ async function main() {
         } else {
           await handleGraphFunction(req, res, requestId);
         }
+      } else if (url.pathname === '/api/github/blame' && req.method === 'POST') {
+        await handleGithubBlame(req, res, requestId);
+      } else if (url.pathname === '/api/github/file-content' && req.method === 'POST') {
+        await handleGithubFileContent(req, res, requestId);
       } else if (isApiRoute) {
         sendJson(res, 404, { error: 'Not found' });
       } else {
