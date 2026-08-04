@@ -210,7 +210,7 @@ export function createReadinessHandler({
     }
 
     // MOO-72 Commit 5: all three layers' GitHub-backed analysis depends on
-    // this, but the app shell itself (static serving, auth, health) does
+    // this, but the app shell itself (static serving and health) does
     // not -- same non-gating rationale as pyan3/codeVisualizer, extended
     // to credential/reachability rather than a local binary/build.
     if (typeof getGithubReachableStatus === 'function') {

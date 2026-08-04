@@ -1,7 +1,7 @@
 // Client-side fetch wrapper for POST /api/graph/repository — MOO-72 Commit 1A.
 //
 // Mirrors src/state/graphFileClient.js/graphFunctionClient.js: same shared
-// authenticated request helper (src/state/serverRequest.js), same error
+// public-API request helper (src/state/serverRequest.js), same error
 // shape. This is the repository layer's first real integration with the
 // server's own /api/graph/repository route -- previously the repository
 // layer ran entirely client-side against GitHub directly (index.html's

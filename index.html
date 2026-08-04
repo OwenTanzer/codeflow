@@ -1476,7 +1476,7 @@ function FunctionLayerPanel(props){
         // MOO-71 Commit 8: restore from cache before considering a fetch, so
         // navigating back to a function already viewed is instant and cannot
         // re-run analysis at a different revision. Also means back/forward
-        // works without a server token still being held.
+        // avoids another network request when navigating back/forward.
         var cached=readCachedGraph(navPanel.graphCacheKey);
         if(cached){
             setFunctionGraph(cached);
@@ -1710,9 +1710,8 @@ function App(){
     var graphCacheRef=useRef(null);
     if(!graphCacheRef.current)graphCacheRef.current=new Map();
     // MOO-72 Commit 8: release/commit-provenance display. /healthz is
-    // public/unauthenticated (unlike /api/capabilities), so this needs no
-    // server token and can run once on mount regardless of whether the user
-    // has entered one yet.
+    // public, like the rest of the CodeFlow API, so this can run once on
+    // mount with no client credential state.
     var _bi=useState(null),buildInfo=_bi[0],setBuildInfo=_bi[1];
     useEffect(function(){
         fetch('/healthz').then(function(res){return res.json();}).then(setBuildInfo).catch(function(){});

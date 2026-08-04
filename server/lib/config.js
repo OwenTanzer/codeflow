@@ -59,9 +59,9 @@ export function loadConfig({ repoRoot, env = process.env }) {
   // MOO-67 Commit 6 introduced a private-use auth gate (AUTH_TOKEN, later
   // renamed APP_PASSWORD in MOO-86); removed entirely in the follow-up
   // that made this app fully public with no client-facing credential of
-  // any kind -- access control now lives at the moopertonic.net landing
-  // page, not here. Only the server-held GitHub credential + repository
-  // allowlist remain required.
+  // any kind. The service is public; the moopertonic.net landing page is
+  // navigation/discovery, not an access-control boundary. Only the
+  // server-held GitHub credential + repository allowlist remain required.
   const githubToken = env.GITHUB_TOKEN || '';
   if (!githubToken) {
     errors.push('GITHUB_TOKEN is required — a GitHub personal access token the server uses to fetch repository content.');
@@ -101,7 +101,7 @@ export function loadConfig({ repoRoot, env = process.env }) {
   // the GitHub-backed path fetches every accepted blob into memory and
   // holds it resident before analysis. That mattered less while
   // repositories were tightly allowlisted; the wildcard follow-up means
-  // any authenticated caller can point the server at any public repo, and
+  // any caller can point the server at any public repo, and
   // a repo with a few hundred enormous blobs could exhaust memory despite
   // staying under MAX_REPO_FILES. GitHub's tree API already reports each
   // blob's size, so oversized files are rejected before content is ever

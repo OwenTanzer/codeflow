@@ -2,8 +2,8 @@
 //
 // Mirrors src/state/graphFileClient.js deliberately: same revision-pinning
 // convention, same PR-mode drift rejection, same error shape. Both now go
-// through src/state/serverRequest.js's shared authenticated helper, so
-// `Authorization` is constructed in exactly one place.
+// through src/state/serverRequest.js's shared public-API helper, so
+// transport and response mapping stay centralized.
 //
 // Two real differences from the file client, both dictated by
 // server/lib/validate-function-request.js:

@@ -16,6 +16,7 @@ import { log, configureLogger, generateRequestId } from './lib/logger.js';
 import { WorkspaceManager } from './lib/workspace.js';
 import { createStaticHandler } from './lib/static.js';
 import { createHealthHandler, createReadinessHandler, readBuildInfo } from './lib/health.js';
+import { clientKey } from './lib/client-ip.js';
 import { RateLimiter } from './lib/rate-limit.js';
 import { GraphCache } from './lib/graph-cache.js';
 import { Metrics } from './lib/metrics.js';
@@ -37,17 +38,6 @@ const repoRoot = join(__dirname, '..');
 function sendJson(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(body));
-}
-
-function clientKey(req) {
-  // Railway (and most PaaS) sit behind a proxy — X-Forwarded-For's first
-  // entry is the original client. Falls back to the raw socket address
-  // for local/direct connections.
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string' && forwarded.length > 0) {
-    return forwarded.split(',')[0].trim();
-  }
-  return req.socket.remoteAddress || 'unknown';
 }
 
 /**
@@ -150,8 +140,8 @@ async function main() {
   //
   // MOO-72 Commit 5: pyan3Status/pythonRuntimeStatus/githubReachableStatus
   // are the normalized {ok,detail,version,checkedAt} shape (dependency-status.js)
-  // instead of bare booleans, so /readyz can report real detail to an
-  // authenticated caller. All three are produced by one
+  // instead of bare booleans, so /readyz can report real detail. All three
+  // are produced by one
   // refreshDependencyStatuses() call, reused verbatim by the periodic
   // refresh below -- no separate/duplicated startup-only check logic.
   let { pyan3Status, pythonRuntimeStatus, githubReachableStatus } = await refreshDependencyStatuses({

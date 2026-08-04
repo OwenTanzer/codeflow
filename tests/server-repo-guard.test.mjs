@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { isRepoAllowed } from '../server/lib/allowlist.js';
+import { clientKey } from '../server/lib/client-ip.js';
 import { RateLimiter } from '../server/lib/rate-limit.js';
 import { validateRepoRequest, ValidationError } from '../server/lib/validate-repo-request.js';
 
@@ -47,6 +48,30 @@ test('RateLimiter tracks separate keys independently', () => {
   assert.equal(limiter.check('client-b').allowed, true);
   assert.equal(limiter.check('client-a').allowed, false);
   assert.equal(limiter.check('client-b').allowed, false);
+});
+
+test('clientKey uses Railway\'s trusted X-Real-IP value', () => {
+  const req = {
+    headers: { 'x-real-ip': '203.0.113.7' },
+    socket: { remoteAddress: '100.64.0.2' },
+  };
+  assert.equal(clientKey(req), '203.0.113.7');
+});
+
+test('clientKey ignores caller-controlled X-Forwarded-For', () => {
+  const req = {
+    headers: { 'x-forwarded-for': '198.51.100.1, 198.51.100.2' },
+    socket: { remoteAddress: '100.64.0.2' },
+  };
+  assert.equal(clientKey(req), '100.64.0.2');
+});
+
+test('clientKey ignores malformed X-Real-IP values instead of creating arbitrary limiter keys', () => {
+  const req = {
+    headers: { 'x-real-ip': 'not-an-ip', 'x-forwarded-for': '198.51.100.1' },
+    socket: { remoteAddress: '::1' },
+  };
+  assert.equal(clientKey(req), '::1');
 });
 
 // MOO-72 Commit 4 PR review: the server's own rate-limit 429 previously

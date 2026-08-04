@@ -57,6 +57,13 @@ await page.goto(url, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(2000);
 
 // --- repository layer -------------------------------------------------------
+await step('app-auth controls are absent', async () => {
+  const tokenInputs = await page.locator('input[aria-label="CodeFlow Server Token"], input[aria-label="App Password"]').count();
+  if (tokenInputs !== 0) throw new Error(`expected no app-auth input, found ${tokenInputs}`);
+  const tokenErrors = await page.getByText('Enter the CodeFlow server token before analyzing a repository.').count();
+  if (tokenErrors !== 0) throw new Error('legacy server-token error is still rendered');
+});
+
 await step('enter the repository URL', async () => {
   await page.locator('input[aria-label="Repository URL"]:visible').first().fill(REPO);
 });

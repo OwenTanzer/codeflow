@@ -28,9 +28,10 @@ build) falls back to `"unknown"` rather than failing startup.
 `GITHUB_TOKEN` and at least one of `ALLOWED_OWNERS`/`ALLOWED_REPOS` are
 required at startup with no bypass. The app's own client-facing auth gate
 (`APP_PASSWORD`, briefly a renamed `AUTH_TOKEN` before that) was removed
-entirely — access control now lives at the moopertonic.net landing page,
-not in this server. See `server/lib/config.js` for the full set of
-environment variables and their defaults.
+entirely. The service is public; the moopertonic.net landing page provides
+navigation/discovery, not an access-control boundary. See
+`server/lib/config.js` for the full set of environment variables and their
+defaults.
 
 ## Feature flags (MOO-72 Commit 8)
 
@@ -46,9 +47,9 @@ behavior does not change unless an operator explicitly sets one of these:
 
 Each is validated strictly (`"true"`/`"false"` only — a typo like `fasle`
 fails startup, not silently keeps the default) and surfaced two ways:
-- `GET /api/capabilities` (authenticated): the client-facing contract the
+- `GET /api/capabilities` (public): the client-facing contract the
   UI reads at startup to hide/disable the corresponding affordance.
-- `GET /readyz`'s authenticated detail (`checks.featureFlags.detail`): for
+- `GET /readyz`'s public detail (`checks.featureFlags.detail`): for
   an operator checking current state directly.
 
 ## Resource limits and concurrency
@@ -261,9 +262,9 @@ All already implemented (MOO-67/72 Commits 3-6), reconfirmed here rather
 than rebuilt. The app's own client-facing auth gate that once lived here
 too (`APP_PASSWORD`, a `server/lib/auth.js` shared-secret check applied to
 every `/api/*` route, renamed from `AUTH_TOKEN` in MOO-86) was **removed
-entirely** in a later change — access control now lives at the
-moopertonic.net landing page, not in this server. Every `/api/*` route is
-unauthenticated.
+entirely** in a later change. Every `/api/*` route is public and
+unauthenticated; the moopertonic.net landing page is not an access-control
+boundary.
 
 - **Allowlist**: `ALLOWED_OWNERS`/`ALLOWED_REPOS` (`server/lib/allowlist.js`),
   at least one required at startup. **The deployed instance currently runs
@@ -325,8 +326,9 @@ was never itself a *release* rollback path, only a domain-level fallback.
 
 ### Cutover baseline (historical — what actually shipped at go-live)
 
-Live-verified this session via a real authenticated `GET /healthz` against
-the production URL, returning this exact `commitSha`:
+Live-verified this session via a real `GET /healthz` against the production
+URL, returning this exact `commitSha` (the auth gate still existed for API
+routes at that historical cutover, but `/healthz` itself was public):
 
 - **Date**: 2026-07-30
 - **Deployment ID**: `9bbc1c73-2cfe-49f8-a273-e0ef7dde238c` (the

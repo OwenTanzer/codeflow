@@ -1,6 +1,6 @@
 // Client-side fetch wrapper for POST /api/graph/file — MOO-70 Commit 8.
 //
-// The first client integration with the private server's /api/* routes:
+// The first client integration with the server's /api/* routes:
 // repository-layer analysis at the time ran entirely client-side against
 // GitHub directly (index.html's finishAnalysis(), using a user-entered
 // GitHub PAT), with zero existing fetch plumbing for the server's own
@@ -36,8 +36,8 @@
 
 // MOO-71 Commit 7: header construction and response mapping moved to
 // src/state/serverRequest.js so this client and the new function-layer one
-// share a single authenticated request helper rather than each building
-// `Authorization` itself. This module's own public surface
+// share a single request helper rather than each building transport
+// details itself. This module's own public surface
 // (buildGraphFileRequest/mapGraphFileResponse/fetchFileGraph/
 // GraphFileClientError) is unchanged -- tests/graph-file-client.test.mjs
 // passes unmodified, which is the proof the refactor is behavior-preserving.

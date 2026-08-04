@@ -1,7 +1,7 @@
 // Shared server-request plumbing — MOO-71 Commit 7.
 //
 // Extracted from src/state/graphFileClient.js (MOO-70 Commit 8), which was
-// the only caller of the private server's /api/* routes. Commit 7 adds a
+// the only caller of the server's /api/* routes. Commit 7 adds a
 // second caller (src/state/graphFunctionClient.js), and both panels go
 // through one request helper rather than independently constructing
 // requests — one chokepoint for transport/error-mapping concerns instead of
@@ -12,9 +12,9 @@
 
 /**
  * Base class for the per-endpoint client errors. Carries the fields every
- * caller needs to distinguish a rejected password (401) from an unsupported
- * input (403/422) from a genuine server failure, without each endpoint
- * client re-deriving them from the response body.
+ * caller needs to distinguish unsupported input (403/422), upstream/proxy
+ * authorization failures (401), and genuine server failures without each
+ * endpoint client re-deriving them from the response body.
  */
 export class ServerRequestError extends Error {
   constructor(message, { status, category, diagnostics, retryable, retryAfterMs } = {}) {
@@ -31,9 +31,10 @@ export class ServerRequestError extends Error {
 }
 
 /**
- * The single place `Authorization: Bearer` is constructed. Endpoint clients
- * shape their own request body (which fields an endpoint takes is their
- * business) and hand it here for transport concerns.
+ * The single place shared JSON request headers are constructed. Endpoint
+ * clients shape their own request body (which fields an endpoint takes is
+ * their business) and hand it here for transport concerns. Deliberately
+ * emits no authorization header: CodeFlow's API is public.
  *
  * Keys whose value is `undefined` are dropped by JSON.stringify, which is
  * how endpoint clients omit optional fields — preserved from
