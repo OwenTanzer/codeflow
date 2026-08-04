@@ -1,31 +1,14 @@
-// Unit tests for server/lib/auth.js, allowlist.js, rate-limit.js, and
-// validate-repo-request.js (MOO-67 Commit 6).
+// Unit tests for allowlist.js, rate-limit.js, and validate-repo-request.js
+// (MOO-67 Commit 6). auth.js's own tests lived here too until the auth gate
+// was removed entirely; this file was renamed from server-auth.test.mjs
+// accordingly.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { isAuthorized, extractBearerToken } from '../server/lib/auth.js';
 import { isRepoAllowed } from '../server/lib/allowlist.js';
+import { clientKey } from '../server/lib/client-ip.js';
 import { RateLimiter } from '../server/lib/rate-limit.js';
 import { validateRepoRequest, ValidationError } from '../server/lib/validate-repo-request.js';
-
-test('extractBearerToken reads a well-formed Authorization header', () => {
-  const req = { headers: { authorization: 'Bearer abc123' } };
-  assert.equal(extractBearerToken(req), 'abc123');
-});
-
-test('extractBearerToken returns null when the header is missing or malformed', () => {
-  assert.equal(extractBearerToken({ headers: {} }), null);
-  assert.equal(extractBearerToken({ headers: { authorization: 'Basic abc123' } }), null);
-  assert.equal(extractBearerToken({ headers: { authorization: '' } }), null);
-});
-
-test('isAuthorized accepts the exact configured password and rejects anything else', () => {
-  const config = { appPassword: 'correct-token' };
-  assert.equal(isAuthorized({ headers: { authorization: 'Bearer correct-token' } }, config), true);
-  assert.equal(isAuthorized({ headers: { authorization: 'Bearer wrong-token' } }, config), false);
-  assert.equal(isAuthorized({ headers: {} }, config), false);
-  assert.equal(isAuthorized({ headers: { authorization: 'Bearer correct-tokenX' } }, config), false);
-});
 
 test('isRepoAllowed matches an explicit owner/repo entry', () => {
   const config = { allowedRepos: ['octocat/hello-world'], allowedOwners: [] };
@@ -65,6 +48,30 @@ test('RateLimiter tracks separate keys independently', () => {
   assert.equal(limiter.check('client-b').allowed, true);
   assert.equal(limiter.check('client-a').allowed, false);
   assert.equal(limiter.check('client-b').allowed, false);
+});
+
+test('clientKey uses Railway\'s trusted X-Real-IP value', () => {
+  const req = {
+    headers: { 'x-real-ip': '203.0.113.7' },
+    socket: { remoteAddress: '100.64.0.2' },
+  };
+  assert.equal(clientKey(req), '203.0.113.7');
+});
+
+test('clientKey ignores caller-controlled X-Forwarded-For', () => {
+  const req = {
+    headers: { 'x-forwarded-for': '198.51.100.1, 198.51.100.2' },
+    socket: { remoteAddress: '100.64.0.2' },
+  };
+  assert.equal(clientKey(req), '100.64.0.2');
+});
+
+test('clientKey ignores malformed X-Real-IP values instead of creating arbitrary limiter keys', () => {
+  const req = {
+    headers: { 'x-real-ip': 'not-an-ip', 'x-forwarded-for': '198.51.100.1' },
+    socket: { remoteAddress: '::1' },
+  };
+  assert.equal(clientKey(req), '::1');
 });
 
 // MOO-72 Commit 4 PR review: the server's own rate-limit 429 previously

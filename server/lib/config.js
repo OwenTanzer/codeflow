@@ -56,21 +56,12 @@ export function loadConfig({ repoRoot, env = process.env }) {
 
   const nodeEnv = env.NODE_ENV || 'development';
 
-  // MOO-67 Commit 6: private-use auth gate + server-held GitHub credential
-  // + repository allowlist. All required, always -- no environment-based
-  // bypass, so a missing NODE_ENV=production can't silently ship an
-  // unprotected instance. Set these explicitly for local development too.
-  //
-  // MOO-86: previously AUTH_TOKEN, a 32-byte secret the operator had to
-  // generate themselves (node -e "console.log(require('crypto')...)").
-  // Same bearer-token mechanism, but the operator now just picks a
-  // memorable password directly -- no generation step, no separate
-  // client-side GitHub credential (that half was removed in PR #20).
-  const appPassword = env.APP_PASSWORD || '';
-  if (!appPassword) {
-    errors.push('APP_PASSWORD is required — this is the password private clients must send as `Authorization: Bearer <password>`.');
-  }
-
+  // MOO-67 Commit 6 introduced a private-use auth gate (AUTH_TOKEN, later
+  // renamed APP_PASSWORD in MOO-86); removed entirely in the follow-up
+  // that made this app fully public with no client-facing credential of
+  // any kind. The service is public; the moopertonic.net landing page is
+  // navigation/discovery, not an access-control boundary. Only the
+  // server-held GitHub credential + repository allowlist remain required.
   const githubToken = env.GITHUB_TOKEN || '';
   if (!githubToken) {
     errors.push('GITHUB_TOKEN is required — a GitHub personal access token the server uses to fetch repository content.');
@@ -110,7 +101,7 @@ export function loadConfig({ repoRoot, env = process.env }) {
   // the GitHub-backed path fetches every accepted blob into memory and
   // holds it resident before analysis. That mattered less while
   // repositories were tightly allowlisted; the wildcard follow-up means
-  // any authenticated caller can point the server at any public repo, and
+  // any caller can point the server at any public repo, and
   // a repo with a few hundred enormous blobs could exhaust memory despite
   // staying under MAX_REPO_FILES. GitHub's tree API already reports each
   // blob's size, so oversized files are rejected before content is ever
@@ -265,7 +256,6 @@ export function loadConfig({ repoRoot, env = process.env }) {
     distDir,
     workspaceRoot,
     nodeEnv,
-    appPassword,
     githubToken,
     allowedRepos,
     allowedOwners,

@@ -20,7 +20,6 @@
 import { access, constants } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isAuthorized } from './auth.js';
 
 function sendJson(res, status, body) {
   const payload = JSON.stringify(body);
@@ -111,13 +110,11 @@ function checkCacheStorage(healthCheckCache, cacheEnabled) {
 }
 
 /**
- * Attach detail/version/checkedAt only when the request is authenticated --
- * MOO-72 Commit 5's "expose readiness details only to authenticated/admin
- * views where sensitive" requirement. `base` always carries ok/gatesReadiness
- * (or applicable), which are never sensitive on their own.
+ * Merge in a check's extra detail fields (detail/version/checkedAt) --
+ * /readyz has no auth tier to gate this behind (the app has no auth
+ * concept at all), so every caller sees the same full detail.
  */
-function withDetail(base, extra, authorized) {
-  if (!authorized) return base;
+function withDetail(base, extra) {
   return { ...base, ...extra };
 }
 
@@ -141,27 +138,25 @@ export function createReadinessHandler({
   pythonTreeSitterCapable,
 }) {
   return async function handleReadiness(req, res) {
-    const authorized = isAuthorized(req, config);
     const checks = {};
 
     checks.buildOutput = await access(join(config.distDir, 'index.html'), constants.F_OK)
       .then(() => ({ ok: true, gatesReadiness: true }))
-      .catch((err) => withDetail({ ok: false, gatesReadiness: true }, { detail: err.code || err.message }, authorized));
+      .catch((err) => withDetail({ ok: false, gatesReadiness: true }, { detail: err.code || err.message }));
 
     checks.workspaceRoot = await access(config.workspaceRoot, constants.W_OK)
       .then(() => ({ ok: true, gatesReadiness: true }))
-      .catch((err) => withDetail({ ok: false, gatesReadiness: true }, { detail: err.code || err.message }, authorized));
+      .catch((err) => withDetail({ ok: false, gatesReadiness: true }, { detail: err.code || err.message }));
 
     if (healthCheckCache) {
       const { ok, detail } = checkCacheStorage(healthCheckCache, config.cacheEnabled);
-      checks.cacheStorage = withDetail({ ok, gatesReadiness: true }, { detail }, authorized);
+      checks.cacheStorage = withDetail({ ok, gatesReadiness: true }, { detail });
     }
 
     const nodeOk = isSupportedNodeVersion(process.version);
     checks.nodeRuntime = withDetail(
       { ok: nodeOk, gatesReadiness: true },
-      { version: process.version, detail: nodeOk ? null : `Node ${process.version} is outside the range declared in package.json's engines.node` },
-      authorized
+      { version: process.version, detail: nodeOk ? null : `Node ${process.version} is outside the range declared in package.json's engines.node` }
     );
 
     // MOO-70 Commit 9 (PR review): pyan3 unavailability is surfaced here
@@ -173,7 +168,7 @@ export function createReadinessHandler({
     // unrelated functionality out of rotation for no reason.
     if (typeof getPyan3Status === 'function') {
       const status = getPyan3Status();
-      checks.pyan3 = withDetail({ ok: status.ok, gatesReadiness: false }, { version: status.version, detail: status.detail, checkedAt: status.checkedAt }, authorized);
+      checks.pyan3 = withDetail({ ok: status.ok, gatesReadiness: false }, { version: status.version, detail: status.detail, checkedAt: status.checkedAt });
     }
 
     // MOO-72 Commit 5: separate from pyan3 -- reports the configured
@@ -182,7 +177,7 @@ export function createReadinessHandler({
     // "Python works, pyan3 specifically doesn't".
     if (typeof getPythonRuntimeStatus === 'function') {
       const status = getPythonRuntimeStatus();
-      checks.pythonRuntime = withDetail({ ok: status.ok, gatesReadiness: false }, { version: status.version, detail: status.detail, checkedAt: status.checkedAt }, authorized);
+      checks.pythonRuntime = withDetail({ ok: status.ok, gatesReadiness: false }, { version: status.version, detail: status.detail, checkedAt: status.checkedAt });
     }
 
     // MOO-71 Commit 5: same non-gating rationale as pyan3 above -- the
@@ -195,7 +190,7 @@ export function createReadinessHandler({
     // re-verification.
     if (typeof getCodeVisualizerStatus === 'function') {
       const status = getCodeVisualizerStatus();
-      checks.codeVisualizer = withDetail({ ok: status.ok, gatesReadiness: false }, { version: status.version, detail: status.detail, checkedAt: status.checkedAt }, authorized);
+      checks.codeVisualizer = withDetail({ ok: status.ok, gatesReadiness: false }, { version: status.version, detail: status.detail, checkedAt: status.checkedAt });
     }
 
     // MOO-72 Commit 5: a second, independent tree-sitter grammar
@@ -210,18 +205,17 @@ export function createReadinessHandler({
     if (typeof pythonTreeSitterCapable === 'boolean') {
       checks.pythonTreeSitter = withDetail(
         { ok: pythonTreeSitterCapable, gatesReadiness: false },
-        { detail: pythonTreeSitterCapable ? null : 'Python tree-sitter grammar unavailable -- repository analysis falls back to the heuristic (non-AST) call-detection path' },
-        authorized
+        { detail: pythonTreeSitterCapable ? null : 'Python tree-sitter grammar unavailable -- repository analysis falls back to the heuristic (non-AST) call-detection path' }
       );
     }
 
     // MOO-72 Commit 5: all three layers' GitHub-backed analysis depends on
-    // this, but the app shell itself (static serving, auth, health) does
+    // this, but the app shell itself (static serving and health) does
     // not -- same non-gating rationale as pyan3/codeVisualizer, extended
     // to credential/reachability rather than a local binary/build.
     if (typeof getGithubReachableStatus === 'function') {
       const status = getGithubReachableStatus();
-      checks.githubReachable = withDetail({ ok: status.ok, gatesReadiness: false }, { detail: status.detail, checkedAt: status.checkedAt }, authorized);
+      checks.githubReachable = withDetail({ ok: status.ok, gatesReadiness: false }, { detail: status.detail, checkedAt: status.checkedAt });
     }
 
     // MOO-72 Commit 5: explicit, documented non-check -- pyan3 emits DOT
@@ -231,8 +225,7 @@ export function createReadinessHandler({
     // as though it passed one.
     checks.graphvizDot = withDetail(
       { applicable: false, gatesReadiness: false },
-      { detail: 'not applicable -- pyan3 emits DOT text directly, parsed via the ts-graphviz JS library; no external graphviz/dot binary is invoked' },
-      authorized
+      { detail: 'not applicable -- pyan3 emits DOT text directly, parsed via the ts-graphviz JS library; no external graphviz/dot binary is invoked' }
     );
 
     // MOO-72 Commit 8: operational visibility into the feature flags,
@@ -248,8 +241,7 @@ export function createReadinessHandler({
           degradedAnalysisEnabled: config.degradedAnalysisEnabled,
           experimentalInteractionsEnabled: config.experimentalInteractionsEnabled,
         },
-      },
-      authorized
+      }
     );
 
     const ready = Object.values(checks).every((check) => !check.gatesReadiness || check.ok);

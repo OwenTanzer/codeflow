@@ -5,8 +5,10 @@
 // dist/ already built). Spawns the real server process (not a mock) on an
 // isolated port + workspace root, and exercises exactly what Commits 5-6's
 // checklists check: static serving, health/readiness, the local-path and
-// GitHub-backed analyze endpoints, auth rejection, allowlist rejection,
-// input validation, rate limiting, and workspace cleanup.
+// GitHub-backed analyze endpoints, allowlist rejection, input validation,
+// rate limiting, and workspace cleanup. The app-level auth gate this test
+// once also covered (Commit 6) was removed entirely in a later change —
+// every /api/* route is now unauthenticated.
 //
 // Requires a real GitHub credential to verify the GitHub-backed path
 // end-to-end (not just "didn't crash with a fake token" — GitHub 401s an
@@ -29,7 +31,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
 const port = 3999;
 const baseUrl = `http://localhost:${port}`;
-const APP_PASSWORD = 'smoke-test-secret';
 
 function assert(condition, message) {
   if (!condition) throw new Error('Assertion failed: ' + message);
@@ -60,10 +61,6 @@ async function waitForReady(timeoutMs) {
   throw new Error('server did not become ready in time');
 }
 
-function authed(headers = {}) {
-  return { Authorization: `Bearer ${APP_PASSWORD}`, ...headers };
-}
-
 let githubToken = process.env.GITHUB_TOKEN;
 if (!githubToken) {
   try {
@@ -84,17 +81,16 @@ const child = spawn(process.execPath, [join(repoRoot, 'server', 'index.js')], {
     ...process.env,
     PORT: String(port),
     WORKSPACE_ROOT: workspaceRoot,
-    APP_PASSWORD,
     GITHUB_TOKEN: githubToken,
     ALLOWED_OWNERS: 'octocat',
     // The rate limiter is keyed per client IP, shared across every request
     // this whole test makes (they all originate from localhost) -- high
     // enough that the budget-consuming functional requests above (every
-    // authenticated request counts against the budget regardless of its
-    // eventual status code, including the /api/graph/repository steps MOO-69
-    // Commit 2 added) don't trip it prematurely, low enough that the
-    // dedicated rate-limit test (which fires well past the remainder) still
-    // exceeds it quickly. 14 authenticated requests happen before the
+    // request counts against the budget regardless of its eventual status
+    // code, including the /api/graph/repository steps MOO-69 Commit 2
+    // added) don't trip it prematurely, low enough that the dedicated
+    // rate-limit test (which fires well past the remainder) still
+    // exceeds it quickly. 14 requests happen before the
     // dedicated rate-limit test (10 pre-existing + 4 for the MOO-69
     // Commit 2 /api/graph/repository steps); a budget of 18 leaves that
     // test comfortable margin to trip 429 partway through its own 12-request
@@ -125,7 +121,7 @@ try {
     assert(typeof json.nodeVersion === 'string', 'expected nodeVersion');
   });
 
-  await step('/readyz reports ready with passing checks (no auth required)', async () => {
+  await step('/readyz reports ready with passing checks and full detail (no auth exists)', async () => {
     const res = await fetch(baseUrl + '/readyz');
     assert(res.status === 200, `expected 200, got ${res.status}`);
     const json = await res.json();
@@ -141,42 +137,15 @@ try {
     assert(json.checks.pythonRuntime.ok === true, 'expected the real Python interpreter to be available');
     assert(json.checks.githubReachable.ok === true, 'expected the real GitHub token to be valid and reachable');
     assert(json.checks.graphvizDot.applicable === false, 'graphvizDot must read as not-applicable, not a passed check');
-    // MOO-72 Commit 5: unauthenticated response must not leak detail/version.
-    assert(json.checks.pyan3.detail === undefined, 'unauthenticated /readyz must not expose detail');
-    assert(json.checks.pyan3.version === undefined, 'unauthenticated /readyz must not expose version');
-    assert(json.checks.nodeRuntime.version === undefined, 'unauthenticated /readyz must not expose version');
+    // /readyz has no auth tier to gate detail behind anymore -- always full detail.
+    assert(typeof json.checks.pyan3.version === 'string', 'expected the detected pyan3 version');
+    assert(typeof json.checks.nodeRuntime.version === 'string', 'expected the Node version');
   });
 
-  await step('/readyz exposes detail/version only to an authenticated caller', async () => {
-    const res = await fetch(baseUrl + '/readyz', { headers: authed() });
-    assert(res.status === 200, `expected 200, got ${res.status}`);
-    const json = await res.json();
-    assert(typeof json.checks.pyan3.version === 'string', 'expected an authenticated caller to see the detected pyan3 version');
-    assert(typeof json.checks.nodeRuntime.version === 'string', 'expected an authenticated caller to see the Node version');
-  });
-
-  await step('/api/analyze rejects an anonymous (no Authorization header) request', async () => {
+  await step('/api/analyze matches the known golden-world baseline', async () => {
     const res = await fetch(baseUrl + '/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: 'tests/fixtures/golden-world' }),
-    });
-    assert(res.status === 401, `expected 401, got ${res.status}`);
-  });
-
-  await step('/api/analyze rejects a request with the wrong token', async () => {
-    const res = await fetch(baseUrl + '/api/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer wrong-token' },
-      body: JSON.stringify({ path: 'tests/fixtures/golden-world' }),
-    });
-    assert(res.status === 401, `expected 401, got ${res.status}`);
-  });
-
-  await step('/api/analyze (authenticated) matches the known golden-world baseline', async () => {
-    const res = await fetch(baseUrl + '/api/analyze', {
-      method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ path: 'tests/fixtures/golden-world' }),
     });
     assert(res.status === 200, `expected 200, got ${res.status}`);
@@ -189,7 +158,7 @@ try {
   await step('/api/analyze rejects a path outside the repository', async () => {
     const res = await fetch(baseUrl + '/api/analyze', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: '../../../../etc' }),
     });
     assert(res.status === 400, `expected 400, got ${res.status}`);
@@ -198,7 +167,7 @@ try {
   await step('/api/analyze rejects a request with no path', async () => {
     const res = await fetch(baseUrl + '/api/analyze', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     });
     assert(res.status === 400, `expected 400, got ${res.status}`);
@@ -207,7 +176,7 @@ try {
   await step('/api/analyze-repo (real GitHub, allowlisted owner) analyzes octocat/Hello-World', async () => {
     const res = await fetch(baseUrl + '/api/analyze-repo', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'octocat', repo: 'Hello-World' }),
     });
     const json = await res.json();
@@ -222,7 +191,7 @@ try {
     // this deliberately does NOT reuse, has exactly that bug).
     const res = await fetch(baseUrl + '/api/analyze-repo', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'octocat', repo: 'Hello-World', ref: 'test' }),
     });
     const json = await res.json();
@@ -240,7 +209,7 @@ try {
     // real external repo state.
     const res = await fetch(baseUrl + '/api/analyze-repo', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'octocat', repo: 'Hello-World', pr: 10587 }),
     });
     const json = await res.json();
@@ -255,7 +224,7 @@ try {
     // of GitHub's own "not found" message.
     const res = await fetch(baseUrl + '/api/analyze-repo', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'octocat', repo: 'Hello-World', ref: 'no-such-branch-xyz' }),
     });
     const json = await res.json();
@@ -266,7 +235,7 @@ try {
   await step('/api/analyze-repo rejects a repository not on the allowlist, before fetching it', async () => {
     const res = await fetch(baseUrl + '/api/analyze-repo', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'torvalds', repo: 'linux' }),
     });
     assert(res.status === 403, `expected 403, got ${res.status}`);
@@ -275,7 +244,7 @@ try {
   await step('/api/analyze-repo rejects a malformed owner before any allowlist/fetch step', async () => {
     const res = await fetch(baseUrl + '/api/analyze-repo', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'in valid!', repo: 'Hello-World' }),
     });
     assert(res.status === 400, `expected 400, got ${res.status}`);
@@ -284,7 +253,7 @@ try {
   await step('/api/analyze-repo rejects specifying both ref and pr', async () => {
     const res = await fetch(baseUrl + '/api/analyze-repo', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'octocat', repo: 'Hello-World', ref: 'master', pr: 1 }),
     });
     assert(res.status === 400, `expected 400, got ${res.status}`);
@@ -293,7 +262,7 @@ try {
   await step('/api/graph/repository (real GitHub, allowlisted owner) returns a valid AdapterResult wrapping a repository GraphIR', async () => {
     const res = await fetch(baseUrl + '/api/graph/repository', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'octocat', repo: 'Hello-World' }),
     });
     const json = await res.json();
@@ -309,7 +278,7 @@ try {
   await step('/api/graph/repository respects an explicit ref, resolving it to a real commit SHA (not the branch name)', async () => {
     const res = await fetch(baseUrl + '/api/graph/repository', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'octocat', repo: 'Hello-World', ref: 'test' }),
     });
     const json = await res.json();
@@ -331,7 +300,7 @@ try {
     const knownSha = '7fd1a60b01f91b314f59955a4e4d4e80d8edf11d'; // octocat/Hello-World's real first commit -- stable, will not change
     const res = await fetch(baseUrl + '/api/graph/repository', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'octocat', repo: 'Hello-World', ref: knownSha }),
     });
     const json = await res.json();
@@ -345,7 +314,7 @@ try {
     // above (PR #10587, octocat/Hello-World, fork XiaoPangDaiMa/Hello-World).
     const res = await fetch(baseUrl + '/api/graph/repository', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'octocat', repo: 'Hello-World', pr: 10587 }),
     });
     const json = await res.json();
@@ -359,7 +328,7 @@ try {
   await step('/api/graph/repository rejects a repository not on the allowlist, before fetching it', async () => {
     const res = await fetch(baseUrl + '/api/graph/repository', {
       method: 'POST',
-      headers: authed({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'torvalds', repo: 'linux' }),
     });
     const json = await res.json();
@@ -375,7 +344,7 @@ try {
     for (let i = 0; i < 12; i++) {
       const res = await fetch(baseUrl + '/api/analyze', {
         method: 'POST',
-        headers: authed({ 'Content-Type': 'application/json' }),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: 'tests/fixtures/golden-world' }),
       });
       results.push(res.status);

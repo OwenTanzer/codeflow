@@ -7,8 +7,8 @@ const SENSITIVE_KEY_PATTERN = /token|authorization|secret|password|api[_-]?key|c
 
 // Defense in depth for secrets this process doesn't itself hold (e.g. a
 // different token embedded in a proxied error message) -- the exact-string
-// pass below (driven by `secrets`) is the primary guard for APP_PASSWORD and
-// GITHUB_TOKEN specifically.
+// pass below (driven by `secrets`) is the primary guard for GITHUB_TOKEN
+// specifically.
 const TOKEN_SHAPE_PATTERNS = [
   /\bgh[poursu]_[A-Za-z0-9]{20,}\b/g,
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,

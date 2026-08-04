@@ -22,17 +22,15 @@ function baseInput(overrides = {}) {
     resolvedSha: SHA,
     path: 'src/service.py',
     symbolPath: ['Service', 'run'],
-    appPassword: 'secret-token',
     ...overrides,
   };
 }
 
-test('buildGraphFunctionRequest posts to /api/graph/function with the shared bearer header', () => {
+test('buildGraphFunctionRequest posts to /api/graph/function with a JSON content type', () => {
   const { url, init } = buildGraphFunctionRequest(baseInput());
   assert.equal(url, '/api/graph/function');
   assert.equal(init.method, 'POST');
-  assert.equal(init.headers.Authorization, 'Bearer secret-token');
-  assert.equal(init.headers['Content-Type'], 'application/json');
+  assert.deepEqual(init.headers, { 'Content-Type': 'application/json' }, 'public API requests must not carry an auth header');
 });
 
 test('buildGraphFunctionRequest sends symbolPath verbatim as an array', () => {
@@ -106,7 +104,7 @@ test('mapGraphFunctionResponse throws GraphFunctionClientError carrying status/c
   );
 });
 
-test('mapGraphFunctionResponse surfaces a 401 status so the panel can clear the token and re-prompt', () => {
+test('mapGraphFunctionResponse preserves a 401 status from an upstream proxy', () => {
   assert.throws(
     () => mapGraphFunctionResponse(false, 401, { error: 'Unauthorized' }),
     (err) => {

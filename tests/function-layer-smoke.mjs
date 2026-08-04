@@ -7,21 +7,16 @@
 // wiring is exactly the part unit tests cannot reach.
 //
 // Usage:
-//   APP_PASSWORD=... GITHUB_TOKEN=... npm start           # in one shell
-//   node tests/function-layer-smoke.mjs <url> <appPassword>
+//   GITHUB_TOKEN=... npm start           # in one shell
+//   node tests/function-layer-smoke.mjs <url>
 //
 // MOO-86: the client-side GitHub PAT/App toolbar fields this script used to
 // fill in were removed -- ownership/blame and file-preview-fallback now run
-// server-side too, using the same app password below. The app password is
-// the private server's own APP_PASSWORD, required for every /api/* call.
-// Never logged.
+// server-side too. The app's own APP_PASSWORD gate was later removed
+// entirely as well, so there's no credential of any kind left to supply here.
 import { chromium } from 'playwright';
 
-const [url = 'http://localhost:3000/', appPassword] = process.argv.slice(2);
-if (!appPassword) {
-  console.error('usage: node tests/function-layer-smoke.mjs <url> <appPassword>');
-  process.exit(2);
-}
+const [url = 'http://localhost:3000/'] = process.argv.slice(2);
 
 // Same known-benign Babel Standalone notice tests/ui-smoke.mjs filters.
 const KNOWN_NOISE = /\[BABEL\] Note: The code generator has deoptimised the styling/;
@@ -62,16 +57,15 @@ await page.goto(url, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(2000);
 
 // --- repository layer -------------------------------------------------------
-await step('enter the repository URL and the app password', async () => {
+await step('app-auth controls are absent', async () => {
+  const tokenInputs = await page.locator('input[aria-label="CodeFlow Server Token"], input[aria-label="App Password"]').count();
+  if (tokenInputs !== 0) throw new Error(`expected no app-auth input, found ${tokenInputs}`);
+  const tokenErrors = await page.getByText('Enter the CodeFlow server token before analyzing a repository.').count();
+  if (tokenErrors !== 0) throw new Error('legacy server-token error is still rendered');
+});
+
+await step('enter the repository URL', async () => {
   await page.locator('input[aria-label="Repository URL"]:visible').first().fill(REPO);
-  // MOO-72 Commit 1A moved repository analysis onto the server, which gates
-  // it behind this same app password the file/function panels already
-  // prompted for -- without filling it here too, analyze() just calls
-  // setError('Enter the app password...') and returns, so pressing Enter
-  // below silently no-ops (no console error, no network request -- this bug
-  // hid for a while because the failure has no signal this script was
-  // checking for).
-  await page.locator('input[aria-label="App Password"]:visible').first().fill(appPassword);
 });
 
 await step('repository analysis completes and the graph renders', async () => {
@@ -91,15 +85,6 @@ await step(`double-click ${FILE_LABEL} to drill into the file layer`, async () =
   const node = page.locator(`svg g:has(> text:text-is("${FILE_LABEL}"))`).first();
   await node.waitFor({ timeout: 20000 });
   await node.dblclick();
-});
-
-// The panel's own AppPasswordPrompt no longer appears here: the app
-// password is already committed at the toolbar (filled above, before
-// analysis), and it's App()-level state shared with every panel -- if
-// this prompt reappears, something about that sharing has regressed.
-await step('no second app-password prompt appears -- the toolbar-committed password already serves the drill-down', async () => {
-  const promptStillGone = await page.locator('input[aria-label="App Password Prompt"]').count();
-  if (promptStillGone > 0) throw new Error('FileLayerPanel showed its own password prompt despite an already-committed toolbar password');
 });
 
 await step('file graph renders', async () => {

@@ -12,8 +12,8 @@ import { verifyGithubReachable } from './github-analyzer-bridge.js';
  * One normalized shape for every periodically-refreshable dependency's
  * status (PR review finding: pyan3Available/codeVisualizerAvailable were
  * bare booleans, discarding the startup exception's message and the
- * detected version -- a plan promising authenticated detail/version
- * fields needs the underlying state to actually carry them).
+ * detected version -- readiness detail/version fields need the underlying
+ * state to actually carry them).
  * @param {boolean} ok
  * @param {string|null} detail
  * @param {string|null} [version]

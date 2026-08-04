@@ -1,13 +1,13 @@
 // Client-side fetch wrapper for POST /api/graph/file — MOO-70 Commit 8.
 //
-// The first client integration with the private server's auth-gated API:
-// repository-layer analysis today runs entirely client-side against
+// The first client integration with the server's /api/* routes:
+// repository-layer analysis at the time ran entirely client-side against
 // GitHub directly (index.html's finishAnalysis(), using a user-entered
-// GitHub PAT), with zero existing fetch/auth plumbing for the server's
-// own APP_PASSWORD-gated /api/* routes. pyan3 is a Python subprocess with
-// no client-side equivalent, so the file layer has no choice but to call
-// the server — this is deliberately the minimal wrapper needed for that
-// one call, not a general private-server-auth overhaul.
+// GitHub PAT), with zero existing fetch plumbing for the server's own
+// routes. pyan3 is a Python subprocess with no client-side equivalent, so
+// the file layer has no choice but to call the server — this is
+// deliberately the minimal wrapper needed for that one call, not a
+// general private-server overhaul.
 //
 // Revision-pinning convention (see server/routes/graph-file.js's own doc
 // comment): for a branch/commit-mode parent graph, pass its exact
@@ -36,8 +36,8 @@
 
 // MOO-71 Commit 7: header construction and response mapping moved to
 // src/state/serverRequest.js so this client and the new function-layer one
-// share a single authenticated request helper rather than each building
-// `Authorization` itself. This module's own public surface
+// share a single request helper rather than each building transport
+// details itself. This module's own public surface
 // (buildGraphFileRequest/mapGraphFileResponse/fetchFileGraph/
 // GraphFileClientError) is unchanged -- tests/graph-file-client.test.mjs
 // passes unmodified, which is the proof the refactor is behavior-preserving.
@@ -62,12 +62,11 @@ export class GraphFileClientError extends ServerRequestError {
  * @param {string} [input.sourceRepo] - the parent graph's resolved source repo, sent as `expectedSourceRepo` only in PR mode
  * @param {string} input.path
  * @param {string|null} [input.depth]
- * @param {string} input.appPassword
  * @param {string} [input.sessionId] - MOO-72 Commit 1B: correlates this request with the rest of one drill-down chain
  * @param {AbortSignal} [input.signal] - MOO-72 Commit 1B: forwarded straight to fetch
  * @returns {{url: string, init: RequestInit}}
  */
-export function buildGraphFileRequest({ owner, repo, resolvedSha, pr, sourceOwner, sourceRepo, path, depth, appPassword, sessionId, signal }) {
+export function buildGraphFileRequest({ owner, repo, resolvedSha, pr, sourceOwner, sourceRepo, path, depth, sessionId, signal }) {
   const body = { owner, repo, path, depth: depth || undefined, sessionId };
   if (pr != null) {
     body.pr = pr;
@@ -77,7 +76,7 @@ export function buildGraphFileRequest({ owner, repo, resolvedSha, pr, sourceOwne
   } else {
     body.ref = resolvedSha;
   }
-  return buildServerJsonRequest({ path: '/api/graph/file', body, appPassword, signal });
+  return buildServerJsonRequest({ path: '/api/graph/file', body, signal });
 }
 
 /**

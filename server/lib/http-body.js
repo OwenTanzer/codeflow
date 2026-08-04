@@ -1,9 +1,9 @@
 // Shared bounded JSON request-body reader — MOO-67 Commit 6 (PR review fixup).
 //
-// Both /api/analyze and /api/analyze-repo are publicly addressable behind
-// the same bearer-token gate, but only analyze-repo bounded its body size
-// (via MAX_REQUEST_BODY_BYTES) -- analyze buffered the whole request
-// unbounded. One shared reader instead of two subtly different parsers.
+// Both /api/analyze and /api/analyze-repo are publicly addressable, but only
+// analyze-repo originally bounded its body size (via
+// MAX_REQUEST_BODY_BYTES) -- analyze buffered the whole request unbounded.
+// One shared reader instead of two subtly different parsers.
 export class BodyTooLargeError extends Error {
   constructor(maxBytes) {
     super(`Request body exceeds the configured limit of ${maxBytes} bytes`);

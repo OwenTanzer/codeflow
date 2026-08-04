@@ -8,10 +8,8 @@ import test from 'node:test';
 import { loadConfig, ConfigError } from '../server/lib/config.js';
 
 // Minimal env satisfying every Commit 6 requirement, so tests that aren't
-// specifically about auth/github/allowlist validation don't need to
-// repeat it.
+// specifically about github/allowlist validation don't need to repeat it.
 const VALID_ENV = {
-  APP_PASSWORD: 'test-app-password',
   GITHUB_TOKEN: 'test-github-token',
   ALLOWED_OWNERS: 'octocat',
 };
@@ -52,7 +50,6 @@ test('loadConfig succeeds and applies defaults when all required config is prese
     assert.equal(config.distDir, join(repoRoot, 'dist'));
     assert.equal(config.nodeEnv, 'development');
     assert.ok(config.workspaceRoot);
-    assert.equal(config.appPassword, 'test-app-password');
     assert.equal(config.githubToken, 'test-github-token');
     assert.deepEqual(config.allowedOwners, ['octocat']);
     assert.equal(config.rateLimitPerMinute, 30);
@@ -156,14 +153,6 @@ test('loadConfig respects WORKSPACE_ROOT and NODE_ENV overrides', async () => {
   });
 });
 
-test('loadConfig requires APP_PASSWORD', async () => {
-  await withBuiltRepo((repoRoot) => {
-    const env = { ...VALID_ENV };
-    delete env.APP_PASSWORD;
-    assert.throws(() => loadConfig({ repoRoot, env }), /APP_PASSWORD is required/);
-  });
-});
-
 test('loadConfig requires GITHUB_TOKEN', async () => {
   await withBuiltRepo((repoRoot) => {
     const env = { ...VALID_ENV };
@@ -208,7 +197,7 @@ test('loadConfig reports every missing required field in a single error, not jus
   await withBuiltRepo((repoRoot) => {
     assert.throws(() => loadConfig({ repoRoot, env: {} }), (err) => {
       assert.ok(err instanceof ConfigError);
-      assert.equal(err.errors.length, 3);
+      assert.equal(err.errors.length, 2);
       return true;
     });
   });

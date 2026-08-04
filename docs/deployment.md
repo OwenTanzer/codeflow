@@ -14,8 +14,8 @@ the reusable procedure it's based on.
 
 ```
 npm install                     # runs setup:codevisualizer + postinstall (pyan3) automatically
-APP_PASSWORD=dev-secret GITHUB_TOKEN=$(gh auth token) ALLOWED_OWNERS=<your-github-username> npm run build
-APP_PASSWORD=dev-secret GITHUB_TOKEN=$(gh auth token) ALLOWED_OWNERS=<your-github-username> npm start
+GITHUB_TOKEN=$(gh auth token) ALLOWED_OWNERS=<your-github-username> npm run build
+GITHUB_TOKEN=$(gh auth token) ALLOWED_OWNERS=<your-github-username> npm start
 ```
 
 `npm run build` also runs `scripts/generate-build-info.mjs`, which writes
@@ -25,9 +25,11 @@ startup and serves it from `/healthz` and the UI's corner badge. Missing
 the file (e.g. running `node server/index.js` directly without a prior
 build) falls back to `"unknown"` rather than failing startup.
 
-`APP_PASSWORD`, `GITHUB_TOKEN`, and at least one of `ALLOWED_OWNERS`/
-`ALLOWED_REPOS` are required at startup with no bypass — a missing
-`NODE_ENV=production` can't silently ship an unprotected instance. See
+`GITHUB_TOKEN` and at least one of `ALLOWED_OWNERS`/`ALLOWED_REPOS` are
+required at startup with no bypass. The app's own client-facing auth gate
+(`APP_PASSWORD`, briefly a renamed `AUTH_TOKEN` before that) was removed
+entirely. The service is public; the moopertonic.net landing page provides
+navigation/discovery, not an access-control boundary. See
 `server/lib/config.js` for the full set of environment variables and their
 defaults.
 
@@ -45,9 +47,9 @@ behavior does not change unless an operator explicitly sets one of these:
 
 Each is validated strictly (`"true"`/`"false"` only — a typo like `fasle`
 fails startup, not silently keeps the default) and surfaced two ways:
-- `GET /api/capabilities` (authenticated): the client-facing contract the
+- `GET /api/capabilities` (public): the client-facing contract the
   UI reads at startup to hide/disable the corresponding affordance.
-- `GET /readyz`'s authenticated detail (`checks.featureFlags.detail`): for
+- `GET /readyz`'s public detail (`checks.featureFlags.detail`): for
   an operator checking current state directly.
 
 ## Resource limits and concurrency
@@ -199,8 +201,8 @@ failure modes and their real recovery procedures:
 for the `codeviz` service, or repeated `ENOSPC`-shaped errors in the logs.
 **The fix is a restart or redeploy.** `WORKSPACE_ROOT` is not set as a
 Railway environment variable on this deployment (confirmed — only
-`APP_PASSWORD`/`GITHUB_TOKEN`/`ALLOWED_OWNERS`/`BUILD_COMMIT_SHA`/`NODE_ENV`/
-`PORT` are set), so `server/lib/config.js` defaults it to the container's
+`GITHUB_TOKEN`/`ALLOWED_OWNERS`/`BUILD_COMMIT_SHA`/`NODE_ENV`/`PORT` are
+set), so `server/lib/config.js` defaults it to the container's
 own OS tmpdir; `railway.json` declares no persistent volume. That means
 the **entire container filesystem** — not just the workspace directories
 `sweepStaleWorkspaces()` would selectively remove — resets on any restart
@@ -223,10 +225,8 @@ manually.
 endpoint, and separately (non-gating) via `GET /readyz`'s
 `checks.githubReachable` (refreshed every 5 minutes in the background —
 see `server/index.js`'s periodic `refreshDependencyStatuses` interval).
-Rotate with `railway variable set GITHUB_TOKEN=<new value>` (mirrors the
-existing `APP_PASSWORD` rotation pattern already documented in
-`docs/baseline.md`); confirm recovery via `/readyz` reporting
-`githubReachable.ok: true` again.
+Rotate with `railway variable set GITHUB_TOKEN=<new value>`; confirm
+recovery via `/readyz` reporting `githubReachable.ok: true` again.
 
 ## Dependency upgrades
 
@@ -256,32 +256,33 @@ requirements differ by what's actually being bumped:
   `curl` checks in the cutover runbook's step 4 above, with the release
   rollback procedure on standby.
 
-## Auth, allowlist, rate limiting, and secret handling — confirmed current state
+## Allowlist, rate limiting, and secret handling — confirmed current state
 
 All already implemented (MOO-67/72 Commits 3-6), reconfirmed here rather
-than rebuilt:
+than rebuilt. The app's own client-facing auth gate that once lived here
+too (`APP_PASSWORD`, a `server/lib/auth.js` shared-secret check applied to
+every `/api/*` route, renamed from `AUTH_TOKEN` in MOO-86) was **removed
+entirely** in a later change. Every `/api/*` route is public and
+unauthenticated; the moopertonic.net landing page is not an access-control
+boundary.
 
-- **Auth**: constant-time `APP_PASSWORD` shared-secret check
-  (`server/lib/auth.js`), required at startup with no environment-based
-  bypass. Applied to every `/api/*` route. **MOO-86**: renamed from
-  `AUTH_TOKEN` — same bearer-token mechanism, but the operator now picks a
-  memorable password directly instead of generating a 32-byte secret.
 - **Allowlist**: `ALLOWED_OWNERS`/`ALLOWED_REPOS` (`server/lib/allowlist.js`),
   at least one required at startup. **The deployed instance currently runs
-  `ALLOWED_OWNERS=*`** (wildcard — any GitHub owner's repos, gated only by
-  holding the shared `APP_PASSWORD`) — see `docs/baseline.md`'s "Post-deployment
-  update" section for when and why this was widened from the initial
-  `OwenTanzer`-only allowlist. This is a **deliberate, already-made
-  decision**, not an oversight — it was explicitly reaffirmed (not
-  silently carried forward) at the moment of the actual DNS cutover (see
-  "Cutover baseline" below).
+  `ALLOWED_OWNERS=*`** (wildcard — any GitHub owner's repos) — see
+  `docs/baseline.md`'s "Post-deployment update" section for when and why
+  this was widened from the initial `OwenTanzer`-only allowlist. This is a
+  **deliberate, already-made decision**, not an oversight — it was
+  explicitly reaffirmed (not silently carried forward) at the moment of the
+  actual DNS cutover (see "Cutover baseline" below). With the auth gate
+  gone, this allowlist plus per-IP rate limiting are the only remaining
+  controls on what this server will do work for.
 - **Rate limiting**: in-memory fixed-window per-key limiter
   (`server/lib/rate-limit.js`, `RATE_LIMIT_PER_MINUTE`, default 30/min),
   not durable across restarts, not shared across replicas (single-instance
   design).
-- **Secrets**: `APP_PASSWORD`/`GITHUB_TOKEN` never logged directly
-  (`server/lib/logger.js`'s exact-string plus shape-based redaction of
-  GitHub-PAT/Bearer/query-string patterns).
+- **Secrets**: `GITHUB_TOKEN` never logged directly (`server/lib/logger.js`'s
+  exact-string plus shape-based redaction of GitHub-PAT/Bearer/query-string
+  patterns).
 
 ## Rollback — two distinct controls, not one
 
@@ -325,8 +326,9 @@ was never itself a *release* rollback path, only a domain-level fallback.
 
 ### Cutover baseline (historical — what actually shipped at go-live)
 
-Live-verified this session via a real authenticated `GET /healthz` against
-the production URL, returning this exact `commitSha`:
+Live-verified this session via a real `GET /healthz` against the production
+URL, returning this exact `commitSha` (the auth gate still existed for API
+routes at that historical cutover, but `/healthz` itself was public):
 
 - **Date**: 2026-07-30
 - **Deployment ID**: `9bbc1c73-2cfe-49f8-a273-e0ef7dde238c` (the
@@ -364,18 +366,15 @@ unattended.
    `tests/server-smoke.mjs` and `tests/e2e-construction-smoke.mjs` cannot
    be pointed at a deployed URL — both hardcode a `localhost` port and
    `spawn()` their own server process, so they only ever test a server
-   this same script starts. Use direct authenticated requests instead
-   (these are the actual commands run against `codeviz.moopertonic.net`
-   during the real cutover):
+   this same script starts. Use direct requests instead (during the real
+   cutover these still exercised the auth gate that existed at the time;
+   that gate has since been removed entirely, so every one of these is now
+   a plain, unauthenticated request):
    ```
-   curl -o /dev/null -w '%{http_code}\n' -X POST https://<host>/api/analyze-repo
-   # expect 401 (no auth header)
-   curl -o /dev/null -w '%{http_code}\n' -X POST https://<host>/api/analyze-repo -H "Authorization: Bearer wrong"
-   # expect 401 (wrong password)
-   curl https://<host>/api/capabilities -H "Authorization: Bearer $APP_PASSWORD"
+   curl https://<host>/api/capabilities
    # expect 200 with the real configured flag states
    curl -o /dev/null -w '%{http_code}\n' -X POST https://<host>/api/graph/repository \
-     -H "Authorization: Bearer $APP_PASSWORD" -H "Content-Type: application/json" \
+     -H "Content-Type: application/json" \
      -d '{"owner":"octocat","repo":"Hello-World"}'
    # expect 200, a real analysis
    curl https://<host>/healthz

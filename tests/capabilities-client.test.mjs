@@ -1,10 +1,12 @@
 // Unit tests for src/state/capabilitiesClient.js (MOO-72 Commit 8, TTL added
-// per PR review: the auth token is not a configuration version, so caching
-// keyed only by token never observed an operator's flag toggle/redeploy).
+// per PR review: an operator can toggle flags and redeploy at any time, so
+// an unbounded cache never observed that until a full reload).
 //
 // The module holds real module-level cache state (not reset between tests),
-// so every test here uses a distinct fake token to guarantee a fresh fetch,
-// exactly mirroring how a real page only ever uses one token per session.
+// so each test advances its own fake clock past the TTL before asserting a
+// fresh fetch, rather than relying on per-caller cache keys (there is none
+// anymore -- the auth-token-keyed cache this module once had was removed
+// along with the app's auth gate entirely).
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -23,13 +25,13 @@ function stubFetch(body, { ok = true } = {}) {
   };
 }
 
-test('fetches on first call and caches the result for the same token', async () => {
+test('fetches on first call and caches the result within the TTL', async () => {
   const stub = stubFetch({ fileLayerEnabled: true });
   try {
     let time = 1000;
     const now = () => time;
-    const result1 = await fetchCapabilities('token-a', now);
-    const result2 = await fetchCapabilities('token-a', now);
+    const result1 = await fetchCapabilities(now);
+    const result2 = await fetchCapabilities(now);
     assert.deepEqual(result1, { fileLayerEnabled: true });
     assert.deepEqual(result2, { fileLayerEnabled: true });
     assert.equal(stub.calls, 1, 'the second call within the TTL must be served from cache');
@@ -41,27 +43,18 @@ test('fetches on first call and caches the result for the same token', async () 
 test('refetches once the TTL has elapsed, so a toggled flag becomes visible without a reload', async () => {
   const stub = stubFetch({ fileLayerEnabled: true });
   try {
-    let time = 2000;
+    // Starts well past the previous test's cachedAt+TTL: the module-level
+    // cache has no per-caller key anymore (removed along with appPassword),
+    // so test isolation now comes from each test's fake clock starting
+    // past every prior test's cache window, not from a distinct cache key.
+    let time = 100000;
     const now = () => time;
-    await fetchCapabilities('token-b', now);
+    await fetchCapabilities(now);
     assert.equal(stub.calls, 1);
 
     time += CAPABILITIES_CACHE_TTL_MS + 1;
-    await fetchCapabilities('token-b', now);
+    await fetchCapabilities(now);
     assert.equal(stub.calls, 2, 'expected a refetch once the TTL elapsed');
-  } finally {
-    stub.restore();
-  }
-});
-
-test('a different token always triggers a fresh fetch regardless of TTL', async () => {
-  const stub = stubFetch({ fileLayerEnabled: true });
-  try {
-    let time = 3000;
-    const now = () => time;
-    await fetchCapabilities('token-c1', now);
-    await fetchCapabilities('token-c2', now);
-    assert.equal(stub.calls, 2);
   } finally {
     stub.restore();
   }
@@ -70,7 +63,7 @@ test('a different token always triggers a fresh fetch regardless of TTL', async 
 test('a failed fetch (non-ok response) returns null and does not poison the cache', async () => {
   const stub = stubFetch({}, { ok: false });
   try {
-    const result = await fetchCapabilities('token-d');
+    const result = await fetchCapabilities();
     assert.equal(result, null);
   } finally {
     stub.restore();
@@ -81,7 +74,7 @@ test('a thrown fetch error returns null rather than propagating', async () => {
   const original = globalThis.fetch;
   globalThis.fetch = async () => { throw new TypeError('network down'); };
   try {
-    const result = await fetchCapabilities('token-e');
+    const result = await fetchCapabilities();
     assert.equal(result, null);
   } finally {
     globalThis.fetch = original;
