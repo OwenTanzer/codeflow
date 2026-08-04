@@ -392,16 +392,35 @@ unattended.
 7. `railway domain status codeviz.moopertonic.net` until it reports
    verified/healthy.
 8. Only then, update the Moopertonic Hub link (`OwenTanzer/moopertonic-hub`
-   — edit `index.html`, PR + merge to `main`, then **deploy with
-   `wrangler deploy`**, since a plain `git push` does not update the live
-   site; see the `viewer-wrangler-deploy` deployment pattern). Explicitly
-   the last step, not done in parallel with DNS propagation. **When
-   deploying via the `Temp\wr` wrangler workaround install, always run the
-   binary against a separate clean directory containing only the site's
-   own files** — copying site files directly into `Temp\wr` (which itself
-   contains the wrangler CLI's own `node_modules`) will upload that
-   `node_modules` as public static assets, as happened once during the
-   real cutover before being caught and fixed with a redeploy.
+   — edit `index.html`, PR + merge to `main`). Explicitly the last step,
+   not done in parallel with DNS propagation.
+
+   > **Updated 2026-08-04 — this step no longer needs `wrangler`.**
+   > This previously read "deploy with `wrangler deploy`, since a plain
+   > `git push` does not update the live site." That is no longer true.
+   > The Hub repo now has **Cloudflare Workers Builds** connected: PRs get
+   > a `Workers Builds: moopertonic-hub` status check, and merging to
+   > `main` deploys automatically. Verified during the
+   > `aibubble.moopertonic.net` cutover — the card was live within seconds
+   > of the merge and `wrangler` was never invoked.
+   >
+   > **The safety implication changed with it.** Merging *is* the deploy,
+   > so there is no longer a separate deploy step to hold back as a margin.
+   > A Hub PR pointing at a domain that is not live yet must be kept
+   > **unmerged**, not merely undeployed.
+   >
+   > Also note `main` on the Hub repo has an active ruleset ("Protect
+   > default branch") requiring a review that a solo author cannot satisfy
+   > by self-approval, so merging needs `gh pr merge --admin` or a second
+   > reviewer.
+   >
+   > The old `Temp\wr` wrangler workaround install is gone from the machine.
+   > If a manual `wrangler deploy` is ever needed again, the hazard it
+   > carried still applies: run the binary against a clean directory
+   > containing only the site's own files, since copying site files into
+   > the wrangler install directory will upload its `node_modules` as
+   > public static assets (this happened once during the real cutover
+   > before being caught and fixed with a redeploy).
 9. **Reaffirm the `ALLOWED_OWNERS=*` decision explicitly at this point**
    (keep the wildcard, or narrow it) — a deliberate go-live choice made at
    cutover time, not an inherited default nobody revisited. (Reaffirmed as
