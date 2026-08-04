@@ -1,31 +1,13 @@
-// Unit tests for server/lib/auth.js, allowlist.js, rate-limit.js, and
-// validate-repo-request.js (MOO-67 Commit 6).
+// Unit tests for allowlist.js, rate-limit.js, and validate-repo-request.js
+// (MOO-67 Commit 6). auth.js's own tests lived here too until the auth gate
+// was removed entirely; this file was renamed from server-auth.test.mjs
+// accordingly.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { isAuthorized, extractBearerToken } from '../server/lib/auth.js';
 import { isRepoAllowed } from '../server/lib/allowlist.js';
 import { RateLimiter } from '../server/lib/rate-limit.js';
 import { validateRepoRequest, ValidationError } from '../server/lib/validate-repo-request.js';
-
-test('extractBearerToken reads a well-formed Authorization header', () => {
-  const req = { headers: { authorization: 'Bearer abc123' } };
-  assert.equal(extractBearerToken(req), 'abc123');
-});
-
-test('extractBearerToken returns null when the header is missing or malformed', () => {
-  assert.equal(extractBearerToken({ headers: {} }), null);
-  assert.equal(extractBearerToken({ headers: { authorization: 'Basic abc123' } }), null);
-  assert.equal(extractBearerToken({ headers: { authorization: '' } }), null);
-});
-
-test('isAuthorized accepts the exact configured password and rejects anything else', () => {
-  const config = { appPassword: 'correct-token' };
-  assert.equal(isAuthorized({ headers: { authorization: 'Bearer correct-token' } }, config), true);
-  assert.equal(isAuthorized({ headers: { authorization: 'Bearer wrong-token' } }, config), false);
-  assert.equal(isAuthorized({ headers: {} }, config), false);
-  assert.equal(isAuthorized({ headers: { authorization: 'Bearer correct-tokenX' } }, config), false);
-});
 
 test('isRepoAllowed matches an explicit owner/repo entry', () => {
   const config = { allowedRepos: ['octocat/hello-world'], allowedOwners: [] };

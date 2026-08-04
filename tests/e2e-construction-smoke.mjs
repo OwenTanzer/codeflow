@@ -3,9 +3,9 @@
 // Not part of the zero-setup `node --test tests/*.test.mjs` suite (same
 // reason as server-smoke.mjs/function-layer-smoke.mjs — this needs dist/
 // already built and a real GitHub credential). Spawns its own isolated real
-// server process (own port, own WORKSPACE_ROOT, own APP_PASSWORD) rather than
-// sharing server-smoke.mjs's, so the two scripts never fight over the same
-// process or rate-limit budget.
+// server process (own port, own WORKSPACE_ROOT) rather than sharing
+// server-smoke.mjs's, so the two scripts never fight over the same process
+// or rate-limit budget.
 //
 // Scope, deliberately distinct from server-smoke.mjs (which already owns
 // repository-layer ref-mode coverage — branch/commit/PR) and from
@@ -36,7 +36,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
 const port = 3998; // distinct from server-smoke.mjs's 3999 -- own isolated process
 const baseUrl = `http://localhost:${port}`;
-const APP_PASSWORD = 'e2e-construction-smoke-secret';
 
 // Same fixture function-layer-smoke.mjs already uses -- proven to work,
 // avoids inventing a second one just for this script.
@@ -82,14 +81,10 @@ async function waitForReady(timeoutMs) {
   throw new Error('server did not become ready in time');
 }
 
-function authed(headers = {}) {
-  return { Authorization: `Bearer ${APP_PASSWORD}`, ...headers };
-}
-
 async function postJson(path, body) {
   const res = await fetch(baseUrl + path, {
     method: 'POST',
-    headers: authed({ 'Content-Type': 'application/json' }),
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   const json = await res.json().catch(() => null);
@@ -119,7 +114,6 @@ const child = spawn(process.execPath, [join(repoRoot, 'server', 'index.js')], {
     ...process.env,
     PORT: String(port),
     WORKSPACE_ROOT: workspaceRoot,
-    APP_PASSWORD,
     GITHUB_TOKEN: githubToken,
     ALLOWED_OWNERS: [REPO_OWNER, CHAIN_OWNER, ...(process.env.PRIVATE_FIXTURE_REPO ? [process.env.PRIVATE_FIXTURE_REPO.split('/')[0]] : [])].join(','),
     RATE_LIMIT_PER_MINUTE: '30', // generous -- this script's own budget, unrelated to server-smoke.mjs's

@@ -1,7 +1,9 @@
 // Unit tests for server/lib/health.js (MOO-67 Commit 5, extended MOO-70
 // Commit 9 PR review: pyan3 readiness must be visible but must never gate
 // the overall readiness result; extended again MOO-72 Commit 5: dependency/
-// runtime health checks, and authenticated-only detail exposure).
+// runtime health checks. The auth gate those checks' detail exposure once
+// depended on was removed entirely in a later change -- /readyz now always
+// includes full detail, so `fakeReq()` no longer varies by auth state.).
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,10 +13,8 @@ import test from 'node:test';
 import { createReadinessHandler, createHealthHandler, isSupportedNodeVersion, readBuildInfo } from '../server/lib/health.js';
 import { GraphCache } from '../server/lib/graph-cache.js';
 
-const APP_PASSWORD = 'test-app-password';
-
-function fakeReq(authorized) {
-  return { headers: authorized ? { authorization: `Bearer ${APP_PASSWORD}` } : {} };
+function fakeReq() {
+  return { headers: {} };
 }
 
 function fakeRes() {
@@ -41,7 +41,7 @@ async function withBuiltRepo(fn) {
   try {
     await mkdir(join(repoRoot, 'dist'), { recursive: true });
     await writeFile(join(repoRoot, 'dist', 'index.html'), '<html></html>');
-    await fn({ distDir: join(repoRoot, 'dist'), workspaceRoot, appPassword: APP_PASSWORD, cacheEnabled: true });
+    await fn({ distDir: join(repoRoot, 'dist'), workspaceRoot, cacheEnabled: true });
   } finally {
     await rm(repoRoot, { recursive: true, force: true });
     await rm(workspaceRoot, { recursive: true, force: true });
@@ -56,7 +56,7 @@ test('readiness is 200 when pyan3 is unavailable, as long as build output and wo
   await withBuiltRepo(async (config) => {
     const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache(), getPyan3Status: () => fakeStatus({ ok: false }) });
     const res = fakeRes();
-    await handler(fakeReq(false), res);
+    await handler(fakeReq(), res);
     assert.equal(res.statusCode, 200);
     assert.equal(res.body.status, 'ready');
     assert.equal(res.body.checks.pyan3.ok, false);
@@ -68,7 +68,7 @@ test('readiness is 200 when pyan3 is available too', async () => {
   await withBuiltRepo(async (config) => {
     const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache(), getPyan3Status: () => fakeStatus({ ok: true }) });
     const res = fakeRes();
-    await handler(fakeReq(false), res);
+    await handler(fakeReq(), res);
     assert.equal(res.statusCode, 200);
     assert.equal(res.body.checks.pyan3.ok, true);
   });
@@ -78,7 +78,7 @@ test('readiness omits the pyan3 check entirely when no getter is supplied', asyn
   await withBuiltRepo(async (config) => {
     const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache() });
     const res = fakeRes();
-    await handler(fakeReq(false), res);
+    await handler(fakeReq(), res);
     assert.equal(res.statusCode, 200);
     assert.equal(res.body.checks.pyan3, undefined);
   });
@@ -88,10 +88,10 @@ test('readiness is still 503 when the build output is missing, regardless of pya
   const repoRoot = await mkdtemp(join(tmpdir(), 'codeflow-health-missing-'));
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'codeflow-health-ws-'));
   try {
-    const config = { distDir: join(repoRoot, 'dist'), workspaceRoot, appPassword: APP_PASSWORD, cacheEnabled: true };
+    const config = { distDir: join(repoRoot, 'dist'), workspaceRoot, cacheEnabled: true };
     const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache(), getPyan3Status: () => fakeStatus({ ok: true }) });
     const res = fakeRes();
-    await handler(fakeReq(false), res);
+    await handler(fakeReq(), res);
     assert.equal(res.statusCode, 503);
     assert.equal(res.body.status, 'not_ready');
     assert.equal(res.body.checks.buildOutput.ok, false);
@@ -101,37 +101,16 @@ test('readiness is still 503 when the build output is missing, regardless of pya
   }
 });
 
-// --- MOO-72 Commit 5: authenticated-detail gating ---------------------------
+// --- /readyz always includes full detail (no auth tier exists anymore) -----
 
-test('detail/version/checkedAt fields are omitted from an unauthenticated response', async () => {
+test('detail/version/checkedAt fields are always present, regardless of request headers', async () => {
   await withBuiltRepo(async (config) => {
     const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache(), getPyan3Status: () => fakeStatus({ ok: false, detail: 'boom', version: '9.9.9' }) });
     const res = fakeRes();
-    await handler(fakeReq(false), res);
-    assert.equal(res.body.checks.pyan3.detail, undefined);
-    assert.equal(res.body.checks.pyan3.version, undefined);
-    assert.equal(res.body.checks.nodeRuntime.version, undefined);
-  });
-});
-
-test('detail/version/checkedAt fields are present in an authenticated response', async () => {
-  await withBuiltRepo(async (config) => {
-    const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache(), getPyan3Status: () => fakeStatus({ ok: false, detail: 'boom', version: '9.9.9' }) });
-    const res = fakeRes();
-    await handler(fakeReq(true), res);
+    await handler(fakeReq(), res);
     assert.equal(res.body.checks.pyan3.detail, 'boom');
     assert.equal(res.body.checks.pyan3.version, '9.9.9');
     assert.equal(typeof res.body.checks.nodeRuntime.version, 'string');
-  });
-});
-
-test('a request with a wrong bearer token is treated as unauthenticated, not a crash', async () => {
-  await withBuiltRepo(async (config) => {
-    const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache(), getPyan3Status: () => fakeStatus({ detail: 'x' }) });
-    const res = fakeRes();
-    await handler({ headers: { authorization: 'Bearer wrong-token' } }, res);
-    assert.equal(res.statusCode, 200);
-    assert.equal(res.body.checks.pyan3.detail, undefined);
   });
 });
 
@@ -143,7 +122,7 @@ test('cacheStorage reports ok+disabled-detail when caching is disabled by config
     const cache = freshHealthCheckCache();
     const handler = createReadinessHandler({ config, healthCheckCache: cache });
     const res = fakeRes();
-    await handler(fakeReq(true), res);
+    await handler(fakeReq(), res);
     assert.equal(res.body.checks.cacheStorage.ok, true);
     assert.match(res.body.checks.cacheStorage.detail, /disabled by configuration/);
     assert.equal(cache.size, 0, 'a disabled-cache check must never write to the cache, isolated instance or not');
@@ -155,7 +134,7 @@ test('cacheStorage round-trips against the isolated instance when caching is ena
     const cache = freshHealthCheckCache();
     const handler = createReadinessHandler({ config, healthCheckCache: cache });
     const res = fakeRes();
-    await handler(fakeReq(false), res);
+    await handler(fakeReq(), res);
     assert.equal(res.body.checks.cacheStorage.ok, true);
     assert.equal(res.body.checks.cacheStorage.gatesReadiness, true);
   });
@@ -171,7 +150,7 @@ test('cacheStorage self-test never touches a separate, real (live) GraphCache in
     const healthCheckCache = freshHealthCheckCache();
     const handler = createReadinessHandler({ config, healthCheckCache });
     const res = fakeRes();
-    await handler(fakeReq(false), res);
+    await handler(fakeReq(), res);
 
     assert.equal(res.body.checks.cacheStorage.ok, true);
     assert.equal(liveCache.size, sizeBefore, 'the live cache must be completely untouched by the health check');
@@ -198,7 +177,7 @@ test('nodeRuntime check reflects process.version and gates readiness', async () 
   await withBuiltRepo(async (config) => {
     const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache() });
     const res = fakeRes();
-    await handler(fakeReq(false), res);
+    await handler(fakeReq(), res);
     assert.equal(res.body.checks.nodeRuntime.gatesReadiness, true);
     assert.equal(res.body.checks.nodeRuntime.ok, isSupportedNodeVersion(process.version));
   });
@@ -215,7 +194,7 @@ test('pythonRuntime check is separate from pyan3 and never gates readiness', asy
       getPythonRuntimeStatus: () => fakeStatus({ ok: false, detail: 'python broken' }),
     });
     const res = fakeRes();
-    await handler(fakeReq(true), res);
+    await handler(fakeReq(), res);
     assert.equal(res.body.checks.pythonRuntime.ok, false);
     assert.equal(res.body.checks.pythonRuntime.gatesReadiness, false);
     assert.equal(res.body.checks.pythonRuntime.detail, 'python broken');
@@ -231,7 +210,7 @@ test('codeVisualizer check is reported via getCodeVisualizerStatus and never gat
       getCodeVisualizerStatus: () => fakeStatus({ ok: false, detail: 'grammar missing' }),
     });
     const res = fakeRes();
-    await handler(fakeReq(true), res);
+    await handler(fakeReq(), res);
     assert.equal(res.body.checks.codeVisualizer.ok, false);
     assert.equal(res.body.checks.codeVisualizer.gatesReadiness, false);
     assert.equal(res.body.status, 'ready');
@@ -242,7 +221,7 @@ test('pythonTreeSitter reflects the injected static capability flag, never gates
   await withBuiltRepo(async (config) => {
     const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache(), pythonTreeSitterCapable: false });
     const res = fakeRes();
-    await handler(fakeReq(true), res);
+    await handler(fakeReq(), res);
     assert.equal(res.body.checks.pythonTreeSitter.ok, false);
     assert.equal(res.body.checks.pythonTreeSitter.gatesReadiness, false);
     assert.match(res.body.checks.pythonTreeSitter.detail, /falls back to the heuristic/);
@@ -254,7 +233,7 @@ test('pythonTreeSitter is omitted when not a boolean (e.g. undefined)', async ()
   await withBuiltRepo(async (config) => {
     const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache() });
     const res = fakeRes();
-    await handler(fakeReq(false), res);
+    await handler(fakeReq(), res);
     assert.equal(res.body.checks.pythonTreeSitter, undefined);
   });
 });
@@ -267,7 +246,7 @@ test('githubReachable check is reported via getGithubReachableStatus and never g
       getGithubReachableStatus: () => ({ ok: false, detail: 'GitHub rejected the configured token (401 Unauthorized)', checkedAt: '2026-01-01T00:00:00.000Z' }),
     });
     const res = fakeRes();
-    await handler(fakeReq(true), res);
+    await handler(fakeReq(), res);
     assert.equal(res.body.checks.githubReachable.ok, false);
     assert.equal(res.body.checks.githubReachable.gatesReadiness, false);
     assert.match(res.body.checks.githubReachable.detail, /rejected the configured token/);
@@ -279,7 +258,7 @@ test('graphvizDot is always reported as not-applicable rather than a passed chec
   await withBuiltRepo(async (config) => {
     const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache() });
     const res = fakeRes();
-    await handler(fakeReq(false), res);
+    await handler(fakeReq(), res);
     assert.equal(res.body.checks.graphvizDot.applicable, false);
     assert.equal(res.body.checks.graphvizDot.ok, undefined, 'must not read as though a check ran and passed');
     assert.equal(res.body.checks.graphvizDot.gatesReadiness, false);
@@ -289,7 +268,7 @@ test('graphvizDot is always reported as not-applicable rather than a passed chec
 
 // --- MOO-72 Commit 8: featureFlags check ------------------------------------
 
-test('featureFlags reports the four Commit 8 flags to an authenticated caller, and never gates readiness', async () => {
+test('featureFlags reports the four Commit 8 flags, and never gates readiness', async () => {
   await withBuiltRepo(async (baseConfig) => {
     const config = {
       ...baseConfig,
@@ -300,7 +279,7 @@ test('featureFlags reports the four Commit 8 flags to an authenticated caller, a
     };
     const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache() });
     const res = fakeRes();
-    await handler(fakeReq(true), res);
+    await handler(fakeReq(), res);
     assert.equal(res.body.checks.featureFlags.ok, true);
     assert.equal(res.body.checks.featureFlags.gatesReadiness, false);
     assert.deepEqual(res.body.checks.featureFlags.detail, {
@@ -310,17 +289,6 @@ test('featureFlags reports the four Commit 8 flags to an authenticated caller, a
       experimentalInteractionsEnabled: false,
     });
     assert.equal(res.body.status, 'ready', 'a disabled layer is an operator choice, not a readiness failure');
-  });
-});
-
-test('featureFlags detail is omitted from an unauthenticated response', async () => {
-  await withBuiltRepo(async (baseConfig) => {
-    const config = { ...baseConfig, fileLayerEnabled: false };
-    const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache() });
-    const res = fakeRes();
-    await handler(fakeReq(false), res);
-    assert.equal(res.body.checks.featureFlags.ok, true);
-    assert.equal(res.body.checks.featureFlags.detail, undefined);
   });
 });
 

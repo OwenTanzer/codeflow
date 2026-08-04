@@ -2,11 +2,11 @@
 //
 // Establishes the durable application shell: config validated at startup
 // (fail fast, not on first request), health/readiness endpoints (public —
-// Railway's own monitoring needs to reach these without a token),
-// namespaced /api/* analysis endpoints gated behind a private-use auth
-// token + per-IP rate limiting, structured per-request logging, and the
-// request-scoped workspace abstraction later analyzers (MOO-70/71) will
-// build on.
+// Railway's own monitoring needs to reach these), namespaced /api/*
+// analysis endpoints (public, per-IP rate limited only — no auth gate;
+// see the removal note in server/lib/config.js), structured per-request
+// logging, and the request-scoped workspace abstraction later analyzers
+// (MOO-70/71) will build on.
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -16,7 +16,6 @@ import { log, configureLogger, generateRequestId } from './lib/logger.js';
 import { WorkspaceManager } from './lib/workspace.js';
 import { createStaticHandler } from './lib/static.js';
 import { createHealthHandler, createReadinessHandler, readBuildInfo } from './lib/health.js';
-import { isAuthorized } from './lib/auth.js';
 import { RateLimiter } from './lib/rate-limit.js';
 import { GraphCache } from './lib/graph-cache.js';
 import { Metrics } from './lib/metrics.js';
@@ -98,13 +97,12 @@ async function main() {
   }
 
   // Configured immediately once config exists -- everything logged from
-  // this point on is level-gated and redacted (APP_PASSWORD/GITHUB_TOKEN
-  // scrubbed verbatim wherever they'd appear in a logged string, plus the
-  // generic token-shape patterns in logger.js). The one thing that can
-  // never go through this path is the loadConfig failure above: there is
-  // no config yet at that point to redact with, so it stays a plain
-  // stderr write.
-  configureLogger({ level: config.logLevel, secrets: [config.appPassword, config.githubToken] });
+  // this point on is level-gated and redacted (GITHUB_TOKEN scrubbed
+  // verbatim wherever it'd appear in a logged string, plus the generic
+  // token-shape patterns in logger.js). The one thing that can never go
+  // through this path is the loadConfig failure above: there is no config
+  // yet at that point to redact with, so it stays a plain stderr write.
+  configureLogger({ level: config.logLevel, secrets: [config.githubToken] });
 
   const workspaceManager = new WorkspaceManager(config.workspaceRoot);
   try {
@@ -339,9 +337,6 @@ async function main() {
         await handleHealth(req, res);
       } else if (url.pathname === '/readyz') {
         await handleReadiness(req, res);
-      } else if (isApiRoute && !isAuthorized(req, config)) {
-        log('warn', 'rejected unauthenticated request', { requestId, path: url.pathname });
-        sendJson(res, 401, { error: 'Missing or invalid Authorization header' });
       } else if (isApiRoute && !checkRateLimit(rateLimiter, req, res).allowed) {
         log('warn', 'rejected rate-limited request', { requestId, path: url.pathname });
         sendJson(res, 429, { error: 'Rate limit exceeded, try again shortly' });

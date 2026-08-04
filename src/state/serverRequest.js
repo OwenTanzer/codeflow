@@ -1,20 +1,14 @@
-// Shared authenticated server-request plumbing — MOO-71 Commit 7.
+// Shared server-request plumbing — MOO-71 Commit 7.
 //
 // Extracted from src/state/graphFileClient.js (MOO-70 Commit 8), which was
-// the only caller of the private server's auth-gated /api/* routes and so
-// built its `Authorization: Bearer` header inline. Commit 7 adds a second
-// caller (src/state/graphFunctionClient.js), and both panels must go
-// through one authenticated request helper rather than independently
-// constructing headers — otherwise the password's handling (and any future
-// change to it) is duplicated per layer, which is exactly how one of the
-// two ends up diverging.
-//
-// Deliberately NOT a general credential-management or API-client layer.
-// This is application-scoped ephemeral auth state: the password is passed in
-// per call from React memory, never stored, cached, or read from
-// storage here. It must never reach NavigationHistory, route state, URLs,
-// GraphIR, diagnostics, or logs — this module is the chokepoint that keeps
-// that property checkable in one place instead of per call site.
+// the only caller of the private server's /api/* routes. Commit 7 adds a
+// second caller (src/state/graphFunctionClient.js), and both panels go
+// through one request helper rather than independently constructing
+// requests — one chokepoint for transport/error-mapping concerns instead of
+// per-layer duplication. The app's own auth gate (this module originally
+// built an `Authorization: Bearer <appPassword>` header here) was removed
+// entirely in a later change; there is no credential of any kind sent on
+// these requests anymore.
 
 /**
  * Base class for the per-endpoint client errors. Carries the fields every
@@ -48,18 +42,16 @@ export class ServerRequestError extends Error {
  * @param {object} input
  * @param {string} input.path - server route path, e.g. '/api/graph/file'
  * @param {object} input.body - the endpoint-specific request body
- * @param {string} input.appPassword - the private server's APP_PASSWORD, held only in React memory
  * @param {AbortSignal} [input.signal] - MOO-72 Commit 1B: optional, threaded straight into fetch's RequestInit; undefined is a no-op
  * @returns {{url: string, init: RequestInit}}
  */
-export function buildServerJsonRequest({ path, body, appPassword, signal }) {
+export function buildServerJsonRequest({ path, body, signal }) {
   return {
     url: path,
     init: {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + appPassword,
       },
       body: JSON.stringify(body),
       signal,

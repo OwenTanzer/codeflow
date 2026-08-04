@@ -15,11 +15,9 @@ test('buildGraphFileRequest sends the parent resolvedSha as `ref`, not a separat
     resolvedSha: 'a'.repeat(40),
     path: 'src/app.py',
     depth: 'symbols',
-    appPassword: 'secret-token',
   });
   assert.equal(url, '/api/graph/file');
   assert.equal(init.method, 'POST');
-  assert.equal(init.headers.Authorization, 'Bearer secret-token');
   const body = JSON.parse(init.body);
   assert.equal(body.ref, 'a'.repeat(40));
   assert.equal(body.path, 'src/app.py');
@@ -33,7 +31,6 @@ test('buildGraphFileRequest omits depth when not provided', () => {
     repo: 'Hello-World',
     resolvedSha: 'a'.repeat(40),
     path: 'src/app.py',
-    appPassword: 'secret-token',
   });
   const body = JSON.parse(init.body);
   assert.equal(body.depth, undefined);
@@ -46,7 +43,6 @@ test('buildGraphFileRequest sends `pr` (not `ref`) when a PR number is given, pe
     resolvedSha: 'a'.repeat(40),
     pr: 42,
     path: 'src/app.py',
-    appPassword: 'secret-token',
   });
   const body = JSON.parse(init.body);
   assert.equal(body.pr, 42);
@@ -63,7 +59,6 @@ test('buildGraphFileRequest sends expectedResolvedSha/expectedSourceOwner/expect
     sourceOwner: 'contributor',
     sourceRepo: 'Hello-World',
     path: 'src/app.py',
-    appPassword: 'secret-token',
   });
   const body = JSON.parse(init.body);
   assert.equal(body.expectedResolvedSha, 'a'.repeat(40));
@@ -77,7 +72,6 @@ test('buildGraphFileRequest does not send expected* fields outside PR mode', () 
     repo: 'Hello-World',
     resolvedSha: 'a'.repeat(40),
     path: 'src/app.py',
-    appPassword: 'secret-token',
   });
   const body = JSON.parse(init.body);
   assert.equal(body.expectedResolvedSha, undefined);

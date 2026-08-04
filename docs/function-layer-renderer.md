@@ -79,12 +79,13 @@ Both were real bugs in the layered renderer, found only by looking at output:
 `tests/function-layer-smoke.mjs` (MOO-71 Commit 8) drives the whole path
 through the real UI — repository → file → function → back — against
 `psf/requests`. Not part of the zero-setup `node --test` suite; it needs a
-running server plus the app password (MOO-86: the separate client-side
-GitHub PAT this script used to fill in was removed, and the password
-itself replaced the old generated `AUTH_TOKEN`):
+running server (MOO-86: the separate client-side GitHub PAT this script
+used to fill in was removed; the app's own password gate that briefly
+replaced the old generated `AUTH_TOKEN` was later removed entirely as
+well, so there's no credential to supply here at all):
 
 ```
-node tests/function-layer-smoke.mjs http://localhost:3000/ <appPassword>
+node tests/function-layer-smoke.mjs http://localhost:3000/
 ```
 
 Latest run, drilling into `SessionRedirectMixin.resolve_redirects`:

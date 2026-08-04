@@ -52,9 +52,9 @@ jobs:
       # public-repo reads both scripts make, including on a pull_request
       # run from a fork. Deliberately does NOT run function-layer-smoke.mjs
       # here -- that one is Playwright/browser-driven, needs a real GitHub
-      # PAT (not just API-read access) and the server's own APP_PASSWORD via
-      # a separate-terminal flow, and belongs to MOO-71's visual-smoke path,
-      # not this structural-smoke commit.
+      # PAT (not just API-read access) via a separate-terminal flow, and
+      # belongs to MOO-71's visual-smoke path, not this structural-smoke
+      # commit.
       - name: Run server smoke test
         run: node tests/server-smoke.mjs
         env:

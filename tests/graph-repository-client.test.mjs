@@ -13,11 +13,9 @@ test('buildGraphRepositoryRequest sends owner/repo/ref/excludePatterns as given'
     repo: 'Hello-World',
     ref: 'main',
     excludePatterns: ['node_modules', '*.test.js'],
-    appPassword: 'secret-token',
   });
   assert.equal(url, '/api/graph/repository');
   assert.equal(init.method, 'POST');
-  assert.equal(init.headers.Authorization, 'Bearer secret-token');
   const body = JSON.parse(init.body);
   assert.equal(body.owner, 'octocat');
   assert.equal(body.repo, 'Hello-World');
@@ -31,7 +29,6 @@ test('buildGraphRepositoryRequest sends `pr` instead of `ref` when a PR number i
     owner: 'octocat',
     repo: 'Hello-World',
     pr: 42,
-    appPassword: 'secret-token',
   });
   const body = JSON.parse(init.body);
   assert.equal(body.pr, 42);
@@ -42,7 +39,6 @@ test('buildGraphRepositoryRequest omits ref/pr entirely for a whole-repository (
   const { init } = buildGraphRepositoryRequest({
     owner: 'octocat',
     repo: 'Hello-World',
-    appPassword: 'secret-token',
   });
   const body = JSON.parse(init.body);
   assert.equal(body.ref, undefined);
@@ -50,10 +46,10 @@ test('buildGraphRepositoryRequest omits ref/pr entirely for a whole-repository (
 });
 
 test('buildGraphRepositoryRequest omits excludePatterns entirely when empty or not provided, rather than sending []', () => {
-  const { init: init1 } = buildGraphRepositoryRequest({ owner: 'octocat', repo: 'Hello-World', appPassword: 't' });
+  const { init: init1 } = buildGraphRepositoryRequest({ owner: 'octocat', repo: 'Hello-World' });
   assert.equal(JSON.parse(init1.body).excludePatterns, undefined);
 
-  const { init: init2 } = buildGraphRepositoryRequest({ owner: 'octocat', repo: 'Hello-World', excludePatterns: [], appPassword: 't' });
+  const { init: init2 } = buildGraphRepositoryRequest({ owner: 'octocat', repo: 'Hello-World', excludePatterns: [] });
   assert.equal(JSON.parse(init2.body).excludePatterns, undefined);
 });
 

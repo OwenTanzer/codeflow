@@ -22,16 +22,14 @@ function baseInput(overrides = {}) {
     resolvedSha: SHA,
     path: 'src/service.py',
     symbolPath: ['Service', 'run'],
-    appPassword: 'secret-token',
     ...overrides,
   };
 }
 
-test('buildGraphFunctionRequest posts to /api/graph/function with the shared bearer header', () => {
+test('buildGraphFunctionRequest posts to /api/graph/function with a JSON content type', () => {
   const { url, init } = buildGraphFunctionRequest(baseInput());
   assert.equal(url, '/api/graph/function');
   assert.equal(init.method, 'POST');
-  assert.equal(init.headers.Authorization, 'Bearer secret-token');
   assert.equal(init.headers['Content-Type'], 'application/json');
 });
 
