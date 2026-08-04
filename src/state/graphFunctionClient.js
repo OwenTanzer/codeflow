@@ -51,12 +51,12 @@ export class GraphFunctionClientError extends ServerRequestError {
  * @param {string} [input.sourceRepo] - sent as `expectedSourceRepo` only in PR mode
  * @param {string} input.path - the file containing the target function
  * @param {string[]} input.symbolPath - the target function/method's exact scope chain, from its SourceCoordinate
- * @param {string} input.serverAuthToken
+ * @param {string} input.appPassword
  * @param {string} [input.sessionId] - MOO-72 Commit 1B: correlates this request with the rest of one drill-down chain
  * @param {AbortSignal} [input.signal] - MOO-72 Commit 1B: forwarded straight to fetch
  * @returns {{url: string, init: RequestInit}}
  */
-export function buildGraphFunctionRequest({ owner, repo, resolvedSha, pr, sourceOwner, sourceRepo, path, symbolPath, serverAuthToken, sessionId, signal }) {
+export function buildGraphFunctionRequest({ owner, repo, resolvedSha, pr, sourceOwner, sourceRepo, path, symbolPath, appPassword, sessionId, signal }) {
   const body = { owner, repo, path, symbolPath, sessionId };
   if (pr != null) {
     body.pr = pr;
@@ -66,7 +66,7 @@ export function buildGraphFunctionRequest({ owner, repo, resolvedSha, pr, source
   } else {
     body.ref = resolvedSha;
   }
-  return buildServerJsonRequest({ path: '/api/graph/function', body, serverAuthToken, signal });
+  return buildServerJsonRequest({ path: '/api/graph/function', body, appPassword, signal });
 }
 
 /**

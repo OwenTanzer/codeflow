@@ -5,12 +5,12 @@
 // built its `Authorization: Bearer` header inline. Commit 7 adds a second
 // caller (src/state/graphFunctionClient.js), and both panels must go
 // through one authenticated request helper rather than independently
-// constructing headers — otherwise the token's handling (and any future
+// constructing headers — otherwise the password's handling (and any future
 // change to it) is duplicated per layer, which is exactly how one of the
 // two ends up diverging.
 //
 // Deliberately NOT a general credential-management or API-client layer.
-// This is application-scoped ephemeral auth state: the token is passed in
+// This is application-scoped ephemeral auth state: the password is passed in
 // per call from React memory, never stored, cached, or read from
 // storage here. It must never reach NavigationHistory, route state, URLs,
 // GraphIR, diagnostics, or logs — this module is the chokepoint that keeps
@@ -18,7 +18,7 @@
 
 /**
  * Base class for the per-endpoint client errors. Carries the fields every
- * caller needs to distinguish a rejected token (401) from an unsupported
+ * caller needs to distinguish a rejected password (401) from an unsupported
  * input (403/422) from a genuine server failure, without each endpoint
  * client re-deriving them from the response body.
  */
@@ -48,18 +48,18 @@ export class ServerRequestError extends Error {
  * @param {object} input
  * @param {string} input.path - server route path, e.g. '/api/graph/file'
  * @param {object} input.body - the endpoint-specific request body
- * @param {string} input.serverAuthToken - the private server's AUTH_TOKEN, held only in React memory
+ * @param {string} input.appPassword - the private server's APP_PASSWORD, held only in React memory
  * @param {AbortSignal} [input.signal] - MOO-72 Commit 1B: optional, threaded straight into fetch's RequestInit; undefined is a no-op
  * @returns {{url: string, init: RequestInit}}
  */
-export function buildServerJsonRequest({ path, body, serverAuthToken, signal }) {
+export function buildServerJsonRequest({ path, body, appPassword, signal }) {
   return {
     url: path,
     init: {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + serverAuthToken,
+        Authorization: 'Bearer ' + appPassword,
       },
       body: JSON.stringify(body),
       signal,

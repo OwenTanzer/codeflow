@@ -13,7 +13,7 @@ test('buildGraphRepositoryRequest sends owner/repo/ref/excludePatterns as given'
     repo: 'Hello-World',
     ref: 'main',
     excludePatterns: ['node_modules', '*.test.js'],
-    serverAuthToken: 'secret-token',
+    appPassword: 'secret-token',
   });
   assert.equal(url, '/api/graph/repository');
   assert.equal(init.method, 'POST');
@@ -31,7 +31,7 @@ test('buildGraphRepositoryRequest sends `pr` instead of `ref` when a PR number i
     owner: 'octocat',
     repo: 'Hello-World',
     pr: 42,
-    serverAuthToken: 'secret-token',
+    appPassword: 'secret-token',
   });
   const body = JSON.parse(init.body);
   assert.equal(body.pr, 42);
@@ -42,7 +42,7 @@ test('buildGraphRepositoryRequest omits ref/pr entirely for a whole-repository (
   const { init } = buildGraphRepositoryRequest({
     owner: 'octocat',
     repo: 'Hello-World',
-    serverAuthToken: 'secret-token',
+    appPassword: 'secret-token',
   });
   const body = JSON.parse(init.body);
   assert.equal(body.ref, undefined);
@@ -50,10 +50,10 @@ test('buildGraphRepositoryRequest omits ref/pr entirely for a whole-repository (
 });
 
 test('buildGraphRepositoryRequest omits excludePatterns entirely when empty or not provided, rather than sending []', () => {
-  const { init: init1 } = buildGraphRepositoryRequest({ owner: 'octocat', repo: 'Hello-World', serverAuthToken: 't' });
+  const { init: init1 } = buildGraphRepositoryRequest({ owner: 'octocat', repo: 'Hello-World', appPassword: 't' });
   assert.equal(JSON.parse(init1.body).excludePatterns, undefined);
 
-  const { init: init2 } = buildGraphRepositoryRequest({ owner: 'octocat', repo: 'Hello-World', excludePatterns: [], serverAuthToken: 't' });
+  const { init: init2 } = buildGraphRepositoryRequest({ owner: 'octocat', repo: 'Hello-World', excludePatterns: [], appPassword: 't' });
   assert.equal(JSON.parse(init2.body).excludePatterns, undefined);
 });
 

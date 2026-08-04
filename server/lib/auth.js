@@ -1,6 +1,6 @@
 // Private-use authentication gate — MOO-67 Commit 6.
 //
-// A shared-secret check (Authorization: Bearer <AUTH_TOKEN>), not a full
+// A shared-secret check (Authorization: Bearer <APP_PASSWORD>), not a full
 // multi-user login system — this is a private tool for one operator that
 // happens to be publicly addressable (Railway gives it a public URL), not
 // a multi-tenant service. Timing-safe comparison so a valid token can't be
@@ -28,9 +28,9 @@ export function extractBearerToken(req) {
   return match ? match[1] : null;
 }
 
-/** @param {{authToken: string}} config */
+/** @param {{appPassword: string}} config */
 export function isAuthorized(req, config) {
   const token = extractBearerToken(req);
   if (!token) return false;
-  return safeEqual(token, config.authToken);
+  return safeEqual(token, config.appPassword);
 }

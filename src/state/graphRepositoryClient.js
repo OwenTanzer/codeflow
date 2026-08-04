@@ -33,14 +33,14 @@ export class GraphRepositoryClientError extends ServerRequestError {
  * @param {string} [input.ref] - a branch name or commit SHA; omit for the default branch
  * @param {number} [input.pr] - a PR number, mutually exclusive with ref
  * @param {string[]} [input.excludePatterns] - raw exclude-pattern strings (validated/capped server-side)
- * @param {string} input.serverAuthToken
+ * @param {string} input.appPassword
  * @param {string} [input.sessionId] - MOO-72 Commit 1B: correlates this request with the rest of one drill-down chain
  * @param {AbortSignal} [input.signal] - MOO-72 Commit 1B: forwarded straight to fetch
  * @returns {{url: string, init: RequestInit}}
  */
-export function buildGraphRepositoryRequest({ owner, repo, ref, pr, excludePatterns, serverAuthToken, sessionId, signal }) {
+export function buildGraphRepositoryRequest({ owner, repo, ref, pr, excludePatterns, appPassword, sessionId, signal }) {
   const body = { owner, repo, ref: ref || undefined, pr: pr || undefined, excludePatterns: excludePatterns && excludePatterns.length ? excludePatterns : undefined, sessionId };
-  return buildServerJsonRequest({ path: '/api/graph/repository', body, serverAuthToken, signal });
+  return buildServerJsonRequest({ path: '/api/graph/repository', body, appPassword, signal });
 }
 
 /**

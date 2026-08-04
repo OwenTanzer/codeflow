@@ -3,7 +3,7 @@
 // Not part of the zero-setup `node --test tests/*.test.mjs` suite (same
 // reason as server-smoke.mjs/function-layer-smoke.mjs — this needs dist/
 // already built and a real GitHub credential). Spawns its own isolated real
-// server process (own port, own WORKSPACE_ROOT, own AUTH_TOKEN) rather than
+// server process (own port, own WORKSPACE_ROOT, own APP_PASSWORD) rather than
 // sharing server-smoke.mjs's, so the two scripts never fight over the same
 // process or rate-limit budget.
 //
@@ -36,7 +36,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
 const port = 3998; // distinct from server-smoke.mjs's 3999 -- own isolated process
 const baseUrl = `http://localhost:${port}`;
-const AUTH_TOKEN = 'e2e-construction-smoke-secret';
+const APP_PASSWORD = 'e2e-construction-smoke-secret';
 
 // Same fixture function-layer-smoke.mjs already uses -- proven to work,
 // avoids inventing a second one just for this script.
@@ -83,7 +83,7 @@ async function waitForReady(timeoutMs) {
 }
 
 function authed(headers = {}) {
-  return { Authorization: `Bearer ${AUTH_TOKEN}`, ...headers };
+  return { Authorization: `Bearer ${APP_PASSWORD}`, ...headers };
 }
 
 async function postJson(path, body) {
@@ -119,7 +119,7 @@ const child = spawn(process.execPath, [join(repoRoot, 'server', 'index.js')], {
     ...process.env,
     PORT: String(port),
     WORKSPACE_ROOT: workspaceRoot,
-    AUTH_TOKEN,
+    APP_PASSWORD,
     GITHUB_TOKEN: githubToken,
     ALLOWED_OWNERS: [REPO_OWNER, CHAIN_OWNER, ...(process.env.PRIVATE_FIXTURE_REPO ? [process.env.PRIVATE_FIXTURE_REPO.split('/')[0]] : [])].join(','),
     RATE_LIMIT_PER_MINUTE: '30', // generous -- this script's own budget, unrelated to server-smoke.mjs's
