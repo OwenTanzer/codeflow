@@ -98,13 +98,13 @@ async function main() {
   }
 
   // Configured immediately once config exists -- everything logged from
-  // this point on is level-gated and redacted (AUTH_TOKEN/GITHUB_TOKEN
+  // this point on is level-gated and redacted (APP_PASSWORD/GITHUB_TOKEN
   // scrubbed verbatim wherever they'd appear in a logged string, plus the
   // generic token-shape patterns in logger.js). The one thing that can
   // never go through this path is the loadConfig failure above: there is
   // no config yet at that point to redact with, so it stays a plain
   // stderr write.
-  configureLogger({ level: config.logLevel, secrets: [config.authToken, config.githubToken] });
+  configureLogger({ level: config.logLevel, secrets: [config.appPassword, config.githubToken] });
 
   const workspaceManager = new WorkspaceManager(config.workspaceRoot);
   try {

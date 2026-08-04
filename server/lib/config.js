@@ -60,9 +60,15 @@ export function loadConfig({ repoRoot, env = process.env }) {
   // + repository allowlist. All required, always -- no environment-based
   // bypass, so a missing NODE_ENV=production can't silently ship an
   // unprotected instance. Set these explicitly for local development too.
-  const authToken = env.AUTH_TOKEN || '';
-  if (!authToken) {
-    errors.push('AUTH_TOKEN is required — this is the shared secret private clients must send as `Authorization: Bearer <token>`.');
+  //
+  // MOO-86: previously AUTH_TOKEN, a 32-byte secret the operator had to
+  // generate themselves (node -e "console.log(require('crypto')...)").
+  // Same bearer-token mechanism, but the operator now just picks a
+  // memorable password directly -- no generation step, no separate
+  // client-side GitHub credential (that half was removed in PR #20).
+  const appPassword = env.APP_PASSWORD || '';
+  if (!appPassword) {
+    errors.push('APP_PASSWORD is required — this is the password private clients must send as `Authorization: Bearer <password>`.');
   }
 
   const githubToken = env.GITHUB_TOKEN || '';
@@ -259,7 +265,7 @@ export function loadConfig({ repoRoot, env = process.env }) {
     distDir,
     workspaceRoot,
     nodeEnv,
-    authToken,
+    appPassword,
     githubToken,
     allowedRepos,
     allowedOwners,

@@ -11,7 +11,7 @@ import { loadConfig, ConfigError } from '../server/lib/config.js';
 // specifically about auth/github/allowlist validation don't need to
 // repeat it.
 const VALID_ENV = {
-  AUTH_TOKEN: 'test-auth-token',
+  APP_PASSWORD: 'test-app-password',
   GITHUB_TOKEN: 'test-github-token',
   ALLOWED_OWNERS: 'octocat',
 };
@@ -52,7 +52,7 @@ test('loadConfig succeeds and applies defaults when all required config is prese
     assert.equal(config.distDir, join(repoRoot, 'dist'));
     assert.equal(config.nodeEnv, 'development');
     assert.ok(config.workspaceRoot);
-    assert.equal(config.authToken, 'test-auth-token');
+    assert.equal(config.appPassword, 'test-app-password');
     assert.equal(config.githubToken, 'test-github-token');
     assert.deepEqual(config.allowedOwners, ['octocat']);
     assert.equal(config.rateLimitPerMinute, 30);
@@ -156,11 +156,11 @@ test('loadConfig respects WORKSPACE_ROOT and NODE_ENV overrides', async () => {
   });
 });
 
-test('loadConfig requires AUTH_TOKEN', async () => {
+test('loadConfig requires APP_PASSWORD', async () => {
   await withBuiltRepo((repoRoot) => {
     const env = { ...VALID_ENV };
-    delete env.AUTH_TOKEN;
-    assert.throws(() => loadConfig({ repoRoot, env }), /AUTH_TOKEN is required/);
+    delete env.APP_PASSWORD;
+    assert.throws(() => loadConfig({ repoRoot, env }), /APP_PASSWORD is required/);
   });
 });
 

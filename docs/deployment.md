@@ -14,8 +14,8 @@ the reusable procedure it's based on.
 
 ```
 npm install                     # runs setup:codevisualizer + postinstall (pyan3) automatically
-AUTH_TOKEN=dev-secret GITHUB_TOKEN=$(gh auth token) ALLOWED_OWNERS=<your-github-username> npm run build
-AUTH_TOKEN=dev-secret GITHUB_TOKEN=$(gh auth token) ALLOWED_OWNERS=<your-github-username> npm start
+APP_PASSWORD=dev-secret GITHUB_TOKEN=$(gh auth token) ALLOWED_OWNERS=<your-github-username> npm run build
+APP_PASSWORD=dev-secret GITHUB_TOKEN=$(gh auth token) ALLOWED_OWNERS=<your-github-username> npm start
 ```
 
 `npm run build` also runs `scripts/generate-build-info.mjs`, which writes
@@ -25,7 +25,7 @@ startup and serves it from `/healthz` and the UI's corner badge. Missing
 the file (e.g. running `node server/index.js` directly without a prior
 build) falls back to `"unknown"` rather than failing startup.
 
-`AUTH_TOKEN`, `GITHUB_TOKEN`, and at least one of `ALLOWED_OWNERS`/
+`APP_PASSWORD`, `GITHUB_TOKEN`, and at least one of `ALLOWED_OWNERS`/
 `ALLOWED_REPOS` are required at startup with no bypass — a missing
 `NODE_ENV=production` can't silently ship an unprotected instance. See
 `server/lib/config.js` for the full set of environment variables and their
@@ -199,7 +199,7 @@ failure modes and their real recovery procedures:
 for the `codeviz` service, or repeated `ENOSPC`-shaped errors in the logs.
 **The fix is a restart or redeploy.** `WORKSPACE_ROOT` is not set as a
 Railway environment variable on this deployment (confirmed — only
-`AUTH_TOKEN`/`GITHUB_TOKEN`/`ALLOWED_OWNERS`/`BUILD_COMMIT_SHA`/`NODE_ENV`/
+`APP_PASSWORD`/`GITHUB_TOKEN`/`ALLOWED_OWNERS`/`BUILD_COMMIT_SHA`/`NODE_ENV`/
 `PORT` are set), so `server/lib/config.js` defaults it to the container's
 own OS tmpdir; `railway.json` declares no persistent volume. That means
 the **entire container filesystem** — not just the workspace directories
@@ -224,7 +224,7 @@ endpoint, and separately (non-gating) via `GET /readyz`'s
 `checks.githubReachable` (refreshed every 5 minutes in the background —
 see `server/index.js`'s periodic `refreshDependencyStatuses` interval).
 Rotate with `railway variable set GITHUB_TOKEN=<new value>` (mirrors the
-existing `AUTH_TOKEN` rotation pattern already documented in
+existing `APP_PASSWORD` rotation pattern already documented in
 `docs/baseline.md`); confirm recovery via `/readyz` reporting
 `githubReachable.ok: true` again.
 
@@ -261,13 +261,15 @@ requirements differ by what's actually being bumped:
 All already implemented (MOO-67/72 Commits 3-6), reconfirmed here rather
 than rebuilt:
 
-- **Auth**: constant-time `AUTH_TOKEN` shared-secret check
+- **Auth**: constant-time `APP_PASSWORD` shared-secret check
   (`server/lib/auth.js`), required at startup with no environment-based
-  bypass. Applied to every `/api/*` route.
+  bypass. Applied to every `/api/*` route. **MOO-86**: renamed from
+  `AUTH_TOKEN` — same bearer-token mechanism, but the operator now picks a
+  memorable password directly instead of generating a 32-byte secret.
 - **Allowlist**: `ALLOWED_OWNERS`/`ALLOWED_REPOS` (`server/lib/allowlist.js`),
   at least one required at startup. **The deployed instance currently runs
   `ALLOWED_OWNERS=*`** (wildcard — any GitHub owner's repos, gated only by
-  holding the shared `AUTH_TOKEN`) — see `docs/baseline.md`'s "Post-deployment
+  holding the shared `APP_PASSWORD`) — see `docs/baseline.md`'s "Post-deployment
   update" section for when and why this was widened from the initial
   `OwenTanzer`-only allowlist. This is a **deliberate, already-made
   decision**, not an oversight — it was explicitly reaffirmed (not
@@ -277,7 +279,7 @@ than rebuilt:
   (`server/lib/rate-limit.js`, `RATE_LIMIT_PER_MINUTE`, default 30/min),
   not durable across restarts, not shared across replicas (single-instance
   design).
-- **Secrets**: `AUTH_TOKEN`/`GITHUB_TOKEN` never logged directly
+- **Secrets**: `APP_PASSWORD`/`GITHUB_TOKEN` never logged directly
   (`server/lib/logger.js`'s exact-string plus shape-based redaction of
   GitHub-PAT/Bearer/query-string patterns).
 
@@ -369,11 +371,11 @@ unattended.
    curl -o /dev/null -w '%{http_code}\n' -X POST https://<host>/api/analyze-repo
    # expect 401 (no auth header)
    curl -o /dev/null -w '%{http_code}\n' -X POST https://<host>/api/analyze-repo -H "Authorization: Bearer wrong"
-   # expect 401 (wrong token)
-   curl https://<host>/api/capabilities -H "Authorization: Bearer $AUTH_TOKEN"
+   # expect 401 (wrong password)
+   curl https://<host>/api/capabilities -H "Authorization: Bearer $APP_PASSWORD"
    # expect 200 with the real configured flag states
    curl -o /dev/null -w '%{http_code}\n' -X POST https://<host>/api/graph/repository \
-     -H "Authorization: Bearer $AUTH_TOKEN" -H "Content-Type: application/json" \
+     -H "Authorization: Bearer $APP_PASSWORD" -H "Content-Type: application/json" \
      -d '{"owner":"octocat","repo":"Hello-World"}'
    # expect 200, a real analysis
    curl https://<host>/healthz

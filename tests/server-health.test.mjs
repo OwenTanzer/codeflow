@@ -11,10 +11,10 @@ import test from 'node:test';
 import { createReadinessHandler, createHealthHandler, isSupportedNodeVersion, readBuildInfo } from '../server/lib/health.js';
 import { GraphCache } from '../server/lib/graph-cache.js';
 
-const AUTH_TOKEN = 'test-auth-token';
+const APP_PASSWORD = 'test-app-password';
 
 function fakeReq(authorized) {
-  return { headers: authorized ? { authorization: `Bearer ${AUTH_TOKEN}` } : {} };
+  return { headers: authorized ? { authorization: `Bearer ${APP_PASSWORD}` } : {} };
 }
 
 function fakeRes() {
@@ -41,7 +41,7 @@ async function withBuiltRepo(fn) {
   try {
     await mkdir(join(repoRoot, 'dist'), { recursive: true });
     await writeFile(join(repoRoot, 'dist', 'index.html'), '<html></html>');
-    await fn({ distDir: join(repoRoot, 'dist'), workspaceRoot, authToken: AUTH_TOKEN, cacheEnabled: true });
+    await fn({ distDir: join(repoRoot, 'dist'), workspaceRoot, appPassword: APP_PASSWORD, cacheEnabled: true });
   } finally {
     await rm(repoRoot, { recursive: true, force: true });
     await rm(workspaceRoot, { recursive: true, force: true });
@@ -88,7 +88,7 @@ test('readiness is still 503 when the build output is missing, regardless of pya
   const repoRoot = await mkdtemp(join(tmpdir(), 'codeflow-health-missing-'));
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'codeflow-health-ws-'));
   try {
-    const config = { distDir: join(repoRoot, 'dist'), workspaceRoot, authToken: AUTH_TOKEN, cacheEnabled: true };
+    const config = { distDir: join(repoRoot, 'dist'), workspaceRoot, appPassword: APP_PASSWORD, cacheEnabled: true };
     const handler = createReadinessHandler({ config, healthCheckCache: freshHealthCheckCache(), getPyan3Status: () => fakeStatus({ ok: true }) });
     const res = fakeRes();
     await handler(fakeReq(false), res);

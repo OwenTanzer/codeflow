@@ -7,19 +7,19 @@
 // wiring is exactly the part unit tests cannot reach.
 //
 // Usage:
-//   AUTH_TOKEN=... GITHUB_TOKEN=... npm start           # in one shell
-//   node tests/function-layer-smoke.mjs <url> <serverToken>
+//   APP_PASSWORD=... GITHUB_TOKEN=... npm start           # in one shell
+//   node tests/function-layer-smoke.mjs <url> <appPassword>
 //
 // MOO-86: the client-side GitHub PAT/App toolbar fields this script used to
 // fill in were removed -- ownership/blame and file-preview-fallback now run
-// server-side too, using the same server token below. The server token is
-// the private server's own AUTH_TOKEN, required for every /api/* call.
+// server-side too, using the same app password below. The app password is
+// the private server's own APP_PASSWORD, required for every /api/* call.
 // Never logged.
 import { chromium } from 'playwright';
 
-const [url = 'http://localhost:3000/', serverToken] = process.argv.slice(2);
-if (!serverToken) {
-  console.error('usage: node tests/function-layer-smoke.mjs <url> <serverToken>');
+const [url = 'http://localhost:3000/', appPassword] = process.argv.slice(2);
+if (!appPassword) {
+  console.error('usage: node tests/function-layer-smoke.mjs <url> <appPassword>');
   process.exit(2);
 }
 
@@ -62,16 +62,16 @@ await page.goto(url, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(2000);
 
 // --- repository layer -------------------------------------------------------
-await step('enter the repository URL and the CodeFlow server token', async () => {
+await step('enter the repository URL and the app password', async () => {
   await page.locator('input[aria-label="Repository URL"]:visible').first().fill(REPO);
   // MOO-72 Commit 1A moved repository analysis onto the server, which gates
-  // it behind this same private-server token the file/function panels
-  // already prompted for -- without filling it here too, analyze() just
-  // calls setError('Enter the CodeFlow server token...') and returns, so
-  // pressing Enter below silently no-ops (no console error, no network
-  // request -- this bug hid for a while because the failure has no signal
-  // this script was checking for).
-  await page.locator('input[aria-label="CodeFlow Server Token"]:visible').first().fill(serverToken);
+  // it behind this same app password the file/function panels already
+  // prompted for -- without filling it here too, analyze() just calls
+  // setError('Enter the app password...') and returns, so pressing Enter
+  // below silently no-ops (no console error, no network request -- this bug
+  // hid for a while because the failure has no signal this script was
+  // checking for).
+  await page.locator('input[aria-label="App Password"]:visible').first().fill(appPassword);
 });
 
 await step('repository analysis completes and the graph renders', async () => {
@@ -93,13 +93,13 @@ await step(`double-click ${FILE_LABEL} to drill into the file layer`, async () =
   await node.dblclick();
 });
 
-// The panel's own ServerTokenPrompt no longer appears here: the server
-// token is already committed at the toolbar (filled above, before
+// The panel's own AppPasswordPrompt no longer appears here: the app
+// password is already committed at the toolbar (filled above, before
 // analysis), and it's App()-level state shared with every panel -- if
 // this prompt reappears, something about that sharing has regressed.
-await step('no second server-token prompt appears -- the toolbar-committed token already serves the drill-down', async () => {
-  const promptStillGone = await page.locator('input[aria-label="Server Auth Token"]').count();
-  if (promptStillGone > 0) throw new Error('FileLayerPanel showed its own token prompt despite an already-committed toolbar token');
+await step('no second app-password prompt appears -- the toolbar-committed password already serves the drill-down', async () => {
+  const promptStillGone = await page.locator('input[aria-label="App Password Prompt"]').count();
+  if (promptStillGone > 0) throw new Error('FileLayerPanel showed its own password prompt despite an already-committed toolbar password');
 });
 
 await step('file graph renders', async () => {

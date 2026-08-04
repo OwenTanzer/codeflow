@@ -22,7 +22,7 @@ function baseInput(overrides = {}) {
     resolvedSha: SHA,
     path: 'src/service.py',
     symbolPath: ['Service', 'run'],
-    serverAuthToken: 'secret-token',
+    appPassword: 'secret-token',
     ...overrides,
   };
 }

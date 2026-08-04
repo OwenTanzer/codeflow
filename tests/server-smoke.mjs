@@ -29,7 +29,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
 const port = 3999;
 const baseUrl = `http://localhost:${port}`;
-const AUTH_TOKEN = 'smoke-test-secret';
+const APP_PASSWORD = 'smoke-test-secret';
 
 function assert(condition, message) {
   if (!condition) throw new Error('Assertion failed: ' + message);
@@ -61,7 +61,7 @@ async function waitForReady(timeoutMs) {
 }
 
 function authed(headers = {}) {
-  return { Authorization: `Bearer ${AUTH_TOKEN}`, ...headers };
+  return { Authorization: `Bearer ${APP_PASSWORD}`, ...headers };
 }
 
 let githubToken = process.env.GITHUB_TOKEN;
@@ -84,7 +84,7 @@ const child = spawn(process.execPath, [join(repoRoot, 'server', 'index.js')], {
     ...process.env,
     PORT: String(port),
     WORKSPACE_ROOT: workspaceRoot,
-    AUTH_TOKEN,
+    APP_PASSWORD,
     GITHUB_TOKEN: githubToken,
     ALLOWED_OWNERS: 'octocat',
     // The rate limiter is keyed per client IP, shared across every request

@@ -19,8 +19,8 @@ test('extractBearerToken returns null when the header is missing or malformed', 
   assert.equal(extractBearerToken({ headers: { authorization: '' } }), null);
 });
 
-test('isAuthorized accepts the exact configured token and rejects anything else', () => {
-  const config = { authToken: 'correct-token' };
+test('isAuthorized accepts the exact configured password and rejects anything else', () => {
+  const config = { appPassword: 'correct-token' };
   assert.equal(isAuthorized({ headers: { authorization: 'Bearer correct-token' } }, config), true);
   assert.equal(isAuthorized({ headers: { authorization: 'Bearer wrong-token' } }, config), false);
   assert.equal(isAuthorized({ headers: {} }, config), false);

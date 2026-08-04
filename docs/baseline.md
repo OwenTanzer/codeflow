@@ -19,9 +19,9 @@ preserved it rather than assert it.
 | Run the app, zero-tooling | `open index.html` — **no longer supported (intentional, decided Commit 3, see below).** Opening the file directly (`file://`) crashes with `ReferenceError: calcHealth is not defined` because the browser blocks the analyzer module's `import` under CORS for the `file://` origin. Use `npm run dev` or `npm run build && npm start` instead. |
 | Run the app, dev server (added Commit 2) | `npm install && npm run dev` — Vite dev server; now genuinely module-based as of Commit 3 (analyzer code lives in `src/analyzer.js`) |
 | Production build (added Commit 2) | `npm run build` — Vite build, output to `dist/` (as of Commit 3: `dist/index.html` ~369KB + a separate hashed `dist/assets/index-*.js` ~117KB carrying the analyzer module, gitignored) |
-| Serve the production build (added Commit 2, expanded Commits 5-6) | `npm run start` (or `node server/index.js`) — serves `dist/` plus `/healthz`, `/readyz` (public, no auth), `POST /api/analyze`, `POST /api/analyze-repo` (both require `Authorization: Bearer <AUTH_TOKEN>`); **required** env vars `AUTH_TOKEN`, `GITHUB_TOKEN`, and at least one of `ALLOWED_REPOS`/`ALLOWED_OWNERS` (comma-separated) — the server now fails fast at startup if any are missing, same fail-fast principle as the pre-existing `dist/index.html`/`PORT`/workspace-writability checks; optional: `PORT` (default `3000`), `WORKSPACE_ROOT` (default `<tmpdir>/codeflow-workspaces`), `NODE_ENV`, `RATE_LIMIT_PER_MINUTE` (default `30`), `MAX_REQUEST_BODY_BYTES` (default `16384`), `MAX_REPO_FILES` (default `750`); MOO-72 Commit 2's graph cache adds `CACHE_ENABLED` (default `true`, and validated strictly — anything other than exactly `true`/`false` is a startup error rather than a silent fallback), `CACHE_MAX_ITEMS` (default `200`), `CACHE_MAX_BYTES` (default `268435456`, i.e. 256 MiB — the cache is bounded by bytes as well as entry count, since a few large repository graphs can exhaust a container well before 200 entries), `CACHE_TTL_MS` (default `3600000`) |
+| Serve the production build (added Commit 2, expanded Commits 5-6; env var renamed MOO-86) | `npm run start` (or `node server/index.js`) — serves `dist/` plus `/healthz`, `/readyz` (public, no auth), `POST /api/analyze`, `POST /api/analyze-repo` (both require `Authorization: Bearer <APP_PASSWORD>`); **required** env vars `APP_PASSWORD`, `GITHUB_TOKEN`, and at least one of `ALLOWED_REPOS`/`ALLOWED_OWNERS` (comma-separated) — the server now fails fast at startup if any are missing, same fail-fast principle as the pre-existing `dist/index.html`/`PORT`/workspace-writability checks; optional: `PORT` (default `3000`), `WORKSPACE_ROOT` (default `<tmpdir>/codeflow-workspaces`), `NODE_ENV`, `RATE_LIMIT_PER_MINUTE` (default `30`), `MAX_REQUEST_BODY_BYTES` (default `16384`), `MAX_REPO_FILES` (default `750`); MOO-72 Commit 2's graph cache adds `CACHE_ENABLED` (default `true`, and validated strictly — anything other than exactly `true`/`false` is a startup error rather than a silent fallback), `CACHE_MAX_ITEMS` (default `200`), `CACHE_MAX_BYTES` (default `268435456`, i.e. 256 MiB — the cache is bounded by bytes as well as entry count, since a few large repository graphs can exhaust a container well before 200 entries), `CACHE_TTL_MS` (default `3600000`) |
 | Run the server integration smoke suite (added Commit 5, expanded Commit 6) | `node tests/server-smoke.mjs` — needs `dist/` built first, and a real GitHub credential via `gh auth login` (extracts it with `gh auth token` to verify the GitHub-backed path against real repos, not a mock); spawns the real server on an isolated port/workspace root, not part of `node --test tests/*.test.mjs` for the same reason `codeflow-repo-smoke.mjs`/`ui-smoke.mjs` aren't |
-| Run the browser UI smoke suite against a server (Commit 4A, now requires Commit 6 env vars too) | `AUTH_TOKEN=x GITHUB_TOKEN=x ALLOWED_OWNERS=x node server/index.js` then `node tests/ui-smoke.mjs [url]` — the values don't need to be real for this suite specifically, since it only drives the local-folder (client-side-only) flow, never the server's `/api/*` endpoints; the server just needs to *start*, which now requires these to be set to anything non-empty |
+| Run the browser UI smoke suite against a server (Commit 4A, now requires Commit 6 env vars too) | `APP_PASSWORD=x GITHUB_TOKEN=x ALLOWED_OWNERS=x node server/index.js` then `node tests/ui-smoke.mjs [url]` — the values don't need to be real for this suite specifically, since it only drives the local-folder (client-side-only) flow, never the server's `/api/*` endpoints; the server just needs to *start*, which now requires these to be set to anything non-empty |
 | Run the full test suite | `node --test tests/*.test.mjs` (545 tests as of MOO-72 Commit 2; `node --test tests/` alone fails — Node's directory-mode test discovery does not pick up this repo's flat `tests/*.test.mjs` layout) |
 | Run the analyzer against an arbitrary repo | `node tests/codeflow-repo-smoke.mjs [--json] [--limit=<files>] <repo-dir>...` |
 | Run the GitHub Action analyzer locally | `cd card && node index.js` — writes `.github/codeflow-card.svg` and `.github/codeflow-card.json` **relative to `card/`** when `GITHUB_WORKSPACE` is unset (it falls back to `process.cwd()`); do not run this from the repo root without setting `GITHUB_WORKSPACE`, or it will analyze `card/` itself and leave stray output there |
@@ -474,7 +474,9 @@ Three independent gates now sit in front of every `/api/*` route, checked
 in this order, each failing before the next thing it protects is touched:
 
 1. **`server/lib/auth.js`** — a shared-secret check
-   (`Authorization: Bearer <AUTH_TOKEN>`), timing-safe compared
+   (`Authorization: Bearer <APP_PASSWORD>` — renamed from `AUTH_TOKEN` in
+   MOO-86, same mechanism, but the operator now picks a memorable password
+   directly instead of generating a 32-byte secret), timing-safe compared
    (`crypto.timingSafeEqual`, padded to equal length first so the
    length-mismatch branch doesn't return early with a different timing
    profile). This is a private-use gate, not a multi-user login system —
@@ -567,7 +569,7 @@ mock would have hidden.
 - Full suite: 105/105. Clean build. `tests/ui-smoke.mjs` still 6/6 (the
   browser's local-folder flow never touches the new `/api/*` endpoints, so
   it's unaffected by the new auth requirement — though the server process
-  itself now needs `AUTH_TOKEN`/`GITHUB_TOKEN`/an allowlist entry set to
+  itself now needs `APP_PASSWORD`/`GITHUB_TOKEN`/an allowlist entry set to
   *something* just to start, even for this browser-only test).
 
 ## Commit 7 — deployed the authenticated Railway preview shell
@@ -615,9 +617,9 @@ deployment metadata after redeploying with this file present
 
 | Variable | Value | Notes |
 |---|---|---|
-| `AUTH_TOKEN` | a generated 32-byte random secret (base64url) | **Not recorded in this repo or in Linear** — given directly to the operator in conversation when set. Rotate via `railway variable set AUTH_TOKEN=<new value>` (triggers a redeploy by default; add `--skip-deploys` to stage it and roll out separately) whenever it may have been exposed. |
+| `APP_PASSWORD` | an operator-chosen password | **MOO-86**: replaces the original `AUTH_TOKEN` (a generated 32-byte random secret the operator had to produce with `node -e "console.log(require('crypto').randomBytes(32)...)"`) — same bearer-token mechanism, but now just a memorable value the operator picks directly, no generation step. **Not recorded in this repo or in Linear** — given directly to the operator in conversation when set. Rotate via `railway variable set APP_PASSWORD=<new value>` (triggers a redeploy by default; add `--skip-deploys` to stage it and roll out separately) whenever it may have been exposed. |
 | `GITHUB_TOKEN` | the operator's existing `gh auth token` PAT | Same credential already used locally throughout Commits 5-6's verification — reused per the decision recorded in the MOO-67 environment-setup comment, not a new credential. |
-| `ALLOWED_OWNERS` | `*` (wildcard — any owner) | Started as `OwenTanzer` only (a judgment call made at initial deployment); widened to the wildcard on request, to analyze other users' repos too. `server/lib/allowlist.js` treats `*` as an explicit "any owner" opt-in, not the default — the auth token remains the actual gate on who can reach the endpoint at all; the allowlist only restricts *which* repos a valid caller can point it at, and this setting says "don't restrict that." Change anytime with `railway variable set ALLOWED_OWNERS=...`, or add `ALLOWED_REPOS` for narrower per-repo scoping instead of the wildcard. |
+| `ALLOWED_OWNERS` | `*` (wildcard — any owner) | Started as `OwenTanzer` only (a judgment call made at initial deployment); widened to the wildcard on request, to analyze other users' repos too. `server/lib/allowlist.js` treats `*` as an explicit "any owner" opt-in, not the default — the app password remains the actual gate on who can reach the endpoint at all; the allowlist only restricts *which* repos a valid caller can point it at, and this setting says "don't restrict that." Change anytime with `railway variable set ALLOWED_OWNERS=...`, or add `ALLOWED_REPOS` for narrower per-repo scoping instead of the wildcard. |
 | `NODE_ENV` | `production` | |
 | `PORT` | *(not set)* | Railway injects its own `PORT`; `server/lib/config.js` already reads `process.env.PORT` with a fallback, so this needed no change. |
 
@@ -637,7 +639,7 @@ deployment metadata after redeploying with this file present
   `gatesReadiness: false` — reported for visibility, never take the whole
   service out of rotation). An unauthenticated request only ever sees
   `ok`/`gatesReadiness`(or `applicable`) per check; a request carrying the
-  same `Authorization: Bearer <AUTH_TOKEN>` used for `/api/*` additionally
+  same `Authorization: Bearer <APP_PASSWORD>` used for `/api/*` additionally
   sees `detail`/`version`/`checkedAt` — the "expose readiness details only
   to authenticated/admin views where sensitive" requirement, reusing the
   existing auth secret rather than a second one.

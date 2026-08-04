@@ -21,13 +21,13 @@ export class GithubMetaClientError extends ServerRequestError {
  * @param {string} input.repo
  * @param {string} input.path
  * @param {string} [input.ref] - a resolved commit SHA; omit for the default branch
- * @param {string} input.serverAuthToken
+ * @param {string} input.appPassword
  * @param {AbortSignal} [input.signal]
  * @returns {{url: string, init: RequestInit}}
  */
-export function buildBlameRequest({ owner, repo, path, ref, serverAuthToken, signal }) {
+export function buildBlameRequest({ owner, repo, path, ref, appPassword, signal }) {
   const body = { owner, repo, path, ref: ref || undefined };
-  return buildServerJsonRequest({ path: '/api/github/blame', body, serverAuthToken, signal });
+  return buildServerJsonRequest({ path: '/api/github/blame', body, appPassword, signal });
 }
 
 /**
@@ -44,9 +44,9 @@ export async function fetchBlame(input) {
  * @param {object} input - see buildBlameRequest
  * @returns {{url: string, init: RequestInit}}
  */
-export function buildFileContentRequest({ owner, repo, path, ref, serverAuthToken, signal }) {
+export function buildFileContentRequest({ owner, repo, path, ref, appPassword, signal }) {
   const body = { owner, repo, path, ref: ref || undefined };
-  return buildServerJsonRequest({ path: '/api/github/file-content', body, serverAuthToken, signal });
+  return buildServerJsonRequest({ path: '/api/github/file-content', body, appPassword, signal });
 }
 
 /**

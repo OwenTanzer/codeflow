@@ -1171,7 +1171,7 @@ function HealthRing(props){
     );
 }
 
-// MOO-71 Commit 7: the server-token prompt, extracted from FileLayerPanel so
+// MOO-71 Commit 7: the app-password prompt, extracted from FileLayerPanel so
 // the file and function panels share one prompt instead of each growing their
 // own.
 //
@@ -1179,23 +1179,23 @@ function HealthRing(props){
 // is lifted to App(). That split is deliberate and was a MOO-70 Commit 9 PR
 // review fix originally: writing the draft straight into the state that gates
 // "show the input" made the input disappear after one keystroke and fired a
-// request with a one-character token.
+// request with a one-character password.
 //
-// Scope boundary for this token: application-scoped *ephemeral* auth state,
-// not credential management. It lives only in React memory for the life of
-// the page -- never sessionStorage/localStorage, never NavigationHistory or
-// route state or a URL, never GraphIR, diagnostics, or logs. Losing it on
-// reload is accepted for this private-use interface; expanding its lifetime
-// would expand its exposure for no real benefit.
-function ServerTokenPrompt(props){
+// Scope boundary for this password: application-scoped *ephemeral* auth
+// state, not credential management. It lives only in React memory for the
+// life of the page -- never sessionStorage/localStorage, never
+// NavigationHistory or route state or a URL, never GraphIR, diagnostics, or
+// logs. Losing it on reload is accepted for this private-use interface;
+// expanding its lifetime would expand its exposure for no real benefit.
+function AppPasswordPrompt(props){
     var _draft=useState(''),draft=_draft[0],setDraft=_draft[1];
     function submit(){if(draft)props.onSubmit(draft);}
     return React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
         React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' ',props.title),
-        props.rejected&&React.createElement('div',{style:{fontSize:12,color:'#f87171',marginBottom:6}},'The server token was rejected. Enter it again to resume this drill-down.'),
+        props.rejected&&React.createElement('div',{style:{fontSize:12,color:'#f87171',marginBottom:6}},'The app password was rejected. Enter it again to resume this drill-down.'),
         React.createElement('div',{style:{fontSize:12,color:'var(--t2)',marginBottom:8}},props.description),
         React.createElement('div',{style:{display:'flex',gap:8}},
-            React.createElement('input',{className:'repo-input',type:'password','aria-label':'Server Auth Token',placeholder:'Server Auth Token',value:draft,onChange:function(e){setDraft(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')submit();}}),
+            React.createElement('input',{className:'repo-input',type:'password','aria-label':'App Password Prompt',placeholder:'App Password',value:draft,onChange:function(e){setDraft(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')submit();}}),
             React.createElement('button',{className:'top-btn primary',disabled:!draft,onClick:submit},'Load')
         )
     );
@@ -1242,7 +1242,7 @@ function FileGraphCanvas(props){
 // called conditionally inline in the parent for a panel that only exists
 // once navPanel.layer==='file'). Fetches via fetchFileGraph
 // (src/state/graphFileClient.js) -- the first client call to the private
-// server's auth-gated API, gated behind an inline serverAuthToken prompt
+// server's auth-gated API, gated behind an inline appPassword prompt
 // rather than the main toolbar, since it's only relevant once a file
 // drill-down is actually opened. Renders via renderFileGraph
 // (src/render/fileGraph.js); double-click uses tryCreateDrillDownById
@@ -1255,19 +1255,19 @@ function FileLayerPanel(props){
         cacheGraph=props.cacheGraph,readCachedGraph=props.readCachedGraph,
         recordPanelState=props.recordPanelState;
 
-    // MOO-71 Commit 7: the committed token now lives in App() and arrives as
-    // a prop, because a second panel (FunctionLayerPanel) needs the same one
-    // and this panel unmounts the moment navPanel.layer flips to 'function'.
-    // The MOO-70 review note that said it belonged local rested on "nothing
-    // else reads/writes this token" -- that premise is no longer true, and
-    // re-prompting mid-drill-down would make navigation feel broken. The
-    // draft/committed split that review asked for is preserved, just moved
-    // into ServerTokenPrompt.
-    var committedToken=props.serverAuthToken,
-        onTokenRejected=props.onTokenRejected,
-        onCommitToken=props.onCommitToken,
-        onChangeToken=props.onChangeToken,
-        tokenRejected=props.tokenRejected;
+    // MOO-71 Commit 7: the committed password now lives in App() and arrives
+    // as a prop, because a second panel (FunctionLayerPanel) needs the same
+    // one and this panel unmounts the moment navPanel.layer flips to
+    // 'function'. The MOO-70 review note that said it belonged local rested
+    // on "nothing else reads/writes this password" -- that premise is no
+    // longer true, and re-prompting mid-drill-down would make navigation
+    // feel broken. The draft/committed split that review asked for is
+    // preserved, just moved into AppPasswordPrompt.
+    var committedPassword=props.appPassword,
+        onPasswordRejected=props.onPasswordRejected,
+        onCommitPassword=props.onCommitPassword,
+        onChangePassword=props.onChangePassword,
+        passwordRejected=props.passwordRejected;
 
     var _fg=useState(null),fileGraph=_fg[0],setFileGraph=_fg[1];
     var _fgl=useState(false),fileGraphLoading=_fgl[0],setFileGraphLoading=_fgl[1];
@@ -1317,7 +1317,7 @@ function FileLayerPanel(props){
             setFileGraphCanRetryNow(true);
             return;
         }
-        if(!committedToken)return;
+        if(!committedPassword)return;
         setFileGraphLoading(true);
         setFileGraphError(null);
         setFileGraphErrorStatus(null);
@@ -1338,7 +1338,7 @@ function FileLayerPanel(props){
         // is tolerant of its own failure (returns null), which is treated as
         // "unknown, don't restrict anything" so a capabilities-fetch problem
         // never itself blocks a working file layer.
-        fetchCapabilities(committedToken).then(function(caps){
+        fetchCapabilities(committedPassword).then(function(caps){
             if(caps&&caps.fileLayerEnabled===false){
                 setFileGraphLoading(false);
                 setFileGraphError('The file layer is currently disabled by the server operator.');
@@ -1350,7 +1350,7 @@ function FileLayerPanel(props){
             return fetchFileGraph({
                 ...descriptor.params,
                 signal:descriptor.signal,
-                serverAuthToken:committedToken,
+                appPassword:committedPassword,
             }).then(function(result){
                 if(!session.isCurrent('file',descriptor.generation,descriptor.epoch))return;
                 setFileGraph(result.graph);
@@ -1365,12 +1365,12 @@ function FileLayerPanel(props){
             if((err&&err.name==='AbortError')||!session.isCurrent('file',descriptor.generation,descriptor.epoch))return;
             var status=err instanceof GraphFileClientError?err.status:null;
             setFileGraphLoading(false);
-            // MOO-71 Commit 7: a rejected token clears the committed value and
-            // reopens the prompt, while navPanel/repositoryGraph (this
+            // MOO-71 Commit 7: a rejected password clears the committed value
+            // and reopens the prompt, while navPanel/repositoryGraph (this
             // request's own inputs) are left untouched -- so re-entering the
-            // token re-runs this same effect and resumes the same drill-down
-            // instead of resetting navigation.
-            if(status===401){onTokenRejected();return;}
+            // password re-runs this same effect and resumes the same
+            // drill-down instead of resetting navigation.
+            if(status===401){onPasswordRejected();return;}
             setFileGraphError((err instanceof GraphFileClientError?err.message:'Failed to load file graph')||'Failed to load file graph');
             setFileGraphErrorStatus(status);
             // MOO-72 Commit 4: err.retryable now comes from the real server
@@ -1388,7 +1388,7 @@ function FileLayerPanel(props){
             setFileGraphCanRetryNow(!retryAfterMs);
         });
         return function(){session.abortCurrent('file');};
-    },[path,repositoryGraph,session,committedToken,retryEffectiveCount,navPanel.graphCacheKey]);
+    },[path,repositoryGraph,session,committedPassword,retryEffectiveCount,navPanel.graphCacheKey]);
 
     // MOO-72 Commit 4 PR review: flips fileGraphCanRetryNow back to true
     // once the server's requested delay has actually elapsed -- a plain
@@ -1399,12 +1399,12 @@ function FileLayerPanel(props){
         return function(){clearTimeout(timer);};
     },[fileGraphErrorRetryAfterMs,fileGraphError]);
 
-    if(!committedToken){
-        return React.createElement(ServerTokenPrompt,{
+    if(!committedPassword){
+        return React.createElement(AppPasswordPrompt,{
             title:path||'File view',
-            description:'Enter the CodeFlow server token to load the file-layer view.',
-            rejected:tokenRejected,
-            onSubmit:onCommitToken,
+            description:'Enter the app password to load the file-layer view.',
+            rejected:passwordRejected,
+            onSubmit:onCommitPassword,
         });
     }
 
@@ -1414,7 +1414,7 @@ function FileLayerPanel(props){
         fileGraphError&&React.createElement('div',{style:{fontSize:12,color:'#f87171',marginBottom:8}},
             React.createElement('div',{style:{marginBottom:6}},
                 fileGraphError,
-                fileGraphErrorStatus===401&&' — the server token was rejected.'
+                fileGraphErrorStatus===401&&' — the app password was rejected.'
             ),
             React.createElement('div',{style:{display:'flex',gap:8}},
                 // MOO-72 Commit 4: gated on fileGraphErrorRetryable (the real
@@ -1430,11 +1430,11 @@ function FileLayerPanel(props){
                 fileGraphErrorRetryable&&!fileGraphCanRetryNow&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',alignSelf:'center'}},'Retry available in '+Math.ceil(fileGraphErrorRetryAfterMs/1000)+'s'),
                 fileGraphErrorRetryable&&fileGraphCanRetryNow&&retryEffectiveCount>=RETRY_LIMIT&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',alignSelf:'center'}},'Retry limit reached'),
                 // MOO-70 Commit 9 PR review: "offer a way to replace the
-                // stored token rather than only retrying the same invalid
+                // stored password rather than only retrying the same invalid
                 // one" -- always available, not just on a detected 401,
-                // since any error while a token is committed could
-                // plausibly be that token being wrong.
-                React.createElement('button',{className:'top-btn',onClick:onChangeToken},'Change token')
+                // since any error while a password is committed could
+                // plausibly be that password being wrong.
+                React.createElement('button',{className:'top-btn',onClick:onChangePassword},'Change password')
             )
         ),
         // MOO-72 Commit 4: PanelErrorBoundary+key=retryTargetKey wraps only
@@ -1507,9 +1507,9 @@ function FunctionGraphCanvas(props){
 function FunctionLayerPanel(props){
     var navPanel=props.navPanel,repositoryGraph=props.repositoryGraph,session=props.session,
         theme=props.theme,showNotification=props.showNotification,onHover=props.onHover,
-        committedToken=props.serverAuthToken,onTokenRejected=props.onTokenRejected,
-        onCommitToken=props.onCommitToken,onChangeToken=props.onChangeToken,
-        tokenRejected=props.tokenRejected,
+        committedPassword=props.appPassword,onPasswordRejected=props.onPasswordRejected,
+        onCommitPassword=props.onCommitPassword,onChangePassword=props.onChangePassword,
+        passwordRejected=props.passwordRejected,
         cacheGraph=props.cacheGraph,readCachedGraph=props.readCachedGraph,
         recordPanelState=props.recordPanelState;
 
@@ -1560,7 +1560,7 @@ function FunctionLayerPanel(props){
             setCanRetryNow(true);
             return;
         }
-        if(!committedToken)return;
+        if(!committedPassword)return;
         setLoadingGraph(true);
         setGraphError(null);
         setCanRetryNow(true);
@@ -1575,7 +1575,7 @@ function FunctionLayerPanel(props){
         // FileLayerPanel's matching comment -- fetchCapabilities is
         // tolerant of its own failure (null), so a capabilities-fetch
         // problem never itself blocks a working function layer.
-        fetchCapabilities(committedToken).then(function(caps){
+        fetchCapabilities(committedPassword).then(function(caps){
             if(caps&&caps.functionLayerEnabled===false){
                 setLoadingGraph(false);
                 setGraphError({
@@ -1590,7 +1590,7 @@ function FunctionLayerPanel(props){
             return fetchFunctionGraph({
                 ...descriptor.params,
                 signal:descriptor.signal,
-                serverAuthToken:committedToken,
+                appPassword:committedPassword,
             }).then(function(result){
                 if(!session.isCurrent('function',descriptor.generation,descriptor.epoch))return;
                 setFunctionGraph(result.graph);
@@ -1607,10 +1607,10 @@ function FunctionLayerPanel(props){
             if((err&&err.name==='AbortError')||!session.isCurrent('function',descriptor.generation,descriptor.epoch))return;
             var status=err instanceof GraphFunctionClientError?err.status:null;
             setLoadingGraph(false);
-            // Clearing the token reopens the prompt without touching navPanel,
-            // so re-entering it re-runs this effect and resumes this same
-            // function request.
-            if(status===401){onTokenRejected();return;}
+            // Clearing the password reopens the prompt without touching
+            // navPanel, so re-entering it re-runs this effect and resumes
+            // this same function request.
+            if(status===401){onPasswordRejected();return;}
             var retryAfterMs=err instanceof GraphFunctionClientError?err.retryAfterMs:null;
             setGraphError({
                 message:(err instanceof GraphFunctionClientError?err.message:'Failed to load function graph')||'Failed to load function graph',
@@ -1627,7 +1627,7 @@ function FunctionLayerPanel(props){
             setCanRetryNow(!retryAfterMs);
         });
         return function(){session.abortCurrent('function');};
-    },[path,symbolKey,repositoryGraph,session,committedToken,retryEffectiveCount,navPanel.graphCacheKey]);
+    },[path,symbolKey,repositoryGraph,session,committedPassword,retryEffectiveCount,navPanel.graphCacheKey]);
 
     // MOO-72 Commit 4 PR review: flips canRetryNow back to true once the
     // server's requested delay has actually elapsed.
@@ -1652,12 +1652,12 @@ function FunctionLayerPanel(props){
         if(handleRef.current&&handleRef.current.applySearch)handleRef.current.applySearch(searchQuery);
     },[searchQuery,functionGraph]);
 
-    if(!committedToken){
-        return React.createElement(ServerTokenPrompt,{
+    if(!committedPassword){
+        return React.createElement(AppPasswordPrompt,{
             title:coordinate?coordinate.symbolPath.join('.'):'Function view',
-            description:'Enter the CodeFlow server token to load the function-layer view.',
-            rejected:tokenRejected,
-            onSubmit:onCommitToken,
+            description:'Enter the app password to load the function-layer view.',
+            rejected:passwordRejected,
+            onSubmit:onCommitPassword,
         });
     }
 
@@ -1692,7 +1692,7 @@ function FunctionLayerPanel(props){
                 graphError.retryable&&canRetryNow&&retryEffectiveCount<RETRY_LIMIT&&React.createElement('button',{className:'top-btn',onClick:function(){setRetryState({targetKey:retryTargetKey,count:retryEffectiveCount+1});}},iconLabel('refresh','Retry')),
                 graphError.retryable&&!canRetryNow&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',alignSelf:'center'}},'Retry available in '+Math.ceil(graphError.retryAfterMs/1000)+'s'),
                 graphError.retryable&&canRetryNow&&retryEffectiveCount>=RETRY_LIMIT&&React.createElement('div',{style:{fontSize:11,color:'var(--t3)',alignSelf:'center'}},'Retry limit reached'),
-                React.createElement('button',{className:'top-btn',onClick:onChangeToken},'Change token')
+                React.createElement('button',{className:'top-btn',onClick:onChangePassword},'Change password')
             )
         ),
         functionGraph&&React.createElement('div',{style:{display:'flex',gap:8,alignItems:'center',marginBottom:6}},
@@ -1768,27 +1768,27 @@ function App(){
     var _a=useState(window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'),theme=_a[0],setTheme=_a[1];
     var _b=useState(''),repoUrl=_b[0],setRepoUrl=_b[1];
     var _c=useState(''),token=_c[0],setToken=_c[1];
-    // The private CodeFlow server's own AUTH_TOKEN (distinct from `token`
+    // The private CodeFlow server's own APP_PASSWORD (distinct from `token`
     // above, the user's GitHub PAT). MOO-71 Commit 7 lifted the *committed*
     // value here from FileLayerPanel, because the function panel needs the
-    // same token and the file panel unmounts as soon as the active layer
+    // same password and the file panel unmounts as soon as the active layer
     // changes -- re-prompting mid-drill-down would make navigation feel
-    // broken. The editable draft still lives inside ServerTokenPrompt.
+    // broken. The editable draft still lives inside AppPasswordPrompt.
     //
     // Application-scoped ephemeral auth state, deliberately narrow: React
     // memory only, for the life of the page. It is never persisted to
     // session/local storage, never written into NavigationHistory, route
     // state or a URL, never attached to GraphIR, diagnostics or logs, and it
-    // is dropped on reload. `serverTokenRejected` only records that the last
+    // is dropped on reload. `passwordRejected` only records that the last
     // attempt came back 401, so the prompt can say so.
-    var _sat=useState(''),serverAuthToken=_sat[0],setServerAuthToken=_sat[1];
-    var _satr=useState(false),serverTokenRejected=_satr[0],setServerTokenRejected=_satr[1];
-    function commitServerAuthToken(value){setServerAuthToken(value);setServerTokenRejected(false);}
+    var _sat=useState(''),appPassword=_sat[0],setAppPassword=_sat[1];
+    var _satr=useState(false),passwordRejected=_satr[0],setPasswordRejected=_satr[1];
+    function commitAppPassword(value){setAppPassword(value);setPasswordRejected(false);}
     // Clears the credential but nothing else: navPanel/repositoryGraph are
-    // untouched, so committing a new token resumes the same pending
+    // untouched, so committing a new password resumes the same pending
     // drill-down rather than resetting navigation.
-    function handleServerTokenRejected(){setServerAuthToken('');setServerTokenRejected(true);}
-    function handleChangeServerToken(){setServerAuthToken('');setServerTokenRejected(false);}
+    function handlePasswordRejected(){setAppPassword('');setPasswordRejected(true);}
+    function handleChangePassword(){setAppPassword('');setPasswordRejected(false);}
     var _d=useState(false),loading=_d[0],setLoading=_d[1];
     var _e=useState(''),progress=_e[0],setProgress=_e[1];
     var _f=useState(null),error=_f[0],setError=_f[1];
@@ -2161,15 +2161,15 @@ function App(){
         var generation=beginNewAnalysisGeneration();
 
         // MOO-72 Commit 1A: repository analysis now runs through the
-        // private CodeFlow server, which requires its own AUTH_TOKEN --
+        // private CodeFlow server, which requires its own APP_PASSWORD --
         // gate on that instead of a GitHub credential.
         //
         // MOO-86: the client-side GitHub PAT/App credential fields were
         // removed entirely -- ownership/blame and file-preview-fallback now
         // run server-side too (src/state/githubMetaClient.js), using the
         // server's own GITHUB_TOKEN, same as this repository request.
-        if(!serverAuthToken){
-            setError('Enter the CodeFlow server token before analyzing a repository.');return;
+        if(!appPassword){
+            setError('Enter the app password before analyzing a repository.');return;
         }
 
         resetAnalysisState();
@@ -2203,7 +2203,7 @@ function App(){
                 repo:p.repo,
                 ...repoDescriptor.params,
                 signal:repoDescriptor.signal,
-                serverAuthToken:serverAuthToken
+                appPassword:appPassword
             });
         }).then(function(result){
             if(!isCurrentAnalysisGeneration(generation))return;
@@ -2233,8 +2233,8 @@ function App(){
             if((e&&e.name==='AbortError')||e==='cancelled'||!isCurrentAnalysisGeneration(generation)||!session.isCurrent('repository',repoDescriptor.generation,repoDescriptor.epoch))return;
             setLoading(false);
             if(e instanceof GraphRepositoryClientError&&e.status===401){
-                setServerAuthToken('');
-                setServerTokenRejected(true);
+                setAppPassword('');
+                setPasswordRejected(true);
                 return;
             }
             setError(e.message||e);
@@ -2690,14 +2690,14 @@ function App(){
                 var blameOwner=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceOwner)||repoInfo.owner;
                 var blameRepo=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceRepo)||repoInfo.repo;
                 var blameRef=repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha;
-                fetchBlame({owner:blameOwner,repo:blameRepo,path:path,ref:blameRef,serverAuthToken:serverAuthToken}).then(function(owners){setOwnership(owners);setOwnerLoading(false);}).catch(function(){setOwnerLoading(false);});
+                fetchBlame({owner:blameOwner,repo:blameRepo,path:path,ref:blameRef,appPassword:appPassword}).then(function(owners){setOwnership(owners);setOwnerLoading(false);}).catch(function(){setOwnerLoading(false);});
             }else if(localSourceKind){
                 setOwnerLoading(false);
                 setOwnership([]);
             }
             updateGraphHighlight(path,blast);
         }
-    },[data,repositoryGraph,repoInfo,localSourceKind,isMobile,serverAuthToken]);
+    },[data,repositoryGraph,repoInfo,localSourceKind,isMobile,appPassword]);
     selectFileRef.current=selectFile;
 
     // MOO-69 Commit 4: double-click drill-down. Reads only the already-built
@@ -2853,7 +2853,7 @@ function App(){
             var previewRef=repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha;
             // MOO-86: runs server-side now (the server's own GITHUB_TOKEN)
             // instead of the removed client-side GitHub PAT field.
-            fetchFileContentFromServer({owner:previewOwner,repo:previewRepo,path:path,ref:previewRef,serverAuthToken:serverAuthToken}).then(function(content){
+            fetchFileContentFromServer({owner:previewOwner,repo:previewRepo,path:path,ref:previewRef,appPassword:appPassword}).then(function(content){
                 if(content){
                     setFilePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
                 }else{
@@ -4563,16 +4563,17 @@ function App(){
                     )
                 ),
                 React.createElement('div',{className:'mobile-source-controls'},
-                    // MOO-72 Commit 1A: same CodeFlow server token as the
+                    // MOO-72 Commit 1A: same app password as the
                     // desktop layout above -- required to analyze a
                     // repository. MOO-86: this is now the only credential the
                     // toolbar asks for at all -- the separate GitHub Token/App
                     // fields were removed once ownership/blame and
-                    // file-preview-fallback moved server-side too.
-                    React.createElement('input',{className:'repo-input',type:'password','aria-label':'CodeFlow Server Token',title:'Required to analyze a repository -- not your GitHub token',placeholder:'CodeFlow Server Token',value:serverAuthToken,onChange:function(e){commitServerAuthToken(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();},style:{borderColor:serverTokenRejected?'#f87171':undefined}}),
+                    // file-preview-fallback moved server-side too, and the
+                    // password itself replaced the old generated AUTH_TOKEN.
+                    React.createElement('input',{className:'repo-input',type:'password','aria-label':'App Password',title:'Required to analyze a repository -- not your GitHub token',placeholder:'App Password',value:appPassword,onChange:function(e){commitAppPassword(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();},style:{borderColor:passwordRejected?'#f87171':undefined}}),
                     React.createElement('div',{className:'mobile-primary-row'},
                         React.createElement('input',{className:'repo-input','aria-label':'Repository URL',placeholder:'owner/repo or GitHub URL',value:repoUrl,onChange:function(e){setRepoUrl(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();}}),
-                        React.createElement('button',{id:'mobile-analyze-btn',className:'top-btn primary mobile-analyze-btn','aria-label':'Analyze repository',title:'Analyze',onClick:analyze,disabled:loading||!repoUrl||!serverAuthToken,type:'button'},
+                        React.createElement('button',{id:'mobile-analyze-btn',className:'top-btn primary mobile-analyze-btn','aria-label':'Analyze repository',title:'Analyze',onClick:analyze,disabled:loading||!repoUrl||!appPassword,type:'button'},
                             React.createElement(Icon,{name:loading?'activity':'search',size:'m'})
                         )
                     ),
@@ -4606,7 +4607,7 @@ function App(){
                 React.createElement('span',{className:'logo-text'},'CODEFLOW')
             ),
             React.createElement('div',{className:'repo-input-group'},
-                // MOO-72 Commit 1A: the CodeFlow server's own AUTH_TOKEN,
+                // MOO-72 Commit 1A: the CodeFlow server's own APP_PASSWORD,
                 // required for every /api/graph/* request (repository, file,
                 // and function). MOO-86: this is now the only credential the
                 // toolbar asks for -- the separate GitHub Token/App inputs
@@ -4614,15 +4615,17 @@ function App(){
                 // (for the legacy ownership/blame and file-preview-fallback
                 // features) were removed once those features moved
                 // server-side too (src/state/githubMetaClient.js), using
-                // this same server token.
-                React.createElement('input',{className:'repo-input',type:'password','aria-label':'CodeFlow Server Token',title:'Required to analyze a repository -- not your GitHub token',placeholder:'CodeFlow Server Token',value:serverAuthToken,onChange:function(e){commitServerAuthToken(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();},style:{minWidth:140,borderColor:serverTokenRejected?'#f87171':undefined}}),
+                // this same app password. The password itself replaced the
+                // old operator-generated 32-byte AUTH_TOKEN -- no more
+                // secret generation, just a memorable operator-chosen value.
+                React.createElement('input',{className:'repo-input',type:'password','aria-label':'App Password',title:'Required to analyze a repository -- not your GitHub token',placeholder:'App Password',value:appPassword,onChange:function(e){commitAppPassword(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();},style:{minWidth:140,borderColor:passwordRejected?'#f87171':undefined}}),
                 React.createElement('input',{className:'repo-input repo-url-input','aria-label':'Repository URL',placeholder:'owner/repo or GitHub URL',value:repoUrl,onChange:function(e){setRepoUrl(e.target.value);},onKeyDown:function(e){if(e.key==='Enter'&&!loading)analyze();}}),
                 React.createElement('button',{className:'top-btn','aria-label':'Edit exclude patterns',title:'Edit exclude patterns'+(customExcludeCount>0?' ('+customExcludeCount+')':''),onClick:function(){openExcludeModal();},disabled:loading,style:customExcludeCount?{borderColor:'var(--acc)',color:'var(--acc)'}:null},
                     React.createElement(Icon,{name:'ban',size:'m'}),
                     !data&&'Excludes',
                     (!data&&customExcludeCount>0)?' ('+customExcludeCount+')':''
                 ),
-                React.createElement('button',{id:'analyze-btn',className:'top-btn primary','aria-label':'Analyze repository',title:'Analyze repository',onClick:analyze,disabled:loading||!repoUrl||!serverAuthToken},
+                React.createElement('button',{id:'analyze-btn',className:'top-btn primary','aria-label':'Analyze repository',title:'Analyze repository',onClick:analyze,disabled:loading||!repoUrl||!appPassword},
                     React.createElement(Icon,{name:loading?'activity':'search',size:'m'}),
                     !data&&'Analyze'
                 ),
@@ -4907,24 +4910,24 @@ function App(){
                     // retires MOO-70 Commit 8's "not yet available" placeholder.
                     // Any other layer keeps the original generic fallback
                     // (defensive -- not expected to occur). Both panels receive
-                    // the same App()-owned server token and the same
+                    // the same App()-owned app password and the same
                     // commit/reject/change handlers, so one prompt serves the
                     // whole repository -> file -> function path.
                     navPanel&&(navPanel.layer==='file'?React.createElement(FileLayerPanel,{
                         navPanel:navPanel,repositoryGraph:repositoryGraph,session:activeSessionRef.current,
                         theme:theme,openFileDrillDown:openFileDrillDown,
                         showNotification:showNotification,onHover:setTooltip,
-                        serverAuthToken:serverAuthToken,tokenRejected:serverTokenRejected,
-                        onCommitToken:commitServerAuthToken,onTokenRejected:handleServerTokenRejected,
-                        onChangeToken:handleChangeServerToken,
+                        appPassword:appPassword,passwordRejected:passwordRejected,
+                        onCommitPassword:commitAppPassword,onPasswordRejected:handlePasswordRejected,
+                        onChangePassword:handleChangePassword,
                         cacheGraph:cacheGraph,readCachedGraph:readCachedGraph,recordPanelState:recordPanelState,
                     }):navPanel.layer==='function'?React.createElement(FunctionLayerPanel,{
                         navPanel:navPanel,repositoryGraph:repositoryGraph,session:activeSessionRef.current,
                         theme:theme,
                         showNotification:showNotification,onHover:setTooltip,
-                        serverAuthToken:serverAuthToken,tokenRejected:serverTokenRejected,
-                        onCommitToken:commitServerAuthToken,onTokenRejected:handleServerTokenRejected,
-                        onChangeToken:handleChangeServerToken,
+                        appPassword:appPassword,passwordRejected:passwordRejected,
+                        onCommitPassword:commitAppPassword,onPasswordRejected:handlePasswordRejected,
+                        onChangePassword:handleChangePassword,
                         cacheGraph:cacheGraph,readCachedGraph:readCachedGraph,recordPanelState:recordPanelState,
                     }):React.createElement('div',{className:'card',style:{margin:'12px 12px 0',padding:12}},
                         React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' Drill down ('+navPanel.layer+')'),
