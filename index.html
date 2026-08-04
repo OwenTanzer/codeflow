@@ -674,6 +674,7 @@ Object.assign(window, analyzer, {
   fetchRepositoryGraph, GraphRepositoryClientError,
   renderFunctionGraph, buildFunctionRenderModel, fetchFunctionGraph, GraphFunctionClientError,
   AnalysisSession,
+  fetchCapabilities,
 });
 </script>
 <script type="text/babel">
@@ -1092,7 +1093,9 @@ function getDialogTone(tone){
     };
 }
 
-// Error boundary to prevent white screen crashes on large codebases
+// Error boundary to prevent an unexpected application error from leaving a
+// blank screen. The diagnostic below preserves the actual exception; avoid
+// guessing at a cause (such as memory pressure) without evidence.
 class ErrorBoundary extends React.Component{
     constructor(props){super(props);this.state={hasError:false,error:null};}
     static getDerivedStateFromError(error){return{hasError:true,error:error};}
@@ -1103,7 +1106,7 @@ class ErrorBoundary extends React.Component{
             return React.createElement('div',{style:{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100vh',background:'var(--bg0)',color:'var(--t0)',fontFamily:'JetBrains Mono, monospace',padding:40,textAlign:'center'}},
                 React.createElement(Icon,{name:'logo',size:'xxl',className:'empty-icon'}),
                 React.createElement('h2',{style:{marginBottom:12,color:'var(--acc)'}},'CodeFlow ran into an issue'),
-                React.createElement('p',{style:{color:'var(--t2)',marginBottom:8,maxWidth:500}},'The codebase may be too large for your browser\'s available memory. Try analyzing a subfolder instead, or close other browser tabs to free memory.'),
+                React.createElement('p',{style:{color:'var(--t2)',marginBottom:8,maxWidth:500}},'An unexpected error prevented CodeFlow from continuing. Review the diagnostic below, then reload and try again.'),
                 React.createElement('p',{style:{color:'var(--t3)',fontSize:11,marginBottom:20}},String(this.state.error)),
                 React.createElement('button',{onClick:function(){self.setState({hasError:false,error:null});},style:{padding:'8px 20px',background:'var(--acc)',color:'var(--bg0)',border:'none',borderRadius:6,cursor:'pointer',fontFamily:'inherit',fontWeight:600}},'Reload')
             );
