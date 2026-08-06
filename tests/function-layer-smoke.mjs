@@ -48,9 +48,11 @@ page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + e.message));
 // restore actually avoided a refetch rather than merely looking instant.
 let functionRequests = 0;
 let fileRequests = 0;
+let capabilityRequests = 0;
 page.on('request', (r) => {
   if (r.url().endsWith('/api/graph/function')) functionRequests += 1;
   if (r.url().endsWith('/api/graph/file')) fileRequests += 1;
+  if (r.url().endsWith('/api/capabilities')) capabilityRequests += 1;
 });
 
 await page.goto(url, { waitUntil: 'domcontentloaded' });
@@ -94,6 +96,11 @@ await step('file graph renders', async () => {
   }, { timeout: 120000 });
 });
 
+await step('file drill-down checks server capabilities', async () => {
+  if (capabilityRequests < 1) throw new Error('file drill-down issued no /api/capabilities request');
+  if (fileRequests < 1) throw new Error('file drill-down issued no /api/graph/file request');
+});
+
 await page.screenshot({ path: 'docs/img/smoke-2-file.png' });
 
 // --- file -> function -------------------------------------------------------
@@ -129,6 +136,13 @@ await step('function graph renders entry/exit, branches, loop back-edges and edg
   if (shape.dashedBackEdges === 0) throw new Error('a loop-bearing function must render back-edges');
   if (shape.trueFalseLabels === 0) throw new Error('branch edges must be labelled true/false');
   if (shape.mermaidEntities > 0) throw new Error('Mermaid escape entities leaked into rendered labels');
+});
+
+await step('function drill-down reaches the credential-free graph endpoint', async () => {
+  // The capability client caches its successful file-layer check, so the
+  // function path need not issue a second /api/capabilities request.
+  if (capabilityRequests < 1) throw new Error('drill-down chain never checked /api/capabilities');
+  if (functionRequests < 1) throw new Error('function drill-down issued no /api/graph/function request');
 });
 
 await page.screenshot({ path: 'docs/img/smoke-3-function.png' });
@@ -168,7 +182,7 @@ await step('back restores the file view from cache without re-running analysis',
 
 await page.screenshot({ path: 'docs/img/smoke-4-back.png' });
 
-console.log('\nrequests issued: file=' + fileRequests + ' function=' + functionRequests);
+console.log('\nrequests issued: capabilities=' + capabilityRequests + ' file=' + fileRequests + ' function=' + functionRequests);
 console.log('console errors: ' + (consoleErrors.length ? JSON.stringify(consoleErrors.slice(0, 6), null, 2) : 'none'));
 await browser.close();
 
