@@ -262,12 +262,9 @@ test('enforceFileRequestLimits: throws when the target set\'s aggregate size exc
   );
 });
 
-test('enforceFileRequestLimits: throws when the target set has more files than the configured count limit', () => {
-  const files = Array.from({ length: 5 }, (_, i) => ({ path: `f${i}.py`, size: 10 }));
-  assert.throws(
-    () => enforceFileRequestLimits(files, { maxRepoFiles: 3, maxFileBytes: 1_000_000, maxRepoBytes: 25_000_000 }),
-    /over the configured limit of 3/
-  );
+test('enforceFileRequestLimits: package counts are unrestricted within byte budgets', () => {
+  const files = Array.from({ length: 2500 }, (_, i) => ({ path: `f${i}.py`, size: 10 }));
+  assert.deepEqual(enforceFileRequestLimits(files, { maxRepoFiles: 3, maxFileBytes: 1000000, maxRepoBytes: 25000000 }), files);
 });
 
 test('enforceFileRequestLimits: a huge unrelated repository does not affect a tiny requested file (the actual bug reported)', () => {

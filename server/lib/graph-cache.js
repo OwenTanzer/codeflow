@@ -58,7 +58,7 @@ export class GraphCache {
    */
   set(key, graph) {
     if (!this._enabled) return;
-    const bytes = JSON.stringify(graph).length;
+    const bytes = Buffer.byteLength(JSON.stringify(graph));
     if (bytes > this._maxBytes) {
       // Entry is too large to ever fit — don't evict everything just to fail
       log('warn', 'graph-cache entry exceeds maxBytes; skipping', { cacheKey: key, bytes, maxBytes: this._maxBytes });
