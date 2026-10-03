@@ -76,7 +76,7 @@ export function renderFileGraph(options) {
     var centers = {};
     groupIds.forEach(function (g, i) { centers[g] = { x: (i % cols + 1) * cw, y: (Math.floor(i / cols) + 1) * ch }; });
 
-    var zoom = d3.zoom().scaleExtent([0.2, 5]).on('zoom', function (e) { container.attr('transform', e.transform); });
+    var zoom = d3.zoom().scaleExtent([0.2, 5]).on('zoom', function (e) { container.attr('transform', e.transform); container.selectAll('text').attr('visibility', e.transform.k < 0.45 ? 'hidden' : null); });
     svg.call(zoom);
     zoomRef.current = zoom;
     var container = svg.append('g');
@@ -154,7 +154,7 @@ export function renderFileGraph(options) {
       .attr('fill', theme === 'light' ? '#333' : '#eee')
       .attr('font-size', '9px').attr('font-family', 'JetBrains Mono').attr('font-weight', '500')
       .attr('pointer-events', 'none')
-      .text(function (d) { return d.label.length > 16 ? d.label.slice(0, 15) + '…' : d.label; });
+      .text(function (d) { return d.label; });
 
     sim.on('tick', function () {
       link.attr('d', function (d) { return 'M' + d.source.x + ',' + d.source.y + 'L' + d.target.x + ',' + d.target.y; });

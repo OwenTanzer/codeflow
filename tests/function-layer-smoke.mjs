@@ -20,16 +20,16 @@ const [url = 'http://localhost:3000/'] = process.argv.slice(2);
 
 // Same known-benign Babel Standalone notice tests/ui-smoke.mjs filters.
 const KNOWN_NOISE = /\[BABEL\] Note: The code generator has deoptimised the styling/;
-const REPO = 'psf/requests';
+const REPO = 'https://github.com/psf/requests/tree/611c6162cbc4ac2020a2f91c7cfa4f3abf9bbb60';
 // The repository renderer labels file nodes by stem, not filename -- the node
 // for src/requests/sessions.py reads "sessions".
-const FILE_LABEL = 'sessions';
+const FILE_LABEL = 'sessions.py';
 // SessionRedirectMixin.resolve_redirects: for loop, while loop, try/except
 // with multiple handlers, continue, break, and several returns -- the case the
 // layered renderer exists for. The file layer truncates labels at 16 chars.
 const TARGET_FUNCTION = 'resolve_redirects';
 // fileGraph.js truncates at 16: label.slice(0, 15) + '…'
-const TARGET_LABEL = 'resolve_redirec…';
+const TARGET_LABEL = 'resolve_redirects';
 
 const failures = [];
 function ok(name) { console.log('ok   - ' + name); }

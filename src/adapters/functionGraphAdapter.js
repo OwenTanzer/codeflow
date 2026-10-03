@@ -85,7 +85,7 @@ function edgeKind(label) {
 // @codevisualizer/core runs every label through StringProcessor.escapeString
 // before it reaches FlowchartIR, which rewrites Mermaid-hostile characters
 // into Mermaid's own numeric-entity forms: `"` -> #quot;, `<` -> #60;,
-// `>` -> #62;, backtick -> #96;, and `\` -> `\\`. Those are *presentation*
+// `>` -> #62;, backtick -> #96;, and `` -> `\`. Those are *presentation*
 // escapes for a Mermaid code fence, and this adapter's whole premise
 // (MOO-71's governing decision: "treat FlowchartIR as semantic input, not
 // Mermaid text as the canonical architecture") is that GraphIR carries
@@ -102,9 +102,32 @@ function edgeKind(label) {
 // StringProcessor: the CodeVisualizer extension's own Mermaid output
 // depends on that escaping, and MOO-71 must preserve extension behavior.
 //
-// escapeString's other transforms are lossy and intentionally NOT reversed:
-// whitespace collapsing, trailing-colon stripping, and truncation to 80
-// characters are reasonable label shortening, and no inverse exists.
+// The pinned upstream encoder is lossy. Recover only when re-encoding the
+// authoritative source span reproduces its output exactly; a coordinate is
+// not in itself proof that a generated label equals that entire source span.
+function upstreamEscape(text) {
+  const map = { '"': '#quot;', '\\': '\\\\', '<': '#60;', '>': '#62;', '`': '#96;' };
+  let result = text.replace(/\s+/g, ' ').trim()
+    .replace(/["\\<>`]/g, c => map[c]).replace(/:$/, '').trim();
+  return result.length > 80 ? result.slice(0, 77) + '...' : result;
+}
+
+export function recoverFunctionLabel(node, source) {
+  // These pinned parser paths label exactly their attached syntax node.
+  // Other paths compose labels (e.g. for headers attach the entire loop).
+  // Matching a truncated prefix alone cannot prove that those spans agree.
+  const sourceLabelPath = /^(stmt|cond|elif_cond|while_cond|raise)_\d+$/.test(node.id || '');
+  const loc = sourceLabelPath ? node.location : null;
+  if (loc && Number.isInteger(loc.start) && Number.isInteger(loc.end)
+      && loc.start >= 0 && loc.end > loc.start && loc.end <= source.length) {
+    const original = source.slice(loc.start, loc.end);
+    // Some parser paths pre-escape before createSemanticNode escapes again.
+    const encoded = upstreamEscape(original);
+    if (encoded === node.label || upstreamEscape(encoded) === node.label)
+      return { label: original, provenance: 'verified-source-span' };
+  }
+  return { label: decodeFlowchartLabel(node.label), provenance: 'upstream-label' };
+}
 const MERMAID_ENTITY_PATTERN = /#quot;|#60;|#62;|#96;|\\\\/g;
 const MERMAID_ENTITY_MAP = { '#quot;': '"', '#60;': '<', '#62;': '>', '#96;': '`', '\\\\': '\\' };
 
@@ -145,7 +168,11 @@ export function adaptFunctionAnalysis({ context, entrySymbol, source, flowchartI
     const mapping = (node.nodeType && NODE_TYPE_MAP[node.nodeType]) || DEFAULT_NODE_KIND;
     const synthetic = isSynthetic(node.nodeType);
     const coordinate = synthetic ? null : nodeCoordinate(context, entrySymbol, source, node);
-    const label = decodeFlowchartLabel(node.label);
+    const recovered = recoverFunctionLabel(node, source);
+    const label = recovered.label;
+    if (recovered.provenance === 'upstream-label' && /\.\.\./.test(label || '')) {
+      warnings.push(`Node "${node.id}" has an upstream label containing ellipses whose completeness cannot be verified from its source span.`);
+    }
     if (!synthetic && !node.location) {
       warnings.push(`Node "${node.id}" (${label}) has no source location; its coordinate could not be attached.`);
     }
@@ -164,7 +191,7 @@ export function adaptFunctionAnalysis({ context, entrySymbol, source, flowchartI
       // unmapped type -> the 'process' default) -- costs almost nothing
       // and makes debugging a rendering discrepancy much easier than
       // reasoning backward from the collapsed kind alone.
-      metadata: { flowchartNodeId: node.id, flowchartNodeType: node.nodeType || null },
+      metadata: { flowchartNodeId: node.id, flowchartNodeType: node.nodeType || null, labelProvenance: recovered.provenance },
     };
   });
 

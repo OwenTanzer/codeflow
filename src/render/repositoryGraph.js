@@ -89,7 +89,7 @@ export function renderRepositoryGraph(options) {
         var ch=h/(Math.ceil(folders.length/cols)+1);
         var centers={};
         folders.forEach(function(f,i){centers[f]={x:(i%cols+1)*cw,y:(Math.floor(i/cols)+1)*ch};});
-        var zoom=d3.zoom().scaleExtent([0.2,5]).on('zoom',function(e){container.attr('transform',e.transform);});
+        var zoom=d3.zoom().scaleExtent([0.2,5]).on('zoom',function(e){container.attr('transform',e.transform);container.selectAll('text').attr('visibility',e.transform.k<0.45?'hidden':null);});
         svg.call(zoom);
         zoomRef.current=zoom;
         var container=svg.append('g');
@@ -174,8 +174,8 @@ export function renderRepositoryGraph(options) {
             .attr('stroke-width',function(d){return changedPaths&&changedPaths.has(d.id)?3:1.5;})
             .attr('stroke-dasharray',function(d){return changedPaths&&changedPaths.has(d.id)?'3,2':null;});
         // Hide labels for large graphs to reduce DOM overhead
-        if(!isLargeGraph||graphConfig.showLabels){
-            node.append('text').attr('text-anchor','middle').attr('dy',0).attr('fill',theme==='light'?'#333':'#eee').attr('font-size',function(d){return Math.max(6,Math.min(10,getR(d)*0.6))+'px';}).attr('font-family','JetBrains Mono').attr('font-weight','500').attr('pointer-events','none').text(function(d){var n=d.name.replace(/\.[^.]+$/,'');var maxLen=Math.max(4,Math.floor(getR(d)/2));return n.length>maxLen+1?n.slice(0,maxLen)+'…':n;});
+        {
+            node.append('text').attr('text-anchor','middle').attr('dy',0).attr('fill',theme==='light'?'#333':'#eee').attr('font-size',function(d){return Math.max(6,Math.min(10,getR(d)*0.6))+'px';}).attr('font-family','JetBrains Mono').attr('font-weight','500').attr('pointer-events','none').text(function(d){return d.name;});
         }
         // Pre-index nodes by folder for faster hull computation
         var nodesByFolder={};

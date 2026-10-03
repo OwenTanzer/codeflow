@@ -31,6 +31,7 @@
 // repositoryGraph.js, fileGraph.js and src/analyzer.js use.
 /* eslint-disable no-undef */
 import { buildFunctionRenderModel } from './functionRenderModel.js';
+import { LABEL_FONT, LINE_HEIGHT } from './labelGeometry.js';
 
 // One palette entry per *semantic kind*, not per shape: entry/exit read as
 // terminals, branches as decisions, calls as outward jumps, everything else
@@ -43,108 +44,24 @@ const COLOR_BY_KIND = {
   call: '#a78bfa',
   process: '#60a5fa',
 };
-const NODE_W = 132;
-const NODE_H = 34;
-const TERMINAL_R = 15;
-const BRANCH_R = 24;
-const MAX_LABEL = 20;
-
-// MOO-86: process/call (rect) node labels wrap onto a second line instead of
-// being hard-truncated at MAX_LABEL -- entry/exit and branch (diamond) nodes
-// keep single-line truncation, since their fixed circular/diamond footprint
-// (TERMINAL_R/BRANCH_R) has no extra room to grow into without colliding with
-// the shape's own point. MAX_CHARS_PER_LINE tracks MAX_LABEL (the width both
-// were tuned against is the same NODE_W), and LINE_H is small enough that a
-// wrapped two-line box (NODE_H + LINE_H) still fits inside RANK_HEIGHT's
-// (functionRenderModel.js) existing 60px-34px = 26px of slack per rank.
-const MAX_CHARS_PER_LINE = 18;
-const LINE_H = 12;
-const WORD_BREAK_PATTERN = /[\s_.\-(),:]/;
-
-function colorFor(d) {
-  return COLOR_BY_KIND[d.kind] || COLOR_BY_KIND.process;
-}
-
-function isWrappable(d) {
-  return !d.isEntry && !d.isExit && d.shape !== 'diamond';
-}
-
-/**
- * Split a label into at most two lines for a rect node, breaking near the
- * midpoint on a word/punctuation boundary when one exists close by so a
- * split doesn't land mid-identifier more than necessary. Each line is
- * independently capped at MAX_CHARS_PER_LINE with an ellipsis, so a label
- * that's still too long after wrapping degrades the same way single-line
- * truncation always did, rather than overflowing the box.
- * @returns {string[]} one entry (unwrapped) or two (wrapped)
- */
-function wrapLabel(label) {
-  if (!label) return [''];
-  if (label.length <= MAX_CHARS_PER_LINE) return [label];
-  var mid = Math.ceil(label.length / 2);
-  var breakIndex = -1;
-  for (var offset = 0; offset <= 8; offset++) {
-    if (mid + offset < label.length && WORD_BREAK_PATTERN.test(label[mid + offset])) { breakIndex = mid + offset; break; }
-    if (mid - offset >= 0 && WORD_BREAK_PATTERN.test(label[mid - offset])) { breakIndex = mid - offset; break; }
-  }
-  var first = breakIndex > 0 ? label.slice(0, breakIndex).trim() : label.slice(0, MAX_CHARS_PER_LINE);
-  var rest = breakIndex > 0 ? label.slice(breakIndex + 1).trim() : label.slice(MAX_CHARS_PER_LINE);
-  if (first.length > MAX_CHARS_PER_LINE) first = first.slice(0, MAX_CHARS_PER_LINE - 1) + '…';
-  if (rest.length > MAX_CHARS_PER_LINE) rest = rest.slice(0, MAX_CHARS_PER_LINE - 1) + '…';
-  return [first, rest];
-}
-
-// Cached on the datum (one render pass per node) so shapePath/halfHeight and
-// the actual text rendering never compute -- and never disagree on -- the
-// line count independently.
-function linesFor(d) {
-  if (d._wrappedLines) return d._wrappedLines;
-  d._wrappedLines = isWrappable(d) ? wrapLabel(d.label) : [truncate(d.label)];
-  return d._wrappedLines;
-}
-
-function boxHeight(d) {
-  return linesFor(d).length > 1 ? NODE_H + LINE_H : NODE_H;
-}
-
-// Half-height of a node, needed to anchor edges on its boundary rather than
-// its center so arrowheads don't disappear under the shape.
-function halfHeight(d) {
-  if (d.isEntry || d.isExit) return TERMINAL_R;
-  if (d.shape === 'diamond') return BRANCH_R;
-  return boxHeight(d) / 2;
-}
-
-function halfWidth(d) {
-  if (d.isEntry || d.isExit) return TERMINAL_R;
-  if (d.shape === 'diamond') return BRANCH_R;
-  return NODE_W / 2;
-}
-
-function shapePath(d) {
+function colorFor(d) { return COLOR_BY_KIND[d.kind] || COLOR_BY_KIND.process; }
+function linesFor(d) { return d.lines; }
+function halfHeight(d) { return d.height / 2; }
+function halfWidth(d) { return d.width / 2; }
+export function shapePath(d) {
+  var hw = halfWidth(d), hh = halfHeight(d);
   if (d.isEntry || d.isExit) {
-    var r = TERMINAL_R;
-    return 'M' + -r + ',0A' + r + ',' + r + ' 0 1,0 ' + r + ',0A' + r + ',' + r + ' 0 1,0 ' + -r + ',0';
+    return 'M' + -hw + ',0A' + hw + ',' + hh + ' 0 1,0 ' + hw + ',0A' + hw + ',' + hh + ' 0 1,0 ' + -hw + ',0';
   }
-  if (d.shape === 'diamond') {
-    var b = BRANCH_R;
-    return 'M0,' + -b + 'L' + b + ',0L0,' + b + 'L' + -b + ',0Z';
-  }
-  var hw = NODE_W / 2;
-  var hh = boxHeight(d) / 2;
+  if (d.shape === 'diamond') return 'M0,' + -hh + 'L' + hw + ',0L0,' + hh + 'L' + -hw + ',0Z';
   return 'M' + -hw + ',' + -hh + 'H' + hw + 'V' + hh + 'H' + -hw + 'Z';
-}
-
-function truncate(label) {
-  if (!label) return '';
-  return label.length > MAX_LABEL ? label.slice(0, MAX_LABEL - 1) + '…' : label;
 }
 
 // Forward flow: straight down when the ranks line up, otherwise an elbow
 // (down, across, down). Orthogonal rather than curved because a flowchart's
 // value is in reading execution order, and right angles make the rank
 // structure legible.
-function forwardPath(s, t) {
+export function forwardPath(s, t) {
   var sy = s.y + halfHeight(s);
   var ty = t.y - halfHeight(t);
   if (Math.abs(s.x - t.x) < 1) return 'M' + s.x + ',' + sy + 'V' + ty;
@@ -163,7 +80,7 @@ function forwardPath(s, t) {
 // rank ~35 to a loop header at rank ~6 is long -- otherwise swept diagonally
 // across the middle of the graph and crossed everything between, which the
 // first screenshot showed as a large X over the node column.
-function backPath(s, t, lane, laneBaseX) {
+export function backPath(s, t, lane, laneBaseX) {
   var laneX = laneBaseX + lane * 20;
   var sx = s.x + halfWidth(s);
   var tx = t.x + halfWidth(t);
@@ -193,7 +110,21 @@ export function renderFunctionGraph(options) {
   svg.selectAll('*').remove();
 
   try {
-    var model = buildFunctionRenderModel(graph);
+    // Measure with the actual SVG font, including the current fallback font.
+    var probe = svg.append('text').style('font', LABEL_FONT).style('white-space', 'pre')
+      .attr('visibility', 'hidden');
+    var measureCache = new Map();
+    function measureText(text) {
+      if (!measureCache.has(text)) {
+        probe.text(text);
+        measureCache.set(text, probe.node().getComputedTextLength());
+      }
+      return measureCache.get(text);
+    }
+    var model = buildFunctionRenderModel(graph, {
+      measureText, maxTextWidth: Math.max(140, Math.min(360, (svgEl.clientWidth || 800) * 0.4)),
+    });
+    probe.remove();
     if (model.nodes.length === 0) return cleanup;
 
     var nodeById = new Map(model.nodes.map(function (n) { return [n.id, n]; }));
@@ -206,10 +137,10 @@ export function renderFunctionGraph(options) {
     var container = svg.append('g');
 
     var defs = svg.append('defs');
-    defs.append('marker').attr('id', 'fn-arr').attr('viewBox', '0 -5 10 10').attr('refX', 9)
+    defs.append('marker').attr('id', 'fn-arr').attr('viewBox', '0 -5 10 10').attr('refX', 10)
       .attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
       .append('path').attr('d', 'M0,-4L10,0L0,4').attr('fill', edgeColor);
-    defs.append('marker').attr('id', 'fn-arr-back').attr('viewBox', '0 -5 10 10').attr('refX', 9)
+    defs.append('marker').attr('id', 'fn-arr-back').attr('viewBox', '0 -5 10 10').attr('refX', 10)
       .attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
       .append('path').attr('d', 'M0,-4L10,0L0,4').attr('fill', '#fbbf24');
 
@@ -301,21 +232,16 @@ export function renderFunctionGraph(options) {
       // file layer uses for nodes without relationship data.
       .attr('stroke-dasharray', function (d) { return d.isSynthetic ? '3,2' : null; });
 
-    // MOO-86: a label too wide for a rect node now wraps onto a second
-    // tspan (linesFor/wrapLabel above) instead of being cut off -- entry/
-    // exit/diamond nodes keep the old single-line truncation, since their
-    // shapes have no room to grow into.
     node.append('text').attr('class', 'fn-nl')
-      .attr('text-anchor', 'middle')
-      .attr('fill', textColor)
-      .attr('font-size', '9px').attr('font-family', 'JetBrains Mono').attr('font-weight', '500')
+      .attr('text-anchor', 'middle').attr('fill', textColor)
+      .style('font', LABEL_FONT).style('white-space', 'pre')
       .attr('pointer-events', 'none')
       .each(function (d) {
-        var lines = linesFor(d);
         var textSel = d3.select(this);
-        var startDy = lines.length > 1 ? 3 - LINE_H / 2 : 3;
-        lines.forEach(function (line, i) {
-          textSel.append('tspan').attr('x', 0).attr('dy', i === 0 ? startDy : LINE_H).text(line);
+        d.lines.forEach(function (line, i) {
+          textSel.append('tspan').attr('x', 0)
+            .attr('y', (i - (d.lines.length - 1) / 2) * LINE_HEIGHT + 4)
+            .text(line);
         });
       });
 
