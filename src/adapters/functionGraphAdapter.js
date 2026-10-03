@@ -113,6 +113,14 @@ function upstreamEscape(text) {
 }
 
 export function recoverFunctionLabel(node, source) {
+  // Additive raw contract proposed for CodeVisualizer. The current pin does
+  // not emit it: retaining legacy recovery is NOT a completeness guarantee.
+  // Never entity-decode authoritative raw text (literal #quot; must survive).
+  if (node.rawLabel?.version === 1 &&
+      node.rawLabel.provenance === 'python-parser-composition' &&
+      typeof node.rawLabel.text === 'string') {
+    return { label: node.rawLabel.text, provenance: node.rawLabel.provenance };
+  }
   // These pinned parser paths label exactly their attached syntax node.
   // Other paths compose labels (e.g. for headers attach the entire loop).
   // Matching a truncated prefix alone cannot prove that those spans agree.
@@ -191,7 +199,7 @@ export function adaptFunctionAnalysis({ context, entrySymbol, source, flowchartI
       // unmapped type -> the 'process' default) -- costs almost nothing
       // and makes debugging a rendering discrepancy much easier than
       // reasoning backward from the collapsed kind alone.
-      metadata: { flowchartNodeId: node.id, flowchartNodeType: node.nodeType || null, labelProvenance: recovered.provenance },
+      metadata: { flowchartNodeId: node.id, flowchartNodeType: node.nodeType || null, labelProvenance: recovered.provenance, rawLabel: node.rawLabel || null },
     };
   });
 

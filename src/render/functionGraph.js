@@ -31,7 +31,7 @@
 // repositoryGraph.js, fileGraph.js and src/analyzer.js use.
 /* eslint-disable no-undef */
 import { buildFunctionRenderModel } from './functionRenderModel.js';
-import { LABEL_FONT, LINE_HEIGHT } from './labelGeometry.js';
+import { LABEL_FONT, LINE_HEIGHT, routeFunctionLinks } from './labelGeometry.js';
 
 // One palette entry per *semantic kind*, not per shape: entry/exit read as
 // terminals, branches as decisions, calls as outward jumps, everything else
@@ -127,7 +127,6 @@ export function renderFunctionGraph(options) {
     probe.remove();
     if (model.nodes.length === 0) return cleanup;
 
-    var nodeById = new Map(model.nodes.map(function (n) { return [n.id, n]; }));
     var edgeColor = theme === 'light' ? '#b8b8b8' : '#4a4a4a';
     var textColor = theme === 'light' ? '#333' : '#eee';
 
@@ -164,29 +163,13 @@ export function renderFunctionGraph(options) {
 
     // Back-edge lanes live to the right of the rightmost node, so the fitted
     // width has to account for them or the loop curves fall outside the view.
-    var rightmost = 0;
-    model.nodes.forEach(function (n) { rightmost = Math.max(rightmost, n.x + halfWidth(n)); });
-    var laneBaseX = rightmost + 34;
-    var backEdgeCount = model.links.filter(function (l) { return l.isBackEdge; }).length;
-    var drawnWidth = backEdgeCount > 0 ? laneBaseX + Math.min(backEdgeCount, 4) * 20 + 16 : model.width;
-
+    var links = routeFunctionLinks(model);
+    var drawnWidth = Math.max(model.width,...links.map(l=>Math.max(
+      ...l.points.map(p=>p[0]), l.labelX+(l.data.label||'false').length*7+16)));
     var w = svgEl.clientWidth || drawnWidth;
     var scale = Math.max(MIN_SCALE, Math.min(1, w / (drawnWidth + 40)));
-    var initial = d3.zoomIdentity.translate((w - drawnWidth * scale) / 2, 16).scale(scale);
+    var initial = d3.zoomIdentity.translate(w / 2 - model.nodes[0].x * scale, 16).scale(scale);
     svg.call(zoom.transform, initial);
-
-    var backLane = 0;
-    var links = model.links.map(function (l) {
-      var s = nodeById.get(l.source);
-      var t = nodeById.get(l.target);
-      var lane = l.isBackEdge ? backLane++ % 4 : 0;
-      return {
-        data: l,
-        source: s,
-        target: t,
-        d: l.isBackEdge ? backPath(s, t, lane, laneBaseX) : forwardPath(s, t),
-      };
-    });
 
     linkLayer.selectAll('path').data(links).join('path')
       .attr('d', function (l) { return l.d; })
@@ -204,8 +187,8 @@ export function renderFunctionGraph(options) {
       return l.data.label || l.data.kind === 'flow-true' || l.data.kind === 'flow-false';
     });
     edgeLabelLayer.selectAll('text').data(labelled).join('text')
-      .attr('x', function (l) { return (l.source.x + l.target.x) / 2 + 6; })
-      .attr('y', function (l) { return (l.source.y + l.target.y) / 2; })
+      .attr('x', function (l) { return l.labelX; })
+      .attr('y', function (l) { return l.labelY; })
       .attr('fill', function (l) {
         if (l.data.kind === 'flow-true') return '#34d399';
         if (l.data.kind === 'flow-false') return '#f87171';
@@ -280,7 +263,9 @@ export function renderFunctionGraph(options) {
       neighbors.get(l.target).add(l.source);
     });
 
+    var currentSelection = null, currentQuery = '';
     function applySelection(selectedId) {
+      currentSelection = selectedId;
       var keep = selectedId ? neighbors.get(selectedId) : null;
       node.attr('opacity', function (d) { return !keep || keep.has(d.id) ? 1 : 0.18; });
       node.selectAll('.fn-nc').attr('stroke-width', function (d) { return selectedId === d.id ? 3 : 1.6; });
@@ -295,6 +280,7 @@ export function renderFunctionGraph(options) {
     // control-flow graph, removing a matched node's surroundings destroys
     // the very context that makes the match meaningful.
     function applySearch(query) {
+      currentQuery = query;
       var q = (query || '').trim().toLowerCase();
       node.selectAll('.fn-nc')
         .attr('stroke', function (d) {
@@ -311,9 +297,48 @@ export function renderFunctionGraph(options) {
       });
     }
 
-    cleanup = function () { svg.on('.zoom', null); };
-    cleanup.applySearch = applySearch;
-    cleanup.applySelection = applySelection;
+    var replacement = null, disposed = false;
+    var previousWidth = svgEl.clientWidth, previousHeight = svgEl.clientHeight;
+    function reflow() {
+      if(disposed)return;
+      var transform=d3.zoomTransform(svgEl);
+      var query=currentQuery, selection=currentSelection;
+      cleanup();
+      replacement=renderFunctionGraph(options);
+      d3.select(svgEl).call(zoomRef.current.transform,transform);
+      replacement.applySelection?.(selection);
+      if(query)replacement.applySearch?.(query);
+    }
+    var observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(function() {
+      if(svgEl.clientWidth===previousWidth && svgEl.clientHeight===previousHeight)return;
+      previousWidth=svgEl.clientWidth;previousHeight=svgEl.clientHeight;
+      reflow();
+    });
+    observer?.observe(svgEl);
+    if(document.fonts)document.fonts.addEventListener('loadingdone',reflow);
+    cleanup = function () {
+      if(replacement){replacement();return;}
+      disposed=true;
+      observer?.disconnect();
+      if(document.fonts)document.fonts.removeEventListener('loadingdone',reflow);
+      svg.on('.zoom', null);
+    };
+    cleanup.fit = function() {
+      if(replacement){replacement.fit?.();return;}
+      var b=container.node().getBBox(), padding=20;
+      var k=Math.min(1,(svgEl.clientWidth-2*padding)/b.width,(svgEl.clientHeight-2*padding)/b.height);
+      if(!(k>0))return;
+      zoom.scaleExtent([Math.min(0.15,k),4]);
+      svg.call(zoom.transform,d3.zoomIdentity.translate(
+        (svgEl.clientWidth-b.width*k)/2-b.x*k,
+        (svgEl.clientHeight-b.height*k)/2-b.y*k).scale(k));
+    };
+    cleanup.readable = function() {
+      if(replacement){replacement.readable?.();return;}
+      svg.call(zoom.transform,initial);
+    };
+    cleanup.applySearch = function(q){if(replacement)replacement.applySearch?.(q);else applySearch(q);};
+    cleanup.applySelection = function(id){if(replacement)replacement.applySelection?.(id);else applySelection(id);};
     return cleanup;
   } catch (e) {
     console.error('Function graph render error:', e);

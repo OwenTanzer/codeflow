@@ -42,3 +42,64 @@ The inline full-labels.test.mjs fixture contains >80-character source, multiline
 No index.html changes. Shared files: src/render/fileGraph.js and repositoryGraph.js, limited to label and zoom blocks; reconcile with lane #27 interaction hooks. tests/function-layer-smoke.mjs changes its label selectors and pins Requests; reconcile with lane #27 smoke extensions.
 package-lock.json and codevisualizer-core.lock.json remain unchanged.
 Do not merge/deploy or close #28 based on this partial result. Reconcile all lanes in a separate integration checkout and rerun combined acceptance.
+
+## Run 2 correction status
+
+Run 1 is partial, not accepted. The current CodeVisualizer pin
+974d907a5490aa96fb8e84b6723d15bc5455c658 still irreversibly shortens composed
+labels. Run 2's independent source oracle intentionally makes browser acceptance
+fail until the upstream contract is approved and implemented. A renderer-only
+pass or a warning does not establish completeness.
+
+The proposed additive node contract is rawLabel = {version: 1, text,
+provenance: "python-parser-composition"}. text is captured before ANY
+StringProcessor call; it is never Mermaid-decoded. location remains a navigation
+span, not proof that a header equals its whole body. The local adapter and render
+model preserve this contract when present. The current pin does not emit it.
+Source-literal ellipses and literal entity-looking text remain literal.
+
+An UNAPPLIED three-file proposal for OwenTanzer/CodeVisualizer is included in
+the Run 2 evidence bundle: IR type, Python parser raw pass, and Python service.
+It bypasses shortening during a separate parser pass while preserving existing
+Mermaid labels, and replaces both generated higher-order assignment placeholders
+with the authoritative assignment text in that raw pass. This is a review
+proposal, not a tested upstream fix. It needs owner authorization, complete
+upstream regression/extension compatibility tests, an audit of fallback
+"with ..." and other synthetic recipes, and performance measurement before use.
+No upstream files, dependency pin or package-lock.json changed. The proposed
+pin transition is from the current SHA to the future reviewed upstream commit;
+no new SHA exists or is fabricated.
+
+Local rendering changes reserve measured label collision envelopes, restore
+folder zoom visibility on every hull recreation, route skipped ranks and loops
+outside node shapes, keep edge labels in rank gaps, and reflow function geometry
+on font loading or viewport resize. Function fit measures actual rendered bounds;
+readable view returns to the entry. Alternate label blocks retain extensions and
+complete folder names; treemap labels are arranged beside the cells rather than
+clipped to tiny cells. Large complete labels can expand the graph far beyond the
+viewport; this is distinct from shape overlap and requires pan/fit.
+
+Run local checks from the isolated checkout:
+- Set PYTHON_BIN to .venv-pyan3/Scripts/python.exe on MSI.
+- npm test
+- npm run build (the documented bootstrap reinstalls/builds the pinned core).
+- npm run dev -- --host 127.0.0.1 --port 5128 --strictPort
+- node tests/full-labels-browser.mjs
+- CODEFLOW_SMOKE_FIXTURE=labels node tests/function-layer-smoke.mjs http://127.0.0.1:5128/
+- Repeat with CODEFLOW_SMOKE_WIDTH=390.
+
+The last two environment assignments use shell-appropriate syntax (PowerShell:
+$env:CODEFLOW_SMOKE_FIXTURE='labels'). Fixture mode intercepts local API calls
+using the pinned Requests parser graph and a synthetic repository/file envelope.
+It is NOT live GitHub acceptance. The existing console-error gate remains active,
+including fetchBlame. Live acceptance must be rerun after access is available and
+the three lanes are integrated. No real mobile device is covered by viewport
+emulation.
+
+Shared-file hotspots: repositoryGraph collision setup/hull labels/cleanup;
+fileGraph collision setup/font cleanup; index.html FunctionGraphCanvas fit
+controls, treemap/matrix/dendrogram/bundle label callbacks and repository fit
+bounds; function-layer-smoke fixture hook, viewport/output paths and assertions.
+This list is not exhaustive until #27 and #29 diffs are available. No bridge,
+metadata repair, ref badge, retrieval, cancellation or mobile gestures are owned
+by this patch.

@@ -35,7 +35,7 @@
 // and the extra vertical spacing bought nothing except height that then had to
 // be zoomed away, which is what made the labels unreadable.
 import { measureFunctionNode } from './labelGeometry.js';
-const RANK_HEIGHT = 44;
+const RANK_HEIGHT = 60;
 const MARGIN_X = 90;
 const MARGIN_Y = 50;
 
@@ -285,7 +285,8 @@ export function buildFunctionRenderModel(graph, options = {}) {
       positions.set(n.id, { x: left + size.width / 2, y: top + rowHeight / 2 });
       left += size.width + 40;
     }
-    top += rowHeight + RANK_HEIGHT;
+    const outgoingCount = edges.filter(e => rank.get(e.source) === r).length;
+    top += rowHeight + Math.max(RANK_HEIGHT, outgoingCount * 20 + 40);
   }
   const height = top - RANK_HEIGHT + MARGIN_Y;
 
@@ -295,6 +296,8 @@ export function buildFunctionRenderModel(graph, options = {}) {
     return {
       id: node.id,
       label: node.label,
+      labelProvenance: node.metadata?.labelProvenance || null,
+      rawLabel: node.metadata?.rawLabel || null,
       kind: node.kind,
       shape: (node.hints && node.hints.shape) || 'rect',
       colorRole: (node.hints && node.hints.colorRole) || 'default',

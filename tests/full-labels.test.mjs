@@ -60,3 +60,53 @@ test('a long generated loop header must not recover the entire loop body',()=>{
   const label=source.slice(0,77)+'...';
   assert.equal(recoverFunctionLabel({id:'for_header_1',label,location:{start:0,end:source.length}},source).provenance,'upstream-label');
 });
+
+import { containsLabelBounds, routeFunctionLinks } from '../src/render/labelGeometry.js';
+import { labelGateFailures } from './full-label-gates.mjs';
+test('acceptance gates fail on hidden function labels and missing search matches',()=>{
+  const pass={views:[{nodeCount:2,reachable:2,zoom:[{k:.15,visible:2}],
+    searches:{resp:1,purged_headers:1,yield_requests:1,rewindable:1,TooManyRedirects:1},fontLoaded:true}],completeness:[{exact:true}]};
+  assert.deepEqual(labelGateFailures(pass),[]);
+  for(const mutate of [
+    r=>{r.views[0].zoom[0].visible=1;},
+    r=>{r.views[0].searches.purged_headers=0;},
+    r=>{r.completeness[0].exact=false;},
+    r=>{r.views[0].fontLoaded=false;},
+    r=>{r.views[0].edgeLabelOverlap=['false/for'];}
+  ]) {const r=structuredClone(pass);mutate(r);assert.ok(labelGateFailures(r).length);}
+});
+test('diamond and ellipse containment reject corners inside the bounding rectangle',()=>{
+  for(const node of [{shape:'diamond'},{isEntry:true}]){
+    assert.equal(containsLabelBounds({...node,width:100,height:100},{x:35,y:35,width:10,height:10}),false);
+    assert.equal(containsLabelBounds({...node,width:100,height:100},{x:-10,y:-10,width:20,height:20}),true);
+  }
+});
+test('rank skipping and loop routes clear all unrelated node rectangles',()=>{
+ const nodes=Array.from({length:7},(_,i)=>({id:String(i),kind:i===2?'branch':'process',label:label.repeat(2),hints:{shape:i===2?'diamond':'rect'}}));
+ const edges=nodes.slice(1).map((n,i)=>({source:String(i),target:n.id,kind:'flow'}));
+ edges.push({source:'0',target:'6',kind:'flow-false'},{source:'5',target:'1',kind:'flow'});
+ const model=buildFunctionRenderModel({nodes,edges});
+ for(const l of routeFunctionLinks(model)){
+  assert.deepEqual(l.points[0],[l.source.x,l.source.y+l.source.height/2]);
+  assert.deepEqual(l.points.at(-1),[l.target.x,l.target.y-l.target.height/2]);
+  for(const n of model.nodes){
+   if(n===l.source||n===l.target)continue;
+   for(let i=1;i<l.points.length;i++){
+    const [a,b]=[l.points[i-1],l.points[i]];
+    const hit=Math.max(a[0],b[0])>n.x-n.width/2&&Math.min(a[0],b[0])<n.x+n.width/2&&
+      Math.max(a[1],b[1])>n.y-n.height/2&&Math.min(a[1],b[1])<n.y+n.height/2;
+    assert.equal(hit,false,l.data.source+' -> '+l.data.target+' crosses '+n.id);
+   }
+  }
+ }
+});
+
+test('versioned authoritative raw labels bypass Mermaid decoding without losing provenance',()=>{
+ const text='#quot; literal ...\n'+label;
+ assert.deepEqual(recoverFunctionLabel({label:'shortened...',rawLabel:{version:1,text,provenance:'python-parser-composition'}},''),
+   {label:text,provenance:'python-parser-composition'});
+ const model=buildFunctionRenderModel({nodes:[{id:'raw',kind:'process',label:text,
+   metadata:{rawLabel:{version:1,text,provenance:'python-parser-composition'},labelProvenance:'python-parser-composition'}}],edges:[]});
+ assert.equal(model.nodes[0].rawLabel.text,text);
+ assert.equal(model.nodes[0].labelProvenance,'python-parser-composition');
+});

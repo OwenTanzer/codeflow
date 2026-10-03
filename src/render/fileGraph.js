@@ -156,6 +156,23 @@ export function renderFileGraph(options) {
       .attr('pointer-events', 'none')
       .text(function (d) { return d.label; });
 
+
+    // Reserve the enclosing circle of shape AND rendered label. Re-measure
+    // after font load; forceCollide caches radii until radius() is called.
+    function refreshLabelCollision() {
+      node.each(function(d) {
+        var b=this.getBBox(), r=radiusFor(d);
+        d.labelCollisionRadius=Math.max(r,
+          Math.hypot(Math.max(Math.abs(b.x),Math.abs(b.x+b.width)),
+                     Math.max(Math.abs(b.y),Math.abs(b.y+b.height))))+8;
+      });
+      sim.force('collision',d3.forceCollide().radius(function(d){return d.labelCollisionRadius;}).iterations(3));
+      sim.alpha(0.6).restart();
+    }
+    refreshLabelCollision();
+    var labelFontListener=function(){refreshLabelCollision();};
+    if(document.fonts)document.fonts.addEventListener('loadingdone',labelFontListener);
+
     sim.on('tick', function () {
       link.attr('d', function (d) { return 'M' + d.source.x + ',' + d.source.y + 'L' + d.target.x + ',' + d.target.y; });
       node.attr('transform', function (d) { return 'translate(' + d.x + ',' + d.y + ')'; });
@@ -165,5 +182,5 @@ export function renderFileGraph(options) {
     svg.selectAll('*').remove();
     svg.append('text').attr('x', 20).attr('y', 30).attr('fill', 'var(--t3)').text('File graph rendering error: ' + e.message);
   }
-  return function () { if (simRef.current) simRef.current.stop(); };
+  return function () { if(document.fonts)document.fonts.removeEventListener('loadingdone',labelFontListener); if (simRef.current) simRef.current.stop(); };
 }

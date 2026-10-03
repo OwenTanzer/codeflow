@@ -177,6 +177,23 @@ export function renderRepositoryGraph(options) {
         {
             node.append('text').attr('text-anchor','middle').attr('dy',0).attr('fill',theme==='light'?'#333':'#eee').attr('font-size',function(d){return Math.max(6,Math.min(10,getR(d)*0.6))+'px';}).attr('font-family','JetBrains Mono').attr('font-weight','500').attr('pointer-events','none').text(function(d){return d.name;});
         }
+
+    // Reserve the enclosing circle of shape AND rendered label. Re-measure
+    // after font load; forceCollide caches radii until radius() is called.
+    function refreshLabelCollision() {
+      node.each(function(d) {
+        var b=this.getBBox(), r=getR(d);
+        d.labelCollisionRadius=Math.max(r,
+          Math.hypot(Math.max(Math.abs(b.x),Math.abs(b.x+b.width)),
+                     Math.max(Math.abs(b.y),Math.abs(b.y+b.height))))+8;
+      });
+      sim.force('collision',d3.forceCollide().radius(function(d){return d.labelCollisionRadius;}).iterations(3));
+      sim.alpha(0.6).restart();
+    }
+    refreshLabelCollision();
+    var labelFontListener=function(){refreshLabelCollision();};
+    if(document.fonts)document.fonts.addEventListener('loadingdone',labelFontListener);
+
         // Pre-index nodes by folder for faster hull computation
         var nodesByFolder={};
         folders.forEach(function(f){nodesByFolder[f]=nodes.filter(function(n){return n.folder===f;});});
@@ -192,8 +209,8 @@ export function renderRepositoryGraph(options) {
                 if(hull){
                     var color=colorMap[f]||COLORS[folders.indexOf(f)%COLORS.length];
                     hullLayer.append('path').attr('d','M'+hull.join('L')+'Z').attr('fill',color).attr('fill-opacity',0.04).attr('stroke',color).attr('stroke-width',2).attr('stroke-opacity',0.25).attr('rx',8);
-                    var cx=d3.mean(fn,function(n){return n.x;}),cy=d3.min(fn,function(n){return n.y;})-pad-8;
-                    hullLayer.append('text').attr('x',cx).attr('y',cy).attr('text-anchor','middle').attr('fill',color).attr('font-size','10px').attr('font-family','JetBrains Mono').attr('font-weight','600').attr('opacity',0.7).text(f||'root');
+                    var cx=d3.mean(fn,function(n){return n.x;}),cy=d3.min(nodes,function(n){return n.y-getR(n);})-pad-8-folders.indexOf(f)*16;
+                    hullLayer.append('text').attr('visibility',d3.zoomTransform(svgEl).k<0.45?'hidden':null).attr('x',cx).attr('y',cy).attr('text-anchor','middle').attr('fill',color).attr('font-size','10px').attr('font-family','JetBrains Mono').attr('font-weight','600').attr('opacity',0.7).text(f||'root');
                 }
             });
         }
@@ -212,5 +229,5 @@ export function renderRepositoryGraph(options) {
         });
         node.selectAll('text').attr('opacity',graphConfig.showLabels?1:0);
         }catch(e){console.error('Force graph error:',e);svg.selectAll('*').remove();svg.append('text').attr('x',20).attr('y',30).attr('fill','var(--t3)').text('Graph rendering error: '+e.message);}
-        return function(){if(simRef.current)simRef.current.stop();};
+        return function(){if(document.fonts)document.fonts.removeEventListener('loadingdone',labelFontListener);if(simRef.current)simRef.current.stop();};
 }
