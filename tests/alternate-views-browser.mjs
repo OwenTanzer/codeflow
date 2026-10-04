@@ -346,6 +346,53 @@ for(const spec of specs){
         assert.deepEqual(await page.locator('.file-preview-text').allTextContents(),source.content.split('\n'),
           'preview text equals actual source response');
         layout.sourceAction.lines=source.content.split('\n').length;
+        // Only header identity and actions are constrained here. The source
+        // code body intentionally retains its own horizontal scrolling.
+        const preview=await page.locator('.file-preview-header').evaluate(header=>{
+          const rect=r=>({left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height});
+          const parts=['.file-preview-icon','.file-preview-name','.file-preview-path',
+            '.file-preview-line-badge','.file-preview-close'].flatMap(selector=>{
+            const el=header.querySelector(selector);if(!el)return [];
+            const style=getComputedStyle(el),isText=selector==='.file-preview-name'||
+              selector==='.file-preview-path'||selector==='.file-preview-line-badge';
+            const range=document.createRange();range.selectNodeContents(el);
+            return [{selector,text:el.textContent,rect:rect(el.getBoundingClientRect()),
+              fragments:isText?[...range.getClientRects()].map(rect):[],
+              scrollWidth:el.scrollWidth,clientWidth:el.clientWidth,
+              scrollHeight:el.scrollHeight,clientHeight:el.clientHeight,
+              whiteSpace:style.whiteSpace,textOverflow:style.textOverflow,overflowWrap:style.overflowWrap}];
+          });
+          return {header:rect(header.getBoundingClientRect()),
+            modal:rect(header.closest('.file-preview-modal').getBoundingClientRect()),parts};
+        });
+        layout.sourceAction.header=preview;
+        const insidePreview=(r,b)=>r.left>=b.left-1&&r.right<=b.right+1&&r.top>=b.top-1&&r.bottom<=b.bottom+1;
+        const viewport={left:0,top:0,right:width,bottom:850};
+        assert.ok(insidePreview(preview.header,viewport)&&insidePreview(preview.header,preview.modal),
+          'source header stays inside the modal and viewport at '+width);
+        assert.equal(preview.parts.find(p=>p.selector==='.file-preview-name')?.text,selectedSource.name);
+        assert.equal(preview.parts.find(p=>p.selector==='.file-preview-path')?.text,selectedSource.path);
+        for(const part of preview.parts){
+          assert.ok(part.rect.width>0&&part.rect.height>0,part.selector+' has visible source-header dimensions');
+          assert.ok(insidePreview(part.rect,preview.header)&&insidePreview(part.rect,viewport),
+            part.selector+' stays inside source header and viewport at '+width);
+          if(part.fragments.length){
+            assert.ok(part.scrollWidth<=part.clientWidth+1&&part.scrollHeight<=part.clientHeight+1,
+              part.selector+' has no clipped source identity at '+width);
+            assert.notEqual(part.textOverflow,'ellipsis',part.selector+' does not abbreviate source identity');
+            assert.ok(part.fragments.every(r=>insidePreview(r,part.rect)&&insidePreview(r,preview.header)&&insidePreview(r,viewport)),
+              part.selector+' renders every source-header text fragment within visible bounds at '+width);
+          }
+        }
+        const close=preview.parts.find(p=>p.selector==='.file-preview-close');
+        assert.ok(close,'source header provides Close');
+        for(const selector of ['.file-preview-name','.file-preview-path']){
+          const part=preview.parts.find(p=>p.selector===selector);
+          assert.ok(part.fragments.length>0,selector+' renders source identity');
+          assert.ok(part.rect.right<=close.rect.left+1,selector+' leaves a separate source Close slot');
+        }
+        await page.locator('.file-preview-close').click({trial:true});
+        entry.checks.push({name:'source-preview complete header identity and reachable Close',width,path:selectedSource.path,status:'PASS'});
         await page.screenshot({path:join(out,'matrix-source-'+width+'.png')});
         await page.locator('.file-preview-close').click();
         await page.locator('.file-preview-overlay').waitFor({state:'hidden'});
