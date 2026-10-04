@@ -4848,10 +4848,10 @@ function App(){
                 )
             ),
             React.createElement('div',{className:'right-panel'+(isMobile&&mobilePanel==='details'?' mobile-visible':''),style:{width:isMobile?'100vw':rightPanelWidth}},
-                isMobile&&React.createElement('div',{className:'mobile-panel-header'},
-                    React.createElement('div',{className:'mobile-panel-meta'},
-                        React.createElement('div',{className:'mobile-panel-title'},selected?selected.name:'Insights'),
-                        React.createElement('div',{className:'mobile-panel-subtitle'},selected?selected.path:(data?'Browse issues, patterns, and security findings':'Select a file to inspect it'))
+                isMobile&&React.createElement('div',{className:'mobile-panel-header',style:{alignItems:'flex-start',gap:12,flexShrink:0}},
+                    React.createElement('div',{className:'mobile-panel-meta',style:{flex:1,minWidth:0,userSelect:'text'}},
+                        React.createElement('div',{className:'mobile-panel-title',style:{whiteSpace:'normal',overflowWrap:'anywhere'}},selected?selected.name:'Insights'),
+                        React.createElement('div',{className:'mobile-panel-subtitle',style:{whiteSpace:'normal',overflowWrap:'anywhere',overflow:'visible',textOverflow:'clip'}},selected?selected.path:(data?'Browse issues, patterns, and security findings':'Select a file to inspect it'))
                     ),
                     React.createElement('button',{className:'mobile-panel-close',type:'button','aria-label':'Close details panel',onClick:function(){setMobilePanel(null);}},
                         React.createElement(Icon,{name:'close',size:'m'})

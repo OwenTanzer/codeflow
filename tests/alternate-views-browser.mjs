@@ -243,7 +243,43 @@ for(const spec of specs){
         if(width===390){
           await page.getByRole('button',{name:'Open insights panel',exact:true}).click();
           await page.locator('.right-panel.mobile-visible').waitFor();
-          assert.equal(await page.locator('.right-panel .mobile-panel-subtitle').textContent(),selectedSource.path);
+          const mobileHeader=page.locator('.right-panel .mobile-panel-header');
+          const mobile=await mobileHeader.evaluate(header=>{
+            const rect=r=>({left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height});
+            const parts=['.mobile-panel-title','.mobile-panel-subtitle'].map(selector=>{
+              const el=header.querySelector(selector),style=getComputedStyle(el);
+              const range=document.createRange();range.selectNodeContents(el);
+              return {selector,text:el.textContent,rect:rect(el.getBoundingClientRect()),
+                fragments:[...range.getClientRects()].map(rect),
+                scrollWidth:el.scrollWidth,clientWidth:el.clientWidth,
+                scrollHeight:el.scrollHeight,clientHeight:el.clientHeight,
+                whiteSpace:style.whiteSpace,textOverflow:style.textOverflow,overflowWrap:style.overflowWrap};
+            });
+            return {parts,panel:rect(header.closest('.right-panel').getBoundingClientRect()),
+              close:rect(header.querySelector('[aria-label="Close details panel"]').getBoundingClientRect())};
+          });
+          entry.mobileHeader=mobile;
+          assert.equal(mobile.parts[0].text,selectedSource.name,'mobile header preserves full oracle filename');
+          assert.equal(mobile.parts[1].text,selectedSource.path,'mobile header preserves full oracle source path');
+          const inside=(r,b)=>r.left>=b.left-1&&r.right<=b.right+1&&r.top>=b.top-1&&r.bottom<=b.bottom+1;
+          const visiblePanel={left:Math.max(0,mobile.panel.left),right:Math.min(390,mobile.panel.right),
+            top:Math.max(0,mobile.panel.top),bottom:Math.min(850,mobile.panel.bottom)};
+          for(const part of mobile.parts){
+            assert.ok(part.rect.width>0&&part.rect.height>0,part.selector+' has visible dimensions');
+            assert.ok(inside(part.rect,visiblePanel),part.selector+' stays inside the mobile Inspector and viewport');
+            assert.ok(part.scrollWidth<=part.clientWidth+1&&part.scrollHeight<=part.clientHeight+1,
+              part.selector+' renders complete text without clipping');
+            assert.notEqual(part.whiteSpace,'nowrap',part.selector+' allows long source identity to wrap');
+            assert.notEqual(part.textOverflow,'ellipsis',part.selector+' does not abbreviate source identity');
+            assert.ok(part.fragments.length>0&&part.fragments.every(r=>inside(r,part.rect)&&inside(r,visiblePanel)),
+              part.selector+' renders every text fragment inside its visible bounds');
+            assert.ok(part.rect.right<=mobile.close.left+1,part.selector+' leaves a separate slot for Close');
+          }
+          assert.ok(mobile.close.width>0&&mobile.close.height>0&&inside(mobile.close,visiblePanel),
+            'mobile Close remains inside the Inspector and viewport');
+          await mobileHeader.getByRole('button',{name:'Close details panel',exact:true}).click({trial:true});
+          await page.screenshot({path:join(out,'matrix-mobile-header-390.png')});
+          entry.checks.push({name:'mobile duplicate filename/path complete and Close reachable',width,path:selectedSource.path,status:'PASS'});
         }
         const header=page.getByTestId('selected-file-header');
         await header.waitFor();
