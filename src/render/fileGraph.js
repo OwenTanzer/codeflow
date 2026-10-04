@@ -1,3 +1,4 @@
+import { installNodeActivation } from './nodeActivation.js';
 // File-layer graph (2D D3 force layout) renderer — MOO-70 Commit 8.
 //
 // Mirrors src/render/repositoryGraph.js's D3 skeleton (zoom/drag/
@@ -61,7 +62,10 @@ export function renderFileGraph(options) {
 
   if (!graph || !svgEl) return function () {};
   var svg = d3.select(svgEl);
+    // D3 owns graph pan/pinch; prevent native page zoom from stealing it.
+    svg.style('touch-action','none');
   svg.selectAll('*').remove();
+  var disposeActivation = function () {};
   try {
     var w = svgEl.clientWidth;
     var h = svgEl.clientHeight;
@@ -137,6 +141,11 @@ export function renderFileGraph(options) {
 
     node.on('click', function (e, d) { e.stopPropagation(); highlightRelations(d.id); if (selectSymbolRef.current) selectSymbolRef.current(d.id); });
     node.on('dblclick', function (e, d) { e.stopPropagation(); if (activateSymbolRef && activateSymbolRef.current) activateSymbolRef.current(d.id); });
+    disposeActivation = installNodeActivation(node, {
+      activate: d => activateSymbolRef.current?.(d.id),
+      eligible: d => !options.canActivate || options.canActivate(d.id),
+      label: d => 'Open function: ' + d.label,
+    });
     node.on('mouseenter', function (e, d) {
       var r = svgEl.getBoundingClientRect();
       onHover({ x: e.clientX - r.left + 10, y: e.clientY - r.top, title: d.label, content: d.kind + (d.noRelationshipData ? ' (no relationship data)' : '') });
@@ -182,5 +191,5 @@ export function renderFileGraph(options) {
     svg.selectAll('*').remove();
     svg.append('text').attr('x', 20).attr('y', 30).attr('fill', 'var(--t3)').text('File graph rendering error: ' + e.message);
   }
-  return function () { if(document.fonts)document.fonts.removeEventListener('loadingdone',labelFontListener); if (simRef.current) simRef.current.stop(); };
+  return function () { disposeActivation(); if(document.fonts)document.fonts.removeEventListener('loadingdone',labelFontListener); if (simRef.current) simRef.current.stop(); };
 }

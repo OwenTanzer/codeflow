@@ -42,3 +42,9 @@ test('fatal application errors are not unconditionally described as memory failu
   );
   assert.match(appSource, /An unexpected error prevented CodeFlow from continuing\./);
 });
+
+test('both metadata helpers are exposed through the module-to-window bridge', () => {
+  for (const name of ['fetchBlame', 'fetchFileContentFromServer']) {
+    assert.ok(moduleBridgeBody(appSource).includes(name), name + ' missing from bridge');
+  }
+});

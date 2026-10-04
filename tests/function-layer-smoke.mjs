@@ -54,14 +54,27 @@ page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + e.message));
 let functionRequests = 0;
 let fileRequests = 0;
 let capabilityRequests = 0;
+let blameRequests = 0, previewRequests = 0;
+const metadataRequests = [];
 page.on('request', (r) => {
   if (r.url().endsWith('/api/graph/function')) functionRequests += 1;
   if (r.url().endsWith('/api/graph/file')) fileRequests += 1;
   if (r.url().endsWith('/api/capabilities')) capabilityRequests += 1;
+  if (/\/api\/github\/(blame|file-content)$/.test(r.url())) {
+    metadataRequests.push({body:r.postDataJSON(),headers:r.headers()});
+    if(r.url().endsWith('/blame')) blameRequests++;
+    else previewRequests++;
+  }
 });
 
 await page.goto(url, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(2000);
+// The toolbar currently extracts only owner/repo. Pin this smoke's source
+// explicitly at the existing bridge seam instead of trusting /tree/ref.
+await page.evaluate(() => {
+  const original = window.fetchRepositoryGraph;
+  window.fetchRepositoryGraph = input => original({...input,ref:'611c6162cbc4ac2020a2f91c7cfa4f3abf9bbb60'});
+});
 
 // --- repository layer -------------------------------------------------------
 await step('app-auth controls are absent', async () => {
@@ -85,11 +98,27 @@ await step('repository analysis completes and the graph renders', async () => {
 
 await page.screenshot({ path: (process.env.CODEFLOW_SMOKE_FIXTURE==='labels'?'.git/run2-app-'+smokeWidth+'-':'docs/img/')+'smoke-1-repository.png' });
 
+await step('selection loads ownership and preview uses the credential-free pinned fallback', async () => {
+  await page.getByRole('button', { name: 'Open file: src/requests/sessions.py', exact: true }).click();
+  await page.locator('.card-header').filter({hasText:'Ownership'}).click();
+  await page.locator('.owner-list, [role=status]').waitFor({timeout:60000});
+  if(await page.locator('.loading-owner').count()) throw new Error('ownership still loading');
+  if (!blameRequests) throw new Error('no blame request');
+  await page.getByRole('button', { name: 'View Source', exact: true }).click();
+  await page.waitForSelector('.file-preview-code, .file-preview-error', {timeout:60000});
+  if (!previewRequests) throw new Error('no file-content fallback request');
+  for (const {body,headers} of metadataRequests) {
+    if(body.owner!=='psf'||body.repo!=='requests'||body.ref!=='611c6162cbc4ac2020a2f91c7cfa4f3abf9bbb60') throw new Error('metadata context not pinned');
+    if(headers.authorization) throw new Error('browser Authorization header');
+  }
+  await page.locator('.file-preview-close').click();
+});
+
 // --- repository -> file -----------------------------------------------------
 await step(`double-click ${FILE_LABEL} to drill into the file layer`, async () => {
   // Target the node group, not the text: the label is drawn below the shape,
   // so clicking the text's own box can miss the node's hit area.
-  const node = page.locator(`svg g:has(> text:text-is("${FILE_LABEL}"))`).first();
+  const node = page.getByRole('button', { name: 'Open file: src/requests/sessions.py', exact: true });
   await node.waitFor({ timeout: 20000 });
   await node.dblclick();
 });
@@ -116,7 +145,7 @@ await step(`double-click ${TARGET_FUNCTION} to drill into the function layer`, a
   // meaningless three-node graph, which would let the loop/branch assertions
   // below pass without ever exercising them. The file-layer renderer
   // truncates labels at 16 characters, hence the prefix match.
-  const target = page.locator(`svg g:has(> text:text-is("${TARGET_LABEL}"))`).first();
+  const target = page.getByRole('button', { name: 'Open function: resolve_redirects', exact: true });
   await target.waitFor({ timeout: 20000 });
   await target.dblclick();
   await page.waitForTimeout(1200);

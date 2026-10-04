@@ -607,7 +607,11 @@ body{height:100dvh;min-height:100dvh}
 .canvas-toolbar{bottom:70px}
 .legend{bottom:70px}
 }
-    </style>
+    /* Selection suppression is scoped to graph nodes; source and Inspector remain copyable. */
+.graph-interactive-node{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.graph-interactive-node:focus-visible{outline:3px solid #f59e0b;outline-offset:4px}
+.graph-interactive-node[data-holding="true"]{filter:brightness(1.4)}
+</style>
 </head>
 <body>
 <div id="root"></div>
@@ -674,7 +678,7 @@ Object.assign(window, analyzer, {
   fetchRepositoryGraph, GraphRepositoryClientError,
   renderFunctionGraph, buildFunctionRenderModel, fetchFunctionGraph, GraphFunctionClientError,
   AnalysisSession,
-  fetchCapabilities,
+  fetchCapabilities, fetchBlame, fetchFileContentFromServer,
 });
 </script>
 <script type="text/babel">
@@ -1187,7 +1191,8 @@ function FileGraphCanvas(props){
     var selectSymbolRef=useRef(null);
     var activateSymbolRef=useRef(null);
 
-    selectSymbolRef.current=function(){}; // MOO-70 Commit 8: selection highlighting deferred, matching this pass's minimal scope
+    var _symbol=useState(''),selectedSymbolId=_symbol[0],setSelectedSymbolId=_symbol[1];
+    selectSymbolRef.current=function(id){setSelectedSymbolId(id);};
     activateSymbolRef.current=function(nodeId){
         var result=tryCreateDrillDownById(fileGraph,nodeId);
         if(result.eligible){
@@ -1203,11 +1208,23 @@ function FileGraphCanvas(props){
             svgEl:svgRef.current,graph:fileGraph,theme:theme,
             zoomRef:zoomRef,simRef:simRef,
             selectSymbolRef:selectSymbolRef,activateSymbolRef:activateSymbolRef,
-            onHover:onHover,onBackgroundClick:function(){},
+            onHover:onHover,onBackgroundClick:function(){setSelectedSymbolId('');},
+            canActivate:function(id){return tryCreateDrillDownById(fileGraph,id).eligible;},
         });
     },[fileGraph,theme]);
 
-    return React.createElement('svg',{ref:svgRef,style:{width:'100%',height:320,background:'var(--bg2)',borderRadius:8}});
+    var selectedResult=selectedSymbolId?tryCreateDrillDownById(fileGraph,selectedSymbolId):null;
+    return React.createElement(React.Fragment,null,
+        React.createElement('div',{style:{display:'flex',flexWrap:'wrap',gap:8,marginBottom:8}},
+            React.createElement('select',{'aria-label':'Function to open',value:selectedSymbolId,onChange:function(e){setSelectedSymbolId(e.target.value);},style:{maxWidth:'100%',minHeight:44}},
+                React.createElement('option',{value:''},'Select a symbol'),
+                fileGraph.nodes.map(function(n){return React.createElement('option',{key:n.id,value:n.id},n.coordinate&&n.coordinate.symbolPath&&n.coordinate.symbolPath.length?n.coordinate.symbolPath.join('.'):(n.label||n.id));})
+            ),
+            React.createElement('button',{type:'button',className:'top-btn',style:{minHeight:44},disabled:!selectedResult||!selectedResult.eligible,'aria-describedby':'function-open-help',onClick:function(){activateSymbolRef.current(selectedSymbolId);}},'Open function')
+        ),
+        React.createElement('div',{id:'function-open-help',style:{fontSize:11,marginBottom:8}},selectedResult&&!selectedResult.eligible?selectedResult.reason:'Select a symbol and choose Open function, or hold a node until the ring completes.'),
+        React.createElement('svg',{ref:svgRef,'aria-label':'File symbols',style:{width:'100%',height:320,background:'var(--bg2)',borderRadius:8}})
+    );
 }
 
 // MOO-70 Commit 8: the file-layer view. A separate component (not inlined
@@ -1673,6 +1690,7 @@ function RepositoryGraphRenderEffect(props){
             COLORS,LAYER_COLORS,changedPaths,
             zoomRef,simRef,linksRef,nodesRef,selectFileRef,activateFileRef,
             onHover,onBackgroundClick,
+            canActivate:function(id){return tryCreateDrillDown(repositoryGraph,id).eligible;},
         });
     },[data,repositoryGraph,colorMap,colorMode,theme,folderFilter,graphConfig,changedPaths]);
     return null;
@@ -1745,6 +1763,9 @@ function App(){
     var _k=useState(new Set([''])),expandedPaths=_k[0],setExpandedPaths=_k[1];
     var _l=useState(new Set(['blast','fns'])),expandedCards=_l[0],setExpandedCards=_l[1];
     var _o=useState(null),ownership=_o[0],setOwnership=_o[1];
+    var _oe=useState(null),ownershipError=_oe[0],setOwnershipError=_oe[1];
+    var previewGeneration=useRef(0);
+    function closeFilePreview(){previewGeneration.current++;setFilePreview(null);}
     var _p=useState(''),prUrl=_p[0],setPrUrl=_p[1];
     var _q=useState(null),prData=_q[0],setPrData=_q[1];
     var _r=useState(false),showExport=_r[0],setShowExport=_r[1];
@@ -2001,7 +2022,7 @@ function App(){
         setOwnership(null);
         setFolderFilter(null);
         setPrData(null);
-        setFilePreview(null);
+        closeFilePreview();
         setMobilePanel(null);
         setShowGraphConfig(false);
     }
@@ -2567,26 +2588,39 @@ function App(){
             // tests/blast-radius.test.mjs's parity proof.
             var blast=repositoryGraph?calcBlastFromGraph(path,repositoryGraph):calcBlast(path,data.connections,data.files);
             setBlastRadius(blast);
-            setOwnership(null);
             setExpandedFns(new Set());
-            if(repoInfo&&!localSourceKind){
-                setOwnerLoading(true);
-                // MOO-86: runs server-side now (the server's own
-                // GITHUB_TOKEN), pinned to the same resolved revision the
-                // analysis actually ran against -- same source/ref choice
-                // openFilePreview's fallback below uses.
-                var blameOwner=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceOwner)||repoInfo.owner;
-                var blameRepo=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceRepo)||repoInfo.repo;
-                var blameRef=repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha;
-                fetchBlame({owner:blameOwner,repo:blameRepo,path:path,ref:blameRef}).then(function(owners){setOwnership(owners);setOwnerLoading(false);}).catch(function(){setOwnerLoading(false);});
-            }else if(localSourceKind){
-                setOwnerLoading(false);
-                setOwnership([]);
-            }
             updateGraphHighlight(path,blast);
         }
     },[data,repositoryGraph,repoInfo,localSourceKind,isMobile]);
     selectFileRef.current=selectFile;
+
+    useEffect(function(){
+        if(!selected||!repoInfo||localSourceKind){
+            setOwnerLoading(false);
+            setOwnership(localSourceKind?[]:null);
+            setOwnershipError(null);
+            return;
+        }
+        var active=true,controller=new AbortController();
+        var context=repositoryGraph&&repositoryGraph.context;
+        setOwnerLoading(true);setOwnership(null);setOwnershipError(null);
+        // The microtask boundary catches a synchronous helper failure too.
+        Promise.resolve().then(function(){
+            return fetchBlame({owner:(context&&context.sourceOwner)||repoInfo.owner,
+                repo:(context&&context.sourceRepo)||repoInfo.repo,path:selected.path,
+                ref:context&&context.resolvedSha,signal:controller.signal});
+        }).then(function(owners){if(active)setOwnership(owners);})
+        .catch(function(err){if(active)setOwnershipError(err.message||'Failed to load ownership');})
+        .finally(function(){if(active)setOwnerLoading(false);});
+        return function(){active=false;controller.abort();};
+    },[selected,repositoryGraph,repoInfo,localSourceKind]);
+
+    useEffect(function(){
+        document.dispatchEvent(new Event('codeflow:navigation'));
+        if(navPanel&&isMobile)setMobilePanel('details');
+        closeFilePreview();
+    },[navPanel,repositoryGraph]);
+
 
     // MOO-69 Commit 4: double-click drill-down. Reads only the already-built
     // repositoryGraph (see finishAnalysis' GitHub-backed branch) -- never
@@ -2677,13 +2711,15 @@ function App(){
     // Open file preview
     function openFilePreview(path,line){
         if(!repoInfo)return;
+        var generation=++previewGeneration.current;
+        function settlePreview(value){if(generation===previewGeneration.current)setFilePreview(value);}
         var filename=path.split('/').pop();
-        setFilePreview({path:path,filename:filename,content:null,line:line||null,loading:true,error:null});
+        settlePreview({path:path,filename:filename,content:null,line:line||null,loading:true,error:null});
         // Check if we already have the content in data
         if(data){
             var existingFile=data.files.find(function(f){return f.path===path;});
             if(existingFile&&existingFile.content){
-                setFilePreview({path:path,filename:filename,content:existingFile.content,line:line||null,loading:false,error:null});
+                settlePreview({path:path,filename:filename,content:existingFile.content,line:line||null,loading:false,error:null});
                 return;
             }
         }
@@ -2700,9 +2736,9 @@ function App(){
                     var fileHandle=await currentHandle.getFileHandle(parts[parts.length-1]);
                     var fileObj=await fileHandle.getFile();
                     var content=await fileObj.text();
-                    setFilePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
+                    settlePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
                 }catch(e){
-                    setFilePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:e.message||'Failed to load file'});
+                    settlePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:e.message||'Failed to load file'});
                 }
             })();
         }else if(localSourceKind==='zip'){
@@ -2712,9 +2748,9 @@ function App(){
                     var entry=archive&&archive.entriesByPath?archive.entriesByPath[path]:null;
                     if(!entry)throw new Error('File is not available in the loaded ZIP archive');
                     var content=await entry.async('string');
-                    setFilePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
+                    settlePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
                 }catch(e){
-                    setFilePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:e.message||'Failed to load ZIP file'});
+                    settlePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:e.message||'Failed to load ZIP file'});
                 }
             })();
         }else{
@@ -2741,14 +2777,14 @@ function App(){
             var previewRef=repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha;
             // MOO-86: runs server-side now (the server's own GITHUB_TOKEN)
             // instead of the removed client-side GitHub PAT field.
-            fetchFileContentFromServer({owner:previewOwner,repo:previewRepo,path:path,ref:previewRef}).then(function(content){
+            Promise.resolve().then(function(){return fetchFileContentFromServer({owner:previewOwner,repo:previewRepo,path:path,ref:previewRef});}).then(function(content){
                 if(content){
-                    setFilePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
+                    settlePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
                 }else{
-                    setFilePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:'Could not load file content'});
+                    settlePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:'Could not load file content'});
                 }
             }).catch(function(e){
-                setFilePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:e.message||'Failed to load file'});
+                settlePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:e.message||'Failed to load file'});
             });
         }
     }
@@ -4782,7 +4818,7 @@ function App(){
                         React.createElement('div',{style:{fontSize:11,color:'var(--t3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}},navTrail.map(function(entry){return entry.label;}).join(' / ')),
                         // MOO-69 Commit 5: make the resolved revision visible
                         // in the UI, not just carried invisibly in context.
-                        repositoryGraph&&React.createElement('div',{title:repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha,style:{fontSize:10,color:'var(--t3)',fontFamily:'JetBrains Mono',whiteSpace:'nowrap'}},repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha.slice(0,7)),
+                        repositoryGraph&&React.createElement('div',{'data-testid':'revision-badge',title:repositoryGraph.context.owner+'/'+repositoryGraph.context.repo+' '+(repositoryGraph.context.ref||'default branch')+'@'+repositoryGraph.context.resolvedSha,style:{fontSize:10,color:'var(--t3)',fontFamily:'JetBrains Mono',whiteSpace:'normal',overflowWrap:'anywhere',maxWidth:'55%'}},(repositoryGraph.context.ref||'default branch')+'@'+repositoryGraph.context.resolvedSha.slice(0,7)),
                         // MOO-72 Commit 4: repositoryGraph.warnings is computed
                         // server-side (partial-success degradation) but was
                         // never surfaced here, unlike the file/function panels'
@@ -4830,7 +4866,11 @@ function App(){
                                         React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' ',selected.name),
                                         React.createElement('div',{className:'panel-subtitle'},selected.folder||'root',' • ',selected.layer,' • ',selected.lines,' lines',selected.complexity&&selected.complexity.score>0?' • Complexity: '+selected.complexity.score:'')
                                     ),
-                                    React.createElement('button',{className:'view-file-btn',onClick:function(){openFilePreview(selected.path);}},iconLabel('eye','View Source'))
+                                    React.createElement('div',null,
+                                        React.createElement('button',{type:'button',className:'top-btn',style:{minHeight:44},disabled:!tryCreateDrillDown(repositoryGraph,selected.path).eligible,'aria-describedby':'file-open-help',onClick:function(){activateFile(selected.path);}},'Open file'),
+                                        React.createElement('div',{id:'file-open-help',style:{fontSize:11}},tryCreateDrillDown(repositoryGraph,selected.path).reason||'Open this file’s symbol graph, or hold its node until the ring completes.'),
+                                        React.createElement('button',{className:'view-file-btn',onClick:function(){openFilePreview(selected.path);}},iconLabel('eye','View Source'))
+                                    )
                                 )
                             ),
                             blastRadius&&React.createElement('div',{className:'card',style:{marginBottom:12}},
@@ -4942,7 +4982,7 @@ function App(){
                             React.createElement('div',{className:'card',style:{marginBottom:12}},
                                 React.createElement('div',{className:'card-header',onClick:function(){toggleCard('own');}},React.createElement('div',{className:'card-title'},React.createElement('span',{className:'card-toggle'+(expandedCards.has('own')?' open':'')},'▶'),React.createElement(Icon,{name:'users',size:'s'}),' Ownership')),
                                 expandedCards.has('own')&&React.createElement('div',{className:'card-body'},
-                                    ownerLoading?React.createElement('div',{className:'loading-owner'},'Loading ownership data...'):
+                                    ownerLoading?React.createElement('div',{className:'loading-owner'},'Loading ownership data...'):ownershipError?React.createElement('div',{role:'status'},ownershipError):
                                     ownership&&ownership.length>0?React.createElement(React.Fragment,null,
                                         React.createElement('div',{className:'owner-bar'},ownership.slice(0,5).map(function(o,i){return React.createElement('div',{key:i,className:'owner-segment',style:{width:o.percent+'%',background:COLORS[i%COLORS.length]}});})),
                                         React.createElement('div',{className:'owner-list'},ownership.slice(0,5).map(function(o,i){return React.createElement('div',{key:i,className:'owner-item'},React.createElement('div',{className:'owner-avatar',style:{background:COLORS[i%COLORS.length]}},o.name[0].toUpperCase()),React.createElement('span',{className:'owner-name'},o.name),React.createElement('span',{className:'owner-percent'},o.percent,'%'));}))
@@ -5512,7 +5552,7 @@ function App(){
             );
         })(),
         toast&&React.createElement('div',{className:'toast '+(toast.type||'success'),'role':'alert'},toast.msg),
-        filePreview&&React.createElement('div',{className:'file-preview-overlay',onClick:function(){setFilePreview(null);}},
+        filePreview&&React.createElement('div',{className:'file-preview-overlay',onClick:function(){closeFilePreview();}},
             React.createElement('div',{className:'file-preview-modal',onClick:function(e){e.stopPropagation();}},
                 React.createElement('div',{className:'file-preview-header'},
                     React.createElement('div',{className:'file-preview-title'},
@@ -5522,7 +5562,7 @@ function App(){
                     ),
                     React.createElement('div',{className:'file-preview-actions'},
                         filePreview.line&&React.createElement('span',{className:'file-preview-line-badge'},'Line ',filePreview.line),
-                        React.createElement('button',{className:'file-preview-close',onClick:function(){setFilePreview(null);}},'×')
+                        React.createElement('button',{className:'file-preview-close',onClick:function(){closeFilePreview();}},'×')
                     )
                 ),
                 React.createElement('div',{className:'file-preview-content',ref:filePreviewRef},
