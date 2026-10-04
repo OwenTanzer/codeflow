@@ -1,3 +1,4 @@
+import { installNodeActivation } from './nodeActivation.js';
 // Repository graph (2D D3 force layout) renderer — MOO-67 Commits 4B/4E.
 //
 // Mechanically extracted from index.html's App() component (the useEffect
@@ -69,7 +70,10 @@ export function renderRepositoryGraph(options) {
 
         if(!data||!svgEl)return;
         var svg=d3.select(svgEl);
+    // D3 owns graph pan/pinch; prevent native page zoom from stealing it.
+    svg.style('touch-action','none');
         svg.selectAll('*').remove();
+    var disposeActivation = function () {};
         try{
         var w=svgEl.clientWidth;
         var h=svgEl.clientHeight;
@@ -95,7 +99,8 @@ export function renderRepositoryGraph(options) {
         var container=svg.append('g');
         var defs=svg.append('defs');
         defs.append('marker').attr('id','arr').attr('viewBox','0 -5 10 10').attr('refX',14).attr('markerWidth',4).attr('markerHeight',4).attr('orient','auto').append('path').attr('d','M0,-4L10,0L0,4').attr('fill',theme==='light'?'#aaa':'#444');
-        var hullLayer=container.append('g');
+        // Hull paths are replaced on simulation ticks. They must not own a touch target.
+        var hullLayer=container.append('g').attr('pointer-events','none');
         var linkLayer=container.append('g');
         var nodeLayer=container.append('g');
         var sim=d3.forceSimulation(nodes);
@@ -167,6 +172,11 @@ export function renderRepositoryGraph(options) {
         node.call(d3.drag().on('start',function(e,d){if(!e.active)sim.alphaTarget(0.1).restart();d.fx=d.x;d.fy=d.y;}).on('drag',function(e,d){d.fx=e.x;d.fy=e.y;}).on('end',function(e,d){if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
         node.on('click',function(e,d){e.stopPropagation();if(selectFileRef.current)selectFileRef.current(d.id);});
         node.on('dblclick',function(e,d){e.stopPropagation();if(activateFileRef&&activateFileRef.current)activateFileRef.current(d.id);});
+        disposeActivation = installNodeActivation(node, {
+            activate: d => activateFileRef.current?.(d.id),
+            label: d => 'Open file: ' + d.id,
+            eligible: d => !options.canActivate || options.canActivate(d.id),
+        });
         node.on('mouseenter',function(e,d){var r=svgEl.getBoundingClientRect();var churnLine=d.churn==null?'Churn not computed':d.churn+' recent commits';onHover({x:e.clientX-r.left+10,y:e.clientY-r.top,title:d.name,content:d.fnCount+' functions\n'+d.layer+' layer\n'+churnLine});}).on('mouseleave',function(){onHover(null);});
         svg.on('click',function(e){if(e.target===svgEl){onBackgroundClick();link.attr('stroke',theme==='light'?'#ccc':'#333').attr('stroke-opacity',0.4);node.selectAll('.nc').attr('opacity',1).attr('fill',getC);}});
         node.append('circle').attr('class','nc').attr('r',getR).attr('fill',getC)
@@ -212,5 +222,5 @@ export function renderRepositoryGraph(options) {
         });
         node.selectAll('text').attr('opacity',graphConfig.showLabels?1:0);
         }catch(e){console.error('Force graph error:',e);svg.selectAll('*').remove();svg.append('text').attr('x',20).attr('y',30).attr('fill','var(--t3)').text('Graph rendering error: '+e.message);}
-        return function(){if(simRef.current)simRef.current.stop();};
+        return function(){disposeActivation();if(simRef.current)simRef.current.stop();};
 }
