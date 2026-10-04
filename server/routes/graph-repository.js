@@ -28,7 +28,7 @@ import { AdapterError, buildAdapterResult, AdapterResultError, sanitizeDiagnosti
 import { buildCacheKey } from '../../src/graph-ir/cacheKey.js';
 import { sendCapacityResponse } from '../lib/concurrency-limiter.js';
 
-const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.2.0' };
+const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.3.0' };
 
 // MOO-72 Commit 1A review (round 3): server/lib/node-tree-sitter-shim.js's
 // installNodeTreeSitter() silently falls back to an undefined
@@ -66,7 +66,13 @@ export function derivePythonParserCapability(graph) {
 
 function sendJson(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(body));
+  const serializationStart = performance.now();
+  const payload = JSON.stringify(body);
+  const serializationMs = performance.now() - serializationStart;
+  if (body.graph) createRequestLogger(body.requestId).info('repository response serialized', {
+    serializationMs, responseBytes: Buffer.byteLength(payload),
+  });
+  res.end(payload);
 }
 
 // MOO-72 Commit 1B: `options.sessionId` folds into the error body next to
@@ -76,7 +82,7 @@ function sendJson(res, status, body) {
 // parsing succeeds).
 function sendError(res, status, message, category, requestId, options = {}) {
   const diagnostic = sanitizeDiagnostic(new AdapterError(category, message, options));
-  sendJson(res, status, { error: message, diagnostics: [diagnostic], requestId, sessionId: options.sessionId ?? null });
+  sendJson(res, status, { error: message, diagnostics: [diagnostic], requestId, sessionId: options.sessionId ?? null, ...(options.coverage ? { coverage: options.coverage } : {}) });
 }
 
 // GitHub's own rate-limit responses (403, occasionally 429) surface through
@@ -87,38 +93,8 @@ function sendError(res, status, message, category, requestId, options = {}) {
 // "come back later" -- retryable:true plus a 429 status is that signal.
 export const RATE_LIMIT_PATTERN = /rate limit/i;
 
-export class GraphAnalysisTimeoutError extends Error {}
-
-/**
- * Races a promise against a timeout AND (optionally) an external abort
- * signal -- MOO-72 Commit 1B. Used for the GitHub-fetch phases, which have
- * no timeout of their own. Cleans up its own abort listener in `.finally()`
- * regardless of which participant won, so a signal reused across multiple
- * phases in one request (as this route's two calls do) never leaks a
- * listener per call.
- * @param {Promise<any>} promise
- * @param {{timeoutMs: number, signal?: AbortSignal, timeoutMessage: string}} options
- */
-export function withTimeout(promise, { timeoutMs, signal, timeoutMessage }) {
-  let timer;
-  let onAbort;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new GraphAnalysisTimeoutError(timeoutMessage)), timeoutMs);
-  });
-  const abort = new Promise((_, reject) => {
-    if (!signal) return;
-    if (signal.aborted) {
-      reject(signal.reason ?? new RequestCancelledError());
-      return;
-    }
-    onAbort = () => reject(signal.reason ?? new RequestCancelledError());
-    signal.addEventListener('abort', onAbort);
-  });
-  return Promise.race([promise, timeout, abort]).finally(() => {
-    clearTimeout(timer);
-    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
-  });
-}
+export { withTimeout, GraphAnalysisTimeoutError } from '../lib/request-work.js';
+import { withTimeout, GraphAnalysisTimeoutError } from '../lib/request-work.js';
 
 /**
  * Build the normalized AnalysisContext for this request from the original
@@ -245,13 +221,22 @@ export function createGraphRepositoryHandler({ config, cache, metrics, concurren
 
       log.info('graph-repository request accepted', { owner: request.owner, repo: request.repo, ref: request.ref, pr: request.pr });
 
+      const { acquired, release } = concurrencyLimiter.tryAcquire();
+      if (!acquired) {
+        const durationMs = Date.now() - startedAtMs;
+        log.warn('rejected graph-repository request: at capacity', { durationMs, resultState: 'at_capacity' });
+        metrics.record({ layer: 'repository', resultState: 'at_capacity', durationMs });
+        return sendCapacityResponse(res, { requestId, sessionId: request.sessionId });
+      }
+
+      try {
       // Phase 0: resolve the ref only -- one or two cheap GitHub calls, no
       // content fetched. This is what makes the cache worth having: the key
       // needs the resolved SHA, and resolving it costs a tiny fraction of the
       // tree+blob fetching and parsing that a cache hit gets to skip entirely.
       let refResult;
       try {
-        refResult = await withTimeout(resolveGithubRef(request, config), {
+        refResult = await withTimeout(() => resolveGithubRef(request, config), {
           timeoutMs: config.graphAnalysisTimeoutMs,
           signal,
           timeoutMessage: `Repository ref resolution did not complete within ${config.graphAnalysisTimeoutMs}ms`,
@@ -266,13 +251,13 @@ export function createGraphRepositoryHandler({ config, cache, metrics, concurren
         if (err instanceof GraphAnalysisTimeoutError) {
           log.warn('graph-repository ref resolution timed out', { owner: request.owner, repo: request.repo, durationMs, resultState: 'timeout' });
           metrics.record({ layer: 'repository', resultState: 'timeout', durationMs });
-          return sendError(res, 504, err.message, 'timeout', requestId, { sessionId: request.sessionId });
+          return sendError(res, 504, err.message, 'timeout', requestId, { sessionId: request.sessionId, coverage: err.coverage });
         }
         if (err instanceof GithubFetchError) {
           const rateLimited = RATE_LIMIT_PATTERN.test(err.message);
           log.warn('github ref resolution failed', { errorMessage: err.message, rateLimited, durationMs, resultState: 'github_error' });
           metrics.record({ layer: 'repository', resultState: 'github_error', durationMs });
-          return sendError(res, rateLimited ? 429 : 502, err.message, 'github_access', requestId, { retryable: rateLimited, sessionId: request.sessionId });
+          return sendError(res, rateLimited ? 429 : 502, err.message, 'github_access', requestId, { retryable: rateLimited, sessionId: request.sessionId, coverage: err.coverage });
         }
         log.error('graph-repository ref resolution failed', { errorMessage: err && err.message, durationMs, resultState: 'internal_error' });
         metrics.record({ layer: 'repository', resultState: 'internal_error', durationMs });
@@ -305,6 +290,8 @@ export function createGraphRepositoryHandler({ config, cache, metrics, concurren
           // false) when unavailable, preserving Commit 1A's key shape for the
           // capable case.
           options: {
+            maxFileBytes: config.maxFileBytes,
+            maxRepoBytes: config.maxRepoBytes,
             excludePatterns: normalizeExcludePatterns(request.excludePatterns),
             ...(PYTHON_TREE_SITTER_CAPABLE ? { pythonTreeSitter: true } : {}),
             ...cacheKeyRequestIdentity(context),
@@ -380,19 +367,6 @@ export function createGraphRepositoryHandler({ config, cache, metrics, concurren
         throw err;
       }
 
-      // MOO-72 Commit 8: acquired only once we're past the cache check --
-      // a cache hit already returned above and never does the expensive
-      // work this limiter exists to bound. Released in the finally below
-      // regardless of how phases 1/2 exit (success, thrown error, cancel).
-      const { acquired, release } = concurrencyLimiter.tryAcquire();
-      if (!acquired) {
-        const durationMs = Date.now() - startedAtMs;
-        log.warn('rejected graph-repository request: at capacity', { durationMs, resultState: 'at_capacity' });
-        metrics.record({ layer: 'repository', resultState: 'at_capacity', durationMs });
-        return sendCapacityResponse(res, { requestId, sessionId: request.sessionId });
-      }
-
-      try {
       // Phase 1: fetch + parse (GitHub API calls, Parser.extract on each
       // file's content). Failures here are about the repository's own state
       // or content -- github_access, timeout, or parser_failure -- not a bug
@@ -400,7 +374,7 @@ export function createGraphRepositoryHandler({ config, cache, metrics, concurren
       // distinctly from phase 2's failures below.
       let resolved;
       try {
-        resolved = await withTimeout(fetchAndAnalyzeRepo(request, refResult, config), {
+        resolved = await withTimeout(() => fetchAndAnalyzeRepo(request, refResult, config), {
           timeoutMs: config.graphAnalysisTimeoutMs,
           signal,
           timeoutMessage: `Repository analysis did not complete within ${config.graphAnalysisTimeoutMs}ms`,
@@ -415,20 +389,20 @@ export function createGraphRepositoryHandler({ config, cache, metrics, concurren
         if (err instanceof GraphAnalysisTimeoutError) {
           log.warn('graph-repository analysis timed out', { owner: request.owner, repo: request.repo, durationMs, resultState: 'timeout' });
           metrics.record({ layer: 'repository', resultState: 'timeout', durationMs });
-          return sendError(res, 504, err.message, 'timeout', requestId, { sessionId: request.sessionId });
+          return sendError(res, 504, err.message, 'timeout', requestId, { sessionId: request.sessionId, coverage: err.coverage });
         }
         if (err instanceof GithubFetchError) {
           const rateLimited = RATE_LIMIT_PATTERN.test(err.message);
           log.warn('github fetch failed', { errorMessage: err.message, rateLimited, durationMs, resultState: 'github_error' });
           metrics.record({ layer: 'repository', resultState: 'github_error', durationMs });
-          return sendError(res, rateLimited ? 429 : 502, err.message, 'github_access', requestId, { retryable: rateLimited, sessionId: request.sessionId });
+          return sendError(res, rateLimited ? 429 : 502, err.message, 'github_access', requestId, { retryable: rateLimited, sessionId: request.sessionId, coverage: err.coverage });
         }
         // Anything else escaping fetchAndAnalyzeRepo (Parser.extract,
         // buildAnalysisData) is a failure to parse this repository's actual
         // content, not an unsupported-input or internal-server condition.
         log.error('repository parsing failed', { errorMessage: err && err.message, durationMs, resultState: 'parser_failure' });
         metrics.record({ layer: 'repository', resultState: 'parser_failure', durationMs });
-        return sendError(res, 502, 'Repository analysis failed while parsing its content', 'parser_failure', requestId, { sessionId: request.sessionId });
+        return sendError(res, 502, 'Repository analysis failed while parsing its content', 'parser_failure', requestId, { sessionId: request.sessionId, coverage: err.coverage });
       }
 
       // Phase 2: build the GraphIR/AdapterResult from what phase 1 already
@@ -436,6 +410,8 @@ export function createGraphRepositoryHandler({ config, cache, metrics, concurren
       // endpoint's own contract/glue-code problems.
       try {
         const graph = adaptRepositoryAnalysis({ analysisData: resolved.result, context, analyzer: ANALYZER });
+        graph.metadata = { ...graph.metadata, coverage: resolved.coverage };
+        graph.warnings.push('Repository relationships are a limited heuristic overview; Kotlin/Java semantic symbol and control-flow navigation are unsupported.');
         const { pythonFileCount, pythonTreeSitterActive } = derivePythonParserCapability(graph);
         // Warning only -- the cache key's own pythonTreeSitter component now
         // comes from the startup grammar probe (see the key built above),
@@ -479,6 +455,9 @@ export function createGraphRepositoryHandler({ config, cache, metrics, concurren
           nodeCount: graph.nodes.length,
           edgeCount: graph.edges.length,
           warningCount: graph.warnings.length,
+          coverage: { ...resolved.coverage, skippedFiles: undefined },
+          measurements: resolved.measurements,
+          cacheBytes: cache.totalBytes,
           resultState,
           cacheKey,
           cacheStatus: 'miss',

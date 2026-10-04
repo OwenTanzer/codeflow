@@ -85,27 +85,7 @@ export function loadConfig({ repoRoot, env = process.env }) {
     errors.push(`MAX_REQUEST_BODY_BYTES must be a positive integer, got: ${JSON.stringify(env.MAX_REQUEST_BODY_BYTES)}`);
   }
 
-  // MOO-72 Commit 1A review: 750, not 500 -- matches the ceiling the
-  // now-replaced client-side browser path used (index.html's
-  // ANALYSIS_LIMITS.repoMax). That path sampled down to 750 files with a
-  // warning rather than rejecting; this route rejects outright past the
-  // limit instead (see selectAnalyzableFiles) -- a deliberate, documented
-  // behavior change (explicit rejection over silent truncation), not a
-  // silently smaller supported repository size.
-  const maxRepoFiles = env.MAX_REPO_FILES ? Number(env.MAX_REPO_FILES) : 750;
-  if (!Number.isInteger(maxRepoFiles) || maxRepoFiles <= 0) {
-    errors.push(`MAX_REPO_FILES must be a positive integer, got: ${JSON.stringify(env.MAX_REPO_FILES)}`);
-  }
-
-  // PR review finding: MAX_REPO_FILES caps file *count* but not byte size —
-  // the GitHub-backed path fetches every accepted blob into memory and
-  // holds it resident before analysis. That mattered less while
-  // repositories were tightly allowlisted; the wildcard follow-up means
-  // any caller can point the server at any public repo, and
-  // a repo with a few hundred enormous blobs could exhaust memory despite
-  // staying under MAX_REPO_FILES. GitHub's tree API already reports each
-  // blob's size, so oversized files are rejected before content is ever
-  // fetched/decoded (see server/lib/github-analyzer-bridge.js).
+  // File count is not a resource budget. Bound bytes and active work instead.
   const maxFileBytes = env.MAX_FILE_BYTES ? Number(env.MAX_FILE_BYTES) : 1 * 1024 * 1024;
   if (!Number.isInteger(maxFileBytes) || maxFileBytes <= 0) {
     errors.push(`MAX_FILE_BYTES must be a positive integer, got: ${JSON.stringify(env.MAX_FILE_BYTES)}`);
@@ -261,7 +241,6 @@ export function loadConfig({ repoRoot, env = process.env }) {
     allowedOwners,
     rateLimitPerMinute,
     maxRequestBodyBytes,
-    maxRepoFiles,
     maxFileBytes,
     maxRepoBytes,
     graphAnalysisTimeoutMs,

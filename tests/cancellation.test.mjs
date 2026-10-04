@@ -48,10 +48,10 @@ function jsonResponse(body) {
 /** A GitHub fetch stub whose ref-resolution call is artificially slow, so a real client has time to abort mid-flight. */
 function stubSlowGitHub(delayMs) {
   const original = globalThis.fetch;
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, { signal }) => {
     const u = String(url);
     if (/\/repos\/[^/]+\/[^/]+$/.test(u)) {
-      await delay(delayMs);
+      await delay(delayMs, undefined, { signal });
       return jsonResponse({ default_branch: 'main' });
     }
     if (u.includes('/commits/')) return jsonResponse({ sha: SHA });
@@ -131,7 +131,7 @@ test('a real client abort during the GitHub-fetch phase is classified cancelled 
   // Give the server-side handler a moment to observe the disconnect and
   // finish its own cancellation branch (its GitHub stub call is still
   // "in flight" from the process's perspective for up to 500ms, but the
-  // handler itself should stop and record 'cancelled' well before that).
+  // abort-aware fetch must settle before the handler records 'cancelled' well before that).
   await delay(50);
 
   const buckets = metrics.snapshot().buckets;

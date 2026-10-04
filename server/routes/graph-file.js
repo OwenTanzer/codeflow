@@ -146,25 +146,25 @@ export async function runSharedPyan3Analysis({ pythonBin, workspaceManager, file
 }
 
 /**
- * Apply file-count/byte-size budgets to an already-selected target file
+ * Apply byte-size budgets to an already-selected target file
  * set (one file, or the members of one requested package) — never to the
  * whole repository tree. PR review finding: routing the file layer
- * through fetchTree() applied MAX_REPO_FILES/MAX_REPO_BYTES to *every*
+ * through fetchTree() applied MAX_REPO_BYTES to *every*
  * analyzable file in the repository before the requested file/package was
  * even selected, so a tiny file in a large monorepo could be rejected for
  * reasons entirely unrelated to what was actually requested. Mirrors
  * `selectAnalyzableFiles`'s own skip-oversized-individually /
- * fail-on-aggregate-or-count semantics, scoped to just this request's
+ * fail-on-aggregate semantics, scoped to just this request's
  * target set, and deliberately does not apply
  * shouldIgnoreDirectory/shouldExcludeFile — those are repository-wide
  * *view* policy (hiding vendor/build directories from the overall graph),
  * not a reason to refuse a file the caller explicitly asked to see.
  * @param {{path: string, size?: number}[]} targetFiles
- * @param {{maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number}} limits
+ * @param {{maxFileBytes: number, maxRepoBytes: number}} limits
  * @returns {{path: string, size?: number}[]}
  * @throws {ValidationError}
  */
-export function enforceFileRequestLimits(targetFiles, { maxRepoFiles, maxFileBytes, maxRepoBytes }) {
+export function enforceFileRequestLimits(targetFiles, { maxFileBytes, maxRepoBytes }) {
   const files = [];
   let totalBytes = 0;
   for (const file of targetFiles) {
@@ -178,12 +178,6 @@ export function enforceFileRequestLimits(targetFiles, { maxRepoFiles, maxFileByt
       );
     }
     files.push(file);
-  }
-  if (files.length > maxRepoFiles) {
-    throw new ValidationError(
-      `The requested package has ${files.length} analyzable files, over the configured limit of ${maxRepoFiles}. ` +
-        'Raise MAX_REPO_FILES if this is expected.'
-    );
   }
   return files;
 }
@@ -358,8 +352,10 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
       // file/package's blobs -- never the whole repository).
       let resolved;
       try {
+        const retrievalPermit = concurrencyLimiter.tryAcquire();
+        if (!retrievalPermit.acquired) return sendCapacityResponse(res, { requestId, sessionId: request.sessionId });
         resolved = await withTimeout(
-          (async () => {
+          async () => {
             // PR review finding: resolveRef/resolveCommitSha/etc. use the
             // shared GitHub client, whose token is otherwise only ever set
             // by analyzeGithubRepo() (the repository layer's entry point,
@@ -380,7 +376,7 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
             // (never the whole repository tree, which can be truncated by
             // GitHub for a large enough monorepo) to determine file vs.
             // package mode, then fetch only that scope's contents.
-            const entry = await resolvePathEntry({ owner, repo, resolvedRef, path: request.path });
+            const entry = await resolvePathEntry({ owner, repo, resolvedRef: resolvedSha, path: request.path });
             if (!entry) {
               throw new ValidationError(`"${request.path}" was not found in this revision`);
             }
@@ -396,14 +392,13 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
 
             const target = resolveFileTarget({ treeFiles, requestedPath: request.path });
             const limitedFiles = enforceFileRequestLimits(target.targetFiles, {
-              maxRepoFiles: config.maxRepoFiles,
               maxFileBytes: config.maxFileBytes,
               maxRepoBytes: config.maxRepoBytes,
             });
             if (limitedFiles.length === 0) {
               throw new ValidationError(`"${request.path}" has no files remaining after applying size limits`);
             }
-            const contents = await fetchAllContents(owner, repo, limitedFiles, config.githubFetchConcurrency);
+            const contents = await fetchAllContents(owner, repo, limitedFiles, config.githubFetchConcurrency, config);
             return {
               sourceOwner: owner,
               sourceRepo: repo,
@@ -411,13 +406,13 @@ export function createGraphFileHandler({ config, workspaceManager, cache, metric
               mode: target.mode,
               files: limitedFiles.map((f, i) => ({ path: f.path, content: contents[i] || '' })),
             };
-          })(),
+          },
           {
             timeoutMs: config.graphAnalysisTimeoutMs,
             signal,
             timeoutMessage: `File analysis did not complete within ${config.graphAnalysisTimeoutMs}ms`,
           }
-        );
+        ).finally(retrievalPermit.release);
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
         if (err instanceof RequestCancelledError) {
