@@ -196,6 +196,45 @@ for(const spec of specs){
       entry.inspectorOracle={path:targetPath,name:selectedSource.name,folder:selectedSource.folder};
     }
     entry.checks.push({name:'keyboard focus reveal and selection',targetPath,status:'PASS'});
+    if(spec.id==='matrix'){
+      // Pointer focus must not recenter an already reachable label between
+      // mousedown and click. Start with a different, previously unfocused
+      // off-center column label; do not pre-focus it or dispatch fake events.
+      const candidate=await host().locator('text.col-label').evaluateAll(elements=>{
+        const bounds=elements[0].ownerSVGElement.getBoundingClientRect();
+        for(const el of elements){
+          const rect=el.getBoundingClientRect();
+          const offCenter=Math.abs((rect.left+rect.right)/2-(bounds.left+bounds.right)/2);
+          if(el!==document.activeElement&&Number(getComputedStyle(el).opacity)===1&&
+              rect.left>bounds.left+10&&rect.right<bounds.right-10&&
+              rect.top>bounds.top+100&&rect.bottom<bounds.bottom-10&&offCenter>40)
+            return {path:el.__data__.path,offCenter};
+        }
+        return null;
+      });
+      assert.ok(candidate,'an unfocused off-center column label is fully reachable');
+      const pointerTarget=host().getByRole('button',{name:'Select file: '+candidate.path,exact:true})
+        .and(host().locator('text.col-label'));
+      assert.equal(await pointerTarget.evaluate(el=>el===document.activeElement),false,'ordinary click target is not already focused');
+      const before=await svg.evaluate(el=>({x:el.__zoom.x,y:el.__zoom.y,k:el.__zoom.k}));
+      await pointerTarget.click();
+      const after=await svg.evaluate(el=>({x:el.__zoom.x,y:el.__zoom.y,k:el.__zoom.k}));
+      entry.pointerClick={candidate,before,after};
+      assert.deepEqual(after,before,'ordinary pointer focus must preserve the viewport during click');
+      const selectedSource=files.find(f=>f.path===candidate.path);
+      assert.ok(selectedSource,'clicked identity exists in source-coordinate oracle');
+      await page.waitForFunction(({name,folder})=>
+        [...document.querySelectorAll('.right-panel .panel-header')].some(header=>
+          header.querySelector('.panel-title')?.textContent.trim()===name&&
+          header.querySelector('.panel-subtitle')?.textContent.startsWith(folder+' • ')),
+        {name:selectedSource.name,folder:selectedSource.folder});
+      const afterSelection=await svg.evaluate(el=>({x:el.__zoom.x,y:el.__zoom.y,k:el.__zoom.k}));
+      assert.deepEqual(afterSelection,before,'pointer selection must not recenter the viewport');
+      entry.pointerClick.inspectorOracle={path:selectedSource.path,name:selectedSource.name,folder:selectedSource.folder};
+      entry.pointerClick.afterSelection=afterSelection;
+      await page.screenshot({path:join(out,'matrix-pointer-selection.png')});
+      entry.checks.push({name:'ordinary off-center pointer click preserves viewport and selects source',status:'PASS'});
+    }
     // Switch away, then verify that font/resize events cannot mutate disposed SVG.
     await page.evaluate(selector=>{
       window.__oldAlternateSvg=document.querySelector(selector+' svg');

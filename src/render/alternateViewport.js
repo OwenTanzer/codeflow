@@ -17,6 +17,7 @@ export function installAlternateViewport({ container, svg, content, onMeasure, t
   const el = svg.node(), group = content.node(), host = container.node();
   const doc = el.ownerDocument, win = doc.defaultView;
   let disposed = false, userMoved = false, frame = null;
+  let pointerFocusTarget = null, pointerFocusTimer = null;
   let width = host.clientWidth || 800, height = host.clientHeight || 600;
   const zoom = d3.zoom().scaleExtent([0.000001, 8]).on('zoom.alt-view', event => {
     if (event.sourceEvent) userMoved = true;
@@ -50,6 +51,12 @@ export function installAlternateViewport({ container, svg, content, onMeasure, t
   const focus = event => {
     const target = event.target.closest?.('[data-alt-selectable]');
     if (!target || !group.contains(target)) return;
+    // Pointer focus precedes click dispatch. Moving the hit target here can
+    // turn an ordinary click into a miss; only keyboard/programmatic focus fits.
+    if (target === pointerFocusTarget) {
+      clearPointerFocus();
+      return;
+    }
     const b = target.getBBox(), matrix = group.getCTM()?.inverse().multiply(target.getCTM());
     if (!matrix) return;
     const center = new win.DOMPoint(b.x + b.width / 2, b.y + b.height / 2).matrixTransform(matrix);
@@ -59,8 +66,32 @@ export function installAlternateViewport({ container, svg, content, onMeasure, t
   el.addEventListener('focusin', focus);
   // Capture before D3 drag can stop propagation: a deliberate drag must not
   // be replaced by a later font, resize, or simulation-completion auto-fit.
-  const pointerIntent = () => { userMoved = true; };
+  function clearPointerFocus() {
+    win.clearTimeout(pointerFocusTimer);
+    pointerFocusTimer = null;
+    pointerFocusTarget = null;
+  }
+  const pointerIntent = event => {
+    userMoved = true;
+    clearPointerFocus();
+    pointerFocusTarget = event.target.closest?.('[data-alt-selectable]') || null;
+  };
+  // Let native focus/click finish before clearing an unconsumed guard.
+  const releasePointerFocus = () => {
+    win.clearTimeout(pointerFocusTimer);
+    pointerFocusTimer = win.setTimeout(clearPointerFocus, 0);
+  };
+  const mouseIntent = event => {
+    pointerIntent(event);
+    releasePointerFocus();
+  };
   el.addEventListener('pointerdown', pointerIntent, true);
+  // Compatibility mouse focus can follow touch release in a later task.
+  el.addEventListener('mousedown', mouseIntent, true);
+  doc.addEventListener('pointerup', releasePointerFocus, true);
+  doc.addEventListener('pointercancel', clearPointerFocus, true);
+  doc.addEventListener('keydown', clearPointerFocus, true);
+  doc.addEventListener('click', clearPointerFocus, true);
   function measure() {
     if (disposed) return;
     width = host.clientWidth || 800;
@@ -89,6 +120,12 @@ export function installAlternateViewport({ container, svg, content, onMeasure, t
       fonts?.removeEventListener('loadingdone', scheduleMeasure);
       el.removeEventListener('focusin', focus);
       el.removeEventListener('pointerdown', pointerIntent, true);
+      el.removeEventListener('mousedown', mouseIntent, true);
+      doc.removeEventListener('pointerup', releasePointerFocus, true);
+      doc.removeEventListener('pointercancel', clearPointerFocus, true);
+      doc.removeEventListener('keydown', clearPointerFocus, true);
+      doc.removeEventListener('click', clearPointerFocus, true);
+      clearPointerFocus();
       svg.interrupt().on('.zoom', null);
       content.selectAll('*').interrupt().on('.alt-select', null);
       controls.remove();
