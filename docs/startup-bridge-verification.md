@@ -6,9 +6,11 @@ Related to #30, proposal 2 (startup only). Fresh isolated branch from main at **
 
 After the request to continue reviewing and repairing, a separate commit adds a build-only Vite plugin that emits the analyzer module byte-for-byte, under a content-hashed asset name. The worker implementation, source markers, `import.meta.url` fetch, CDN/parser versions and fallbacks are unchanged. Both dev and built strict browser gates now pass all four modes, including a real worker `done` message, matching analysis output, termination and Blob URL revocation; no unexpected console/page errors. The complete local suite passes **793 tests**, and the build passes.
 
-A new bundler regression verifies the actual emitted asset matches the source bytes, the entry imports that asset, there is no bundled second analyzer copy, and its worker core defines `buildAnalysisData`. The CodeQL warning in the owned-HTML test parser is fixed with case-insensitive script-tag matching.
+A new bundler regression verifies the actual emitted asset matches the source bytes, the entry imports that asset, there is no bundled second analyzer copy, and its worker core defines `buildAnalysisData`. The CodeQL warning in the owned-HTML test parser is fixed with case-insensitive script-tag matching that accepts trailing end-tag attributes.
 
-The existing CI job now runs the browser suites using its read-only Actions token solely in the local server. No token is passed to browser-test child processes and no browser Authorization header is introduced. Live CI acceptance is pending at this checkpoint; the local environment still has no server credential. The historical extraction evidence below records the original blocker rather than rewriting it as a past success.
+The existing CI job now runs the browser suites using its read-only Actions token solely in the local server. No token is passed to browser-test child processes and no browser Authorization header is introduced. Live CI acceptance passed on `b3752c08924a570760683f1992e05f57ef133f54`: [run 37240319435](https://github.com/OwenTanzer/codeflow/actions/runs/37240319435), [browser evidence artifact](https://github.com/OwenTanzer/codeflow/actions/runs/37240319435/artifacts/11316908425) (seven-day retention). This includes all 793 root tests, build, server/construction smoke, dev and built startup/worker/UI suites, full labels, renderer reflow/cleanup, function-layer smoke, integration preview, and all nine interaction-repairs groups. Actual Requests retrieval passed for the pinned SHA and omitted/branch/tag/SHA revision chains. Live metadata/source fallback and subsequent captured replay passed, including interrupted selection, cancellation, repeated Back and controlled failures, with no unexpected console/page errors. Physical-device testing was not performed; touch evidence is Chromium emulation at 390×844 and 844×390. The local checkout still has no runtime server credential. The historical extraction evidence below records the original blockers rather than rewriting them as past successes.
+
+The build repair adds one module request and increases the combined entry/analyzer gzip size from 53,842 to 74,229 bytes in the measured local build. This is the cost of preserving the existing source-reading worker contract; no performance improvement is claimed. The final test-matcher/documentation follow-up changes no runtime assets.
 
 ## Ownership and parity
 
@@ -55,7 +57,7 @@ Both return the same worker error, **`buildAnalysisData is not defined`**. Both 
 
 The stronger browser gate intentionally exits nonzero on the original baseline defect. Unit-test/build success does not waive it.
 
-## Requests browser evidence boundary
+## Historical supplemental Requests browser evidence
 
 There is no runtime GitHub credential in this checkout, so live server-backed Requests acceptance is **blocked**. Supplemental tests use the checked-in pinned `requests-sessions-pinned.py` fixture at `611c6162cbc4ac2020a2f91c7cfa4f3abf9bbb60`, parsed by the actual CodeVisualizer core, with **synthetic repository/file/metadata HTTP responses**. The comparison `models.py` envelope is deliberately synthetic, not an analysis of that file. These are not live captures and do not establish current GitHub retrieval, branch/tag/default-ref behavior or private access.
 
@@ -88,4 +90,4 @@ LABEL_TEST_URL=http://127.0.0.1:5173/ node tests/full-labels-browser.mjs
 node tests/function-reflow-browser.mjs http://127.0.0.1:5173/
 ```
 
-Run startup/worker/UI checks again against built assets. Run the existing function-layer, interaction-repairs and integration-preview suites against a properly credentialed local server for the missing live acceptance. The strict built-worker check now passes with the follow-up build repair; it still fails against the historical baseline. No public deployment was made. The bridge extraction and follow-up build/acceptance repair are separate revertible commits, with no data migration. No issue closure, panel extraction, merge or auto-merge is included.
+Run startup/worker/UI checks again against built assets. Run the existing function-layer, interaction-repairs and integration-preview suites against a properly credentialed local server to reproduce the live acceptance. The strict built-worker check now passes with the follow-up build repair; it still fails against the historical baseline. No public deployment was made. The bridge extraction and follow-up build/acceptance repair are separate revertible commits, with no data migration. No issue closure, panel extraction, merge or auto-merge is included.
