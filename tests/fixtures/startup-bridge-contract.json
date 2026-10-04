@@ -1,0 +1,188 @@
+{
+  "baseline": "21e48a246210af76b302ef83f65a4645ad884e9b",
+  "analyzerExports": [
+    "GitHub",
+    "Parser",
+    "buildAnalysisData",
+    "buildArchitectureDiagram",
+    "calcBlast",
+    "calcHealth",
+    "compileExcludePatterns",
+    "computeArchitectureStats",
+    "countFiles",
+    "createAnalysisWorkerSource",
+    "escapeHtml",
+    "generateMermaidBlockDiagram",
+    "getArchitectureGroupOrder",
+    "getSecurityScanContent",
+    "getVisibleArchitectureBlocks",
+    "isSanitizedPreviewRenderer",
+    "matchesExcludePattern",
+    "normalizeExcludePath",
+    "parseExcludePatterns",
+    "renderTooltipHtml",
+    "runAnalysisData",
+    "shouldExcludeFile",
+    "shouldIgnoreDirectory"
+  ],
+  "explicitModules": {
+    "src/render/repositoryGraph.js": [
+      "renderRepositoryGraph"
+    ],
+    "src/render/fileGraph.js": [
+      "renderFileGraph"
+    ],
+    "src/render/alternateViewport.js": [
+      "installAlternateViewport",
+      "makeAlternateSelectable"
+    ],
+    "src/state/selection.js": [
+      "useRepositorySelection"
+    ],
+    "src/state/route.js": [
+      "buildRepoUrl",
+      "readRouteRepo",
+      "writeRepoRoute",
+      "clearRoute"
+    ],
+    "src/adapters/repositoryGraphAdapter.js": [
+      "adaptRepositoryAnalysis"
+    ],
+    "src/adapters/repositoryGraphToViewModel.js": [
+      "repositoryGraphToViewModel"
+    ],
+    "src/graph-ir/githubContext.js": [
+      "normalizeContext"
+    ],
+    "src/graph-ir/blastRadius.js": [
+      "calcBlastFromGraph"
+    ],
+    "src/state/repositoryDrillDown.js": [
+      "tryCreateDrillDown",
+      "tryCreateDrillDownById",
+      "createSelectionEventForPath",
+      "tryCreateOpenSourceEvent",
+      "tryCreateOpenSourceEventById",
+      "githubBlobUrl"
+    ],
+    "src/state/repositoryDrillDownPanel.js": [
+      "useRepositoryDrillDownPanel"
+    ],
+    "src/state/graphFileClient.js": [
+      "fetchFileGraph",
+      "GraphFileClientError"
+    ],
+    "src/state/graphRepositoryClient.js": [
+      "fetchRepositoryGraph",
+      "GraphRepositoryClientError"
+    ],
+    "src/render/functionGraph.js": [
+      "renderFunctionGraph"
+    ],
+    "src/render/functionRenderModel.js": [
+      "buildFunctionRenderModel"
+    ],
+    "src/state/graphFunctionClient.js": [
+      "fetchFunctionGraph",
+      "GraphFunctionClientError"
+    ],
+    "src/state/analysisSession.js": [
+      "AnalysisSession"
+    ],
+    "src/state/capabilitiesClient.js": [
+      "fetchCapabilities"
+    ],
+    "src/state/githubMetaClient.js": [
+      "fetchBlame",
+      "fetchFileContentFromServer"
+    ]
+  },
+  "bareBridgeConsumers": [
+    "AnalysisSession",
+    "GitHub",
+    "GraphFileClientError",
+    "GraphFunctionClientError",
+    "Parser",
+    "adaptRepositoryAnalysis",
+    "buildFunctionRenderModel",
+    "buildRepoUrl",
+    "calcBlast",
+    "calcBlastFromGraph",
+    "calcHealth",
+    "clearRoute",
+    "compileExcludePatterns",
+    "computeArchitectureStats",
+    "countFiles",
+    "escapeHtml",
+    "fetchBlame",
+    "fetchCapabilities",
+    "fetchFileContentFromServer",
+    "fetchFileGraph",
+    "fetchFunctionGraph",
+    "fetchRepositoryGraph",
+    "generateMermaidBlockDiagram",
+    "getArchitectureGroupOrder",
+    "getVisibleArchitectureBlocks",
+    "githubBlobUrl",
+    "installAlternateViewport",
+    "makeAlternateSelectable",
+    "normalizeContext",
+    "normalizeExcludePath",
+    "parseExcludePatterns",
+    "readRouteRepo",
+    "renderFileGraph",
+    "renderFunctionGraph",
+    "renderRepositoryGraph",
+    "renderTooltipHtml",
+    "repositoryGraphToViewModel",
+    "runAnalysisData",
+    "shouldExcludeFile",
+    "shouldIgnoreDirectory",
+    "tryCreateDrillDown",
+    "tryCreateDrillDownById",
+    "useRepositoryDrillDownPanel",
+    "useRepositorySelection",
+    "writeRepoRoute"
+  ],
+  "otherBareGlobals": [
+    "AbortController",
+    "Array",
+    "Blob",
+    "Boolean",
+    "Date",
+    "Error",
+    "Event",
+    "ForceGraph3D",
+    "Image",
+    "JSON",
+    "JSZip",
+    "Map",
+    "Math",
+    "MessageChannel",
+    "Number",
+    "Object",
+    "Promise",
+    "React",
+    "ReactDOM",
+    "ResizeObserver",
+    "Set",
+    "String",
+    "URL",
+    "XMLSerializer",
+    "cancelAnimationFrame",
+    "clearTimeout",
+    "console",
+    "d3",
+    "document",
+    "fetch",
+    "getComputedStyle",
+    "isFinite",
+    "navigator",
+    "parseInt",
+    "requestAnimationFrame",
+    "scheduler",
+    "setTimeout",
+    "undefined",
+    "window"
+  ]
+}

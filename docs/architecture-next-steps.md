@@ -1,6 +1,6 @@
 # Incremental architecture plan and regression ownership
 
-Read [architecture.md](architecture.md) first. Evidence is source-inspected at `7ce7aa8020bc9bdf0c70648d175632e19f65b7d6`, October 4, 2026. These are proposals under [#30](https://github.com/OwenTanzer/codeflow/issues/30), except the first identity-helper extraction recorded below. #27–29 remain open for acceptance reconciliation. No recommendation below claims hosted speed gains.
+Read [architecture.md](architecture.md) first. Evidence is source-inspected at `7ce7aa8020bc9bdf0c70648d175632e19f65b7d6`, October 4, 2026. These are proposals under [#30](https://github.com/OwenTanzer/codeflow/issues/30), except the first identity-helper extraction and the browser startup-bridge slice of proposal 2 recorded below. #27–29 remain open for acceptance reconciliation. No recommendation below claims hosted speed gains.
 
 ## Ranked sequence
 
@@ -12,11 +12,11 @@ Read [architecture.md](architecture.md) first. Evidence is source-inspected at `
 
 **Benefit/confidence:** high confidence in simpler dependency ownership; no measured performance benefit. **Affected contracts:** requested/base/source identity, PR mode and response-cache request identity. **Gates:** `graph-request-context`, `github-context`, `cache-key`, `graph-cache-routes`, `server-graph-repository`, `server-graph-file`, `server-graph-function`, `graph-file-inflight`, `route-telemetry`, `server-bridge-import-order`, all root tests/build; structural smoke when credentials exist. Guard moved-PR 409, invalid-body status, degradation, session echo and cache hit provenance without changing expected results. **Migration/rollback:** mechanical move plus compatibility re-exports in one commit; revert that commit, no data migration. Later slices remain proposals, not authorized implementation.
 
-### 2. Make browser startup exports explicit, then extract one panel
+### 2. Centralize browser startup exports; panel extraction remains deferred
 
 **Evidence:** `index.html` imports ES modules but exposes selected names to a separate Babel script through `window`; missing metadata exports caused the #27 defects. `FileLayerPanel` and `FunctionLayerPanel` already have identifiable props, session guards, renderer handles and cleanup, whereas `App` combines unrelated state lifetimes.
 
-**Proposal:** first centralize the existing bridge registration in a module with the same global surface and loading position, keeping the inline application untouched. Inventory all bare global consumers and check dev and built startup. Only after that passes, choose one layer panel for extraction with explicit injected dependencies. Do not simultaneously replace Babel/CDNs, change framework, migrate all App state or replace workers.
+**Startup slice:** registration now lives in `src/browser/startupBridge.js`, imported at the same module-entry position, with the inline application untouched. See the [inventory and verification record](startup-bridge-verification.md) for this slice’s evidence and blockers. The inventory is complete; outstanding browser acceptance is recorded separately. Only after acceptance passes, choose one layer panel for a separately authorized extraction with explicit injected dependencies. Do not simultaneously replace Babel/CDNs, change framework, migrate all App state or replace workers.
 
 **Benefit/confidence:** high confidence that named ownership makes missing exports easier to catch; medium confidence in panel extraction until its ambient React/render/global references are enumerated. No speed claim. **Contracts:** exact startup/global surface; session epoch/generation, navigation/cache, renderer disposal, complete text. **Gates:** bridge/auth-removal tests, root tests/build, `ui-smoke`, `function-layer-smoke`, `interaction-repairs-smoke`, `integration-preview-browser`, full-label and reflow suites; worker verification against both dev and built assets. **Migration/rollback:** one bridge commit, then one panel commit; preserve global aliases until all consumers move; each revertable independently. **Dependencies:** do not conflate the PR Impact functional exception with startup cleanup; preserve its behavior until separately scoped. Real browser availability is a merge gate for this future change.
 
