@@ -1413,7 +1413,12 @@ function FunctionGraphCanvas(props){
         return function(){handleRef.current=null;handle();};
     },[functionGraph,theme]);
 
-    return React.createElement('svg',{ref:svgRef,style:{width:'100%',height:420,background:'var(--bg2)',borderRadius:8}});
+    return React.createElement('div',null,
+        React.createElement('div',{style:{display:'flex',gap:8,marginBottom:6}},
+            React.createElement('button',{className:'top-btn','aria-label':'Fit function graph',onClick:function(){handleRef.current?.fit?.();}},'Fit graph'),
+            React.createElement('button',{className:'top-btn','aria-label':'Readable function view',onClick:function(){handleRef.current?.readable?.();}},'Readable view')),
+        React.createElement('svg',{ref:svgRef,style:{width:'100%',height:420,background:'var(--bg2)',borderRadius:8}}));
+
 }
 
 // MOO-71 Commit 7: the function-layer view -- the real replacement for the
@@ -3178,7 +3183,7 @@ function App(){
         var w=treemapRef.current.clientWidth||800,h=treemapRef.current.clientHeight||600;
         var svg=container.append('svg').attr('width',w).attr('height',h).style('cursor','grab');
         var g=svg.append('g');
-        var zoom=d3.zoom().scaleExtent([0.3,4]).on('zoom',function(e){g.attr('transform',e.transform);svg.style('cursor',e.transform.k>1?'grab':'default');});
+        var zoom=d3.zoom().scaleExtent([0.3,4]).on('zoom',function(e){g.attr('transform',e.transform);g.selectAll('text').attr('visibility',e.transform.k<0.45?'hidden':null);svg.style('cursor',e.transform.k>1?'grab':'default');});
         svg.call(zoom);
         var hier={name:'root',children:[]};
         var folderMap={};
@@ -3198,9 +3203,9 @@ function App(){
         cells.append('rect').attr('class','treemap-rect').attr('width',function(d){return Math.max(0,d.x1-d.x0);}).attr('height',function(d){return Math.max(0,d.y1-d.y0);})
             .attr('fill',function(d){return colorMap[d.parent.data.name]||COLORS[hier.children.indexOf(d.parent.data)%COLORS.length];})
             .attr('opacity',0.85).attr('rx',3).attr('stroke','var(--bg0)').attr('stroke-width',1).style('cursor','pointer');
-        cells.filter(function(d){return d.x1-d.x0>45&&d.y1-d.y0>22;}).append('text').attr('class','treemap-text')
-            .attr('x',4).attr('y',14).attr('fill','white').attr('font-size','10px').attr('font-weight','500').style('text-shadow','0 1px 2px rgba(0,0,0,0.5)').style('pointer-events','none')
-            .text(function(d){var n=d.data.name.replace(/\.[^.]+$/,'');var maxLen=Math.floor((d.x1-d.x0-8)/6);return n.length>maxLen?n.slice(0,maxLen-1)+'…':n;});
+        cells.append('text').attr('class','treemap-text')
+            .attr('x',function(d){return w+12-d.x0;}).attr('y',function(d,i){return 14+i*18-d.y0;}).attr('fill','var(--t1)').attr('font-size','10px').attr('font-weight','500').style('text-shadow','0 1px 2px rgba(0,0,0,0.5)').style('pointer-events','none')
+            .text(function(d){return d.data.name;});
         cells.filter(function(d){return d.x1-d.x0>60&&d.y1-d.y0>35;}).append('text').attr('class','treemap-subtext')
             .attr('x',4).attr('y',26).attr('fill','rgba(255,255,255,0.7)').attr('font-size','8px').style('pointer-events','none')
             .text(function(d){return d.data.value+' lines';});
@@ -3266,11 +3271,11 @@ function App(){
         var maxVal=1;matrix.forEach(function(row){row.forEach(function(v){if(v>maxVal)maxVal=v;});});
         var colLabels=g.selectAll('text.col-label').data(files).join('text').attr('class','col-label')
             .attr('x',function(d,i){return i*cellSize+cellSize/2;}).attr('y',-8).attr('text-anchor','start').attr('transform',function(d,i){return'rotate(-45,'+(i*cellSize+cellSize/2)+','+-8+')';})
-            .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){var n=d.name.replace(/\.[^.]+$/,'');return n.length>10?n.slice(0,8)+'…':n;}).style('cursor','pointer')
+            .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){return d.name;}).style('cursor','pointer')
             .on('click',function(e,d){if(selectFileRef.current)selectFileRef.current(d.path);});
         var rowLabels=g.selectAll('text.row-label').data(files).join('text').attr('class','row-label')
             .attr('x',-8).attr('y',function(d,i){return i*cellSize+cellSize/2+3;}).attr('text-anchor','end')
-            .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){var n=d.name.replace(/\.[^.]+$/,'');return n.length>10?n.slice(0,8)+'…':n;}).style('cursor','pointer')
+            .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){return d.name;}).style('cursor','pointer')
             .on('click',function(e,d){if(selectFileRef.current)selectFileRef.current(d.path);});
         var cellData=[];
         files.forEach(function(f,i){files.forEach(function(g,j){cellData.push({row:i,col:j,value:matrix[i][j],source:f,target:g});});});
@@ -3316,12 +3321,12 @@ function App(){
         var folderMap={};
         filteredFiles.slice(0,80).forEach(function(f){
             var folder=f.folder||'root';
-            if(!folderMap[folder])folderMap[folder]={name:folder.split('/').pop()||'root',fullPath:folder,children:[]};
+            if(!folderMap[folder])folderMap[folder]={name:folder||'root',fullPath:folder,children:[]};
             folderMap[folder].children.push({name:f.name,path:f.path,fns:f.functions.length,lines:f.lines,folder:folder,layer:f.layer});
         });
         hier.children=Object.values(folderMap);
         var root=d3.hierarchy(hier);
-        var treeLayout=d3.cluster().size([h-60,w-200]);
+        var treeLayout=d3.cluster().size([Math.max(h-60,root.leaves().length*20),Math.max(190,w-200)]);
         treeLayout(root);
         var tooltip=container.append('div').attr('class','treemap-tooltip').style('display','none').style('position','absolute');
         g.selectAll('path.dendro-link').data(root.links()).join('path').attr('class','dendro-link')
@@ -3333,7 +3338,7 @@ function App(){
             .attr('fill',function(d){return d.children?'var(--bg3)':colorMap[d.data.folder]||COLORS[0];})
             .attr('stroke',function(d){return d.children?'var(--t3)':'var(--bg0)';}).attr('stroke-width',2);
         node.filter(function(d){return!d.children;}).append('text').attr('x',12).attr('dy','0.35em')
-            .attr('fill','var(--t1)').attr('font-size','9px').text(function(d){var n=d.data.name.replace(/\.[^.]+$/,'');return n.length>20?n.slice(0,18)+'…':n;});
+            .attr('fill','var(--t1)').attr('font-size','9px').text(function(d){return d.data.name;});
         node.filter(function(d){return d.children&&d.depth>0;}).append('text').attr('x',-10).attr('dy','0.35em').attr('text-anchor','end')
             .attr('fill','var(--t2)').attr('font-size','10px').attr('font-weight','600').text(function(d){return d.data.name;});
         node.on('mouseenter',function(e,d){
@@ -3578,7 +3583,7 @@ function App(){
         node.append('circle').attr('class','bundle-circle').attr('r',6).attr('fill',function(d){return colorMap[d.folder]||COLORS[0];}).attr('stroke','var(--bg0)').attr('stroke-width',1.5)
             .attr('transform',function(d){return d.angle>Math.PI?'translate(-6,0)':'translate(6,0)';});
         node.append('text').attr('dy','0.31em').attr('x',function(d){return d.angle>Math.PI?-14:14;}).attr('text-anchor',function(d){return d.angle>Math.PI?'end':'start';})
-            .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){var n=d.name.replace(/\.[^.]+$/,'');return n.length>16?n.slice(0,13)+'…':n;});
+            .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){return d.name;});
         function applyBundleDefaultState(){
             link.transition().duration(200)
                 .attr('stroke-opacity',0.35)
@@ -3704,11 +3709,14 @@ function App(){
         if(!zoomRef.current||!svgRef.current||!simRef.current)return null;
         var nodes=simRef.current.nodes();
         if(!nodes.length)return null;
-        var xs=nodes.map(function(n){return n.x;}),ys=nodes.map(function(n){return n.y;});
-        var minX=Math.min.apply(null,xs),maxX=Math.max.apply(null,xs),minY=Math.min.apply(null,ys),maxY=Math.max.apply(null,ys);
+        // Include complete labels and folder titles, not only node centers.
+        var group=svgRef.current.querySelector('g');
+        if(!group)return null;
+        var bounds=group.getBBox();
+        var minX=bounds.x,maxX=bounds.x+bounds.width,minY=bounds.y,maxY=bounds.y+bounds.height;
         var w=svgRef.current.clientWidth,h=svgRef.current.clientHeight;
         if(w<1||h<1)return null;
-        var scale=0.8/Math.max((maxX-minX+paddingSlack)/w,(maxY-minY+paddingSlack)/h);
+        var scale=Math.min(2,0.8/Math.max((maxX-minX+paddingSlack)/w,(maxY-minY+paddingSlack)/h));
         return d3.zoomIdentity.translate(w/2-scale*(minX+maxX)/2,h/2-scale*(minY+maxY)/2).scale(Math.min(scale,2));
     }
     function fitView(){

@@ -31,6 +31,7 @@
 // repositoryGraph.js, fileGraph.js and src/analyzer.js use.
 /* eslint-disable no-undef */
 import { buildFunctionRenderModel } from './functionRenderModel.js';
+import { LABEL_FONT, LINE_HEIGHT, routeFunctionLinks } from './labelGeometry.js';
 
 // One palette entry per *semantic kind*, not per shape: entry/exit read as
 // terminals, branches as decisions, calls as outward jumps, everything else
@@ -43,108 +44,24 @@ const COLOR_BY_KIND = {
   call: '#a78bfa',
   process: '#60a5fa',
 };
-const NODE_W = 132;
-const NODE_H = 34;
-const TERMINAL_R = 15;
-const BRANCH_R = 24;
-const MAX_LABEL = 20;
-
-// MOO-86: process/call (rect) node labels wrap onto a second line instead of
-// being hard-truncated at MAX_LABEL -- entry/exit and branch (diamond) nodes
-// keep single-line truncation, since their fixed circular/diamond footprint
-// (TERMINAL_R/BRANCH_R) has no extra room to grow into without colliding with
-// the shape's own point. MAX_CHARS_PER_LINE tracks MAX_LABEL (the width both
-// were tuned against is the same NODE_W), and LINE_H is small enough that a
-// wrapped two-line box (NODE_H + LINE_H) still fits inside RANK_HEIGHT's
-// (functionRenderModel.js) existing 60px-34px = 26px of slack per rank.
-const MAX_CHARS_PER_LINE = 18;
-const LINE_H = 12;
-const WORD_BREAK_PATTERN = /[\s_.\-(),:]/;
-
-function colorFor(d) {
-  return COLOR_BY_KIND[d.kind] || COLOR_BY_KIND.process;
-}
-
-function isWrappable(d) {
-  return !d.isEntry && !d.isExit && d.shape !== 'diamond';
-}
-
-/**
- * Split a label into at most two lines for a rect node, breaking near the
- * midpoint on a word/punctuation boundary when one exists close by so a
- * split doesn't land mid-identifier more than necessary. Each line is
- * independently capped at MAX_CHARS_PER_LINE with an ellipsis, so a label
- * that's still too long after wrapping degrades the same way single-line
- * truncation always did, rather than overflowing the box.
- * @returns {string[]} one entry (unwrapped) or two (wrapped)
- */
-function wrapLabel(label) {
-  if (!label) return [''];
-  if (label.length <= MAX_CHARS_PER_LINE) return [label];
-  var mid = Math.ceil(label.length / 2);
-  var breakIndex = -1;
-  for (var offset = 0; offset <= 8; offset++) {
-    if (mid + offset < label.length && WORD_BREAK_PATTERN.test(label[mid + offset])) { breakIndex = mid + offset; break; }
-    if (mid - offset >= 0 && WORD_BREAK_PATTERN.test(label[mid - offset])) { breakIndex = mid - offset; break; }
-  }
-  var first = breakIndex > 0 ? label.slice(0, breakIndex).trim() : label.slice(0, MAX_CHARS_PER_LINE);
-  var rest = breakIndex > 0 ? label.slice(breakIndex + 1).trim() : label.slice(MAX_CHARS_PER_LINE);
-  if (first.length > MAX_CHARS_PER_LINE) first = first.slice(0, MAX_CHARS_PER_LINE - 1) + '…';
-  if (rest.length > MAX_CHARS_PER_LINE) rest = rest.slice(0, MAX_CHARS_PER_LINE - 1) + '…';
-  return [first, rest];
-}
-
-// Cached on the datum (one render pass per node) so shapePath/halfHeight and
-// the actual text rendering never compute -- and never disagree on -- the
-// line count independently.
-function linesFor(d) {
-  if (d._wrappedLines) return d._wrappedLines;
-  d._wrappedLines = isWrappable(d) ? wrapLabel(d.label) : [truncate(d.label)];
-  return d._wrappedLines;
-}
-
-function boxHeight(d) {
-  return linesFor(d).length > 1 ? NODE_H + LINE_H : NODE_H;
-}
-
-// Half-height of a node, needed to anchor edges on its boundary rather than
-// its center so arrowheads don't disappear under the shape.
-function halfHeight(d) {
-  if (d.isEntry || d.isExit) return TERMINAL_R;
-  if (d.shape === 'diamond') return BRANCH_R;
-  return boxHeight(d) / 2;
-}
-
-function halfWidth(d) {
-  if (d.isEntry || d.isExit) return TERMINAL_R;
-  if (d.shape === 'diamond') return BRANCH_R;
-  return NODE_W / 2;
-}
-
-function shapePath(d) {
+function colorFor(d) { return COLOR_BY_KIND[d.kind] || COLOR_BY_KIND.process; }
+function linesFor(d) { return d.lines; }
+function halfHeight(d) { return d.height / 2; }
+function halfWidth(d) { return d.width / 2; }
+export function shapePath(d) {
+  var hw = halfWidth(d), hh = halfHeight(d);
   if (d.isEntry || d.isExit) {
-    var r = TERMINAL_R;
-    return 'M' + -r + ',0A' + r + ',' + r + ' 0 1,0 ' + r + ',0A' + r + ',' + r + ' 0 1,0 ' + -r + ',0';
+    return 'M' + -hw + ',0A' + hw + ',' + hh + ' 0 1,0 ' + hw + ',0A' + hw + ',' + hh + ' 0 1,0 ' + -hw + ',0';
   }
-  if (d.shape === 'diamond') {
-    var b = BRANCH_R;
-    return 'M0,' + -b + 'L' + b + ',0L0,' + b + 'L' + -b + ',0Z';
-  }
-  var hw = NODE_W / 2;
-  var hh = boxHeight(d) / 2;
+  if (d.shape === 'diamond') return 'M0,' + -hh + 'L' + hw + ',0L0,' + hh + 'L' + -hw + ',0Z';
   return 'M' + -hw + ',' + -hh + 'H' + hw + 'V' + hh + 'H' + -hw + 'Z';
-}
-
-function truncate(label) {
-  if (!label) return '';
-  return label.length > MAX_LABEL ? label.slice(0, MAX_LABEL - 1) + '…' : label;
 }
 
 // Forward flow: straight down when the ranks line up, otherwise an elbow
 // (down, across, down). Orthogonal rather than curved because a flowchart's
 // value is in reading execution order, and right angles make the rank
 // structure legible.
-function forwardPath(s, t) {
+export function forwardPath(s, t) {
   var sy = s.y + halfHeight(s);
   var ty = t.y - halfHeight(t);
   if (Math.abs(s.x - t.x) < 1) return 'M' + s.x + ',' + sy + 'V' + ty;
@@ -163,7 +80,7 @@ function forwardPath(s, t) {
 // rank ~35 to a loop header at rank ~6 is long -- otherwise swept diagonally
 // across the middle of the graph and crossed everything between, which the
 // first screenshot showed as a large X over the node column.
-function backPath(s, t, lane, laneBaseX) {
+export function backPath(s, t, lane, laneBaseX) {
   var laneX = laneBaseX + lane * 20;
   var sx = s.x + halfWidth(s);
   var tx = t.x + halfWidth(t);
@@ -193,10 +110,23 @@ export function renderFunctionGraph(options) {
   svg.selectAll('*').remove();
 
   try {
-    var model = buildFunctionRenderModel(graph);
+    // Measure with the actual SVG font, including the current fallback font.
+    var probe = svg.append('text').style('font', LABEL_FONT).style('white-space', 'pre')
+      .attr('visibility', 'hidden');
+    var measureCache = new Map();
+    function measureText(text) {
+      if (!measureCache.has(text)) {
+        probe.text(text);
+        measureCache.set(text, probe.node().getComputedTextLength());
+      }
+      return measureCache.get(text);
+    }
+    var model = buildFunctionRenderModel(graph, {
+      measureText, maxTextWidth: Math.max(140, Math.min(360, (svgEl.clientWidth || 800) * 0.4)),
+    });
+    probe.remove();
     if (model.nodes.length === 0) return cleanup;
 
-    var nodeById = new Map(model.nodes.map(function (n) { return [n.id, n]; }));
     var edgeColor = theme === 'light' ? '#b8b8b8' : '#4a4a4a';
     var textColor = theme === 'light' ? '#333' : '#eee';
 
@@ -206,10 +136,10 @@ export function renderFunctionGraph(options) {
     var container = svg.append('g');
 
     var defs = svg.append('defs');
-    defs.append('marker').attr('id', 'fn-arr').attr('viewBox', '0 -5 10 10').attr('refX', 9)
+    defs.append('marker').attr('id', 'fn-arr').attr('viewBox', '0 -5 10 10').attr('refX', 10)
       .attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
       .append('path').attr('d', 'M0,-4L10,0L0,4').attr('fill', edgeColor);
-    defs.append('marker').attr('id', 'fn-arr-back').attr('viewBox', '0 -5 10 10').attr('refX', 9)
+    defs.append('marker').attr('id', 'fn-arr-back').attr('viewBox', '0 -5 10 10').attr('refX', 10)
       .attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
       .append('path').attr('d', 'M0,-4L10,0L0,4').attr('fill', '#fbbf24');
 
@@ -233,29 +163,13 @@ export function renderFunctionGraph(options) {
 
     // Back-edge lanes live to the right of the rightmost node, so the fitted
     // width has to account for them or the loop curves fall outside the view.
-    var rightmost = 0;
-    model.nodes.forEach(function (n) { rightmost = Math.max(rightmost, n.x + halfWidth(n)); });
-    var laneBaseX = rightmost + 34;
-    var backEdgeCount = model.links.filter(function (l) { return l.isBackEdge; }).length;
-    var drawnWidth = backEdgeCount > 0 ? laneBaseX + Math.min(backEdgeCount, 4) * 20 + 16 : model.width;
-
+    var links = routeFunctionLinks(model);
+    var drawnWidth = Math.max(model.width,...links.map(l=>Math.max(
+      ...l.points.map(p=>p[0]), l.labelX+(l.data.label||'false').length*7+16)));
     var w = svgEl.clientWidth || drawnWidth;
     var scale = Math.max(MIN_SCALE, Math.min(1, w / (drawnWidth + 40)));
-    var initial = d3.zoomIdentity.translate((w - drawnWidth * scale) / 2, 16).scale(scale);
+    var initial = d3.zoomIdentity.translate(w / 2 - model.nodes[0].x * scale, 16).scale(scale);
     svg.call(zoom.transform, initial);
-
-    var backLane = 0;
-    var links = model.links.map(function (l) {
-      var s = nodeById.get(l.source);
-      var t = nodeById.get(l.target);
-      var lane = l.isBackEdge ? backLane++ % 4 : 0;
-      return {
-        data: l,
-        source: s,
-        target: t,
-        d: l.isBackEdge ? backPath(s, t, lane, laneBaseX) : forwardPath(s, t),
-      };
-    });
 
     linkLayer.selectAll('path').data(links).join('path')
       .attr('d', function (l) { return l.d; })
@@ -273,8 +187,8 @@ export function renderFunctionGraph(options) {
       return l.data.label || l.data.kind === 'flow-true' || l.data.kind === 'flow-false';
     });
     edgeLabelLayer.selectAll('text').data(labelled).join('text')
-      .attr('x', function (l) { return (l.source.x + l.target.x) / 2 + 6; })
-      .attr('y', function (l) { return (l.source.y + l.target.y) / 2; })
+      .attr('x', function (l) { return l.labelX; })
+      .attr('y', function (l) { return l.labelY; })
       .attr('fill', function (l) {
         if (l.data.kind === 'flow-true') return '#34d399';
         if (l.data.kind === 'flow-false') return '#f87171';
@@ -301,21 +215,16 @@ export function renderFunctionGraph(options) {
       // file layer uses for nodes without relationship data.
       .attr('stroke-dasharray', function (d) { return d.isSynthetic ? '3,2' : null; });
 
-    // MOO-86: a label too wide for a rect node now wraps onto a second
-    // tspan (linesFor/wrapLabel above) instead of being cut off -- entry/
-    // exit/diamond nodes keep the old single-line truncation, since their
-    // shapes have no room to grow into.
     node.append('text').attr('class', 'fn-nl')
-      .attr('text-anchor', 'middle')
-      .attr('fill', textColor)
-      .attr('font-size', '9px').attr('font-family', 'JetBrains Mono').attr('font-weight', '500')
+      .attr('text-anchor', 'middle').attr('fill', textColor)
+      .style('font', LABEL_FONT).style('white-space', 'pre')
       .attr('pointer-events', 'none')
       .each(function (d) {
-        var lines = linesFor(d);
         var textSel = d3.select(this);
-        var startDy = lines.length > 1 ? 3 - LINE_H / 2 : 3;
-        lines.forEach(function (line, i) {
-          textSel.append('tspan').attr('x', 0).attr('dy', i === 0 ? startDy : LINE_H).text(line);
+        d.lines.forEach(function (line, i) {
+          textSel.append('tspan').attr('x', 0)
+            .attr('y', (i - (d.lines.length - 1) / 2) * LINE_HEIGHT + 4)
+            .text(line);
         });
       });
 
@@ -354,7 +263,9 @@ export function renderFunctionGraph(options) {
       neighbors.get(l.target).add(l.source);
     });
 
+    var currentSelection = null, currentQuery = '';
     function applySelection(selectedId) {
+      currentSelection = selectedId;
       var keep = selectedId ? neighbors.get(selectedId) : null;
       node.attr('opacity', function (d) { return !keep || keep.has(d.id) ? 1 : 0.18; });
       node.selectAll('.fn-nc').attr('stroke-width', function (d) { return selectedId === d.id ? 3 : 1.6; });
@@ -369,6 +280,7 @@ export function renderFunctionGraph(options) {
     // control-flow graph, removing a matched node's surroundings destroys
     // the very context that makes the match meaningful.
     function applySearch(query) {
+      currentQuery = query;
       var q = (query || '').trim().toLowerCase();
       node.selectAll('.fn-nc')
         .attr('stroke', function (d) {
@@ -385,9 +297,48 @@ export function renderFunctionGraph(options) {
       });
     }
 
-    cleanup = function () { svg.on('.zoom', null); };
-    cleanup.applySearch = applySearch;
-    cleanup.applySelection = applySelection;
+    var replacement = null, disposed = false;
+    var previousWidth = svgEl.clientWidth, previousHeight = svgEl.clientHeight;
+    function reflow() {
+      if(disposed)return;
+      var transform=d3.zoomTransform(svgEl);
+      var query=currentQuery, selection=currentSelection;
+      cleanup();
+      replacement=renderFunctionGraph(options);
+      d3.select(svgEl).call(zoomRef.current.transform,transform);
+      replacement.applySelection?.(selection);
+      if(query)replacement.applySearch?.(query);
+    }
+    var observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(function() {
+      if(svgEl.clientWidth===previousWidth && svgEl.clientHeight===previousHeight)return;
+      previousWidth=svgEl.clientWidth;previousHeight=svgEl.clientHeight;
+      reflow();
+    });
+    observer?.observe(svgEl);
+    if(document.fonts)document.fonts.addEventListener('loadingdone',reflow);
+    cleanup = function () {
+      if(replacement){replacement();return;}
+      disposed=true;
+      observer?.disconnect();
+      if(document.fonts)document.fonts.removeEventListener('loadingdone',reflow);
+      svg.on('.zoom', null);
+    };
+    cleanup.fit = function() {
+      if(replacement){replacement.fit?.();return;}
+      var b=container.node().getBBox(), padding=20;
+      var k=Math.min(1,(svgEl.clientWidth-2*padding)/b.width,(svgEl.clientHeight-2*padding)/b.height);
+      if(!(k>0))return;
+      zoom.scaleExtent([Math.min(0.15,k),4]);
+      svg.call(zoom.transform,d3.zoomIdentity.translate(
+        (svgEl.clientWidth-b.width*k)/2-b.x*k,
+        (svgEl.clientHeight-b.height*k)/2-b.y*k).scale(k));
+    };
+    cleanup.readable = function() {
+      if(replacement){replacement.readable?.();return;}
+      svg.call(zoom.transform,initial);
+    };
+    cleanup.applySearch = function(q){if(replacement)replacement.applySearch?.(q);else applySearch(q);};
+    cleanup.applySelection = function(id){if(replacement)replacement.applySelection?.(id);else applySelection(id);};
     return cleanup;
   } catch (e) {
     console.error('Function graph render error:', e);
