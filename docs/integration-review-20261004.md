@@ -1,5 +1,8 @@
 # Coordinated integration review
 
+Follow-up acceptance after the reviewed CodeVisualizer repair is recorded in
+[integration-acceptance-20261004.md](integration-acceptance-20261004.md).
+
 This draft integrates issues #27, #28 and #29 without closing their acceptance gates. The original PRs remain intact. Do not interpret green CI as complete browser or label acceptance.
 
 ## Provenance
@@ -41,7 +44,7 @@ Renderer tests import local source modules and therefore use Vite, with the ordi
 
 The overview captures the actual parsed bridge response without mutating it; DevTools response-body eviction on the roughly 20.8 MB result is not an application failure. Fault injection and graph replay are explicitly identified in structured output. Interaction ref cases inject the requested ref at the bridge seam; they do not establish pasted `/tree/ref` URL support. Document-injection tests use the production server to avoid Vite HMR websocket artifacts. Normal rate-limit windows remain in effect.
 
-## Acceptance still blocked upstream
+## Acceptance at this integration snapshot (7f6f26a)
 
 CodeVisualizer remains pinned at `974d907a5490aa96fb8e84b6723d15bc5455c658`. Six source-oracle completeness cases lose text upstream: for, with, return, ternary true/false, and higher-order assignment. The full-labels gate must remain red until an approved upstream change preserves original text. No lost text is invented here, and no pin is changed.
 

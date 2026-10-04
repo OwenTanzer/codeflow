@@ -113,8 +113,8 @@ function upstreamEscape(text) {
 }
 
 export function recoverFunctionLabel(node, source) {
-  // Additive raw contract proposed for CodeVisualizer. The current pin does
-  // not emit it: retaining legacy recovery is NOT a completeness guarantee.
+  // The pinned CodeVisualizer parser emits this additive contract for
+  // composed Python labels. Legacy recovery remains for other node paths.
   // Never entity-decode authoritative raw text (literal #quot; must survive).
   if (node.rawLabel?.version === 1 &&
       node.rawLabel.provenance === 'python-parser-composition' &&
