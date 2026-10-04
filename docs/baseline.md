@@ -1,5 +1,7 @@
 # CodeFlow baseline (MOO-67, Commits 1-7 — MOO-67 complete)
 
+> Status note — October 4, 2026: Historical implementation record. For current setup and limits use [deployment.md](deployment.md), and for current structure use [architecture.md](architecture.md). The stage-specific commands, 750-file cap, authentication statements, test counts and deployment observations below describe their recorded revisions; they are not newly verified. Main server scans are now uncapped by file count; the separate legacy PR dialog still samples. See the October 4 [release/acceptance reading path](README.md).
+
 This document is the regression-protection reference point for the Code
 Reality Layer construction work (MOO-66 and its sub-issues). It records what
 "working" meant before modularization began, so later commits can prove they

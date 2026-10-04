@@ -1,12 +1,10 @@
 # GraphIR contract (MOO-68)
 
-This document is the developer-facing reference for the architectural
-language every later Code Reality Layer integration (MOO-69's repository
-adapter, MOO-70's pyan3 file/script layer, MOO-71's CodeVisualizer function
-layer) speaks. MOO-68 defines the contracts; it does not implement a real
-pyan3 or CodeVisualizer adapter — `examples/minimal-graphir-adapter.mjs` and
-`tests/fixtures/graph-ir/*.json` are illustrative fixtures, not production
-adapters.
+This is the current schema/identity reference. See [architecture.md](architecture.md)
+for actual runtime flows and [the documentation index](README.md) for the reading path.
+MOO-68 originally introduced these contracts; production repository, file and
+function adapters now exist under `src/adapters/`. The example and curated
+fixtures remain illustrative, not substitutes for those adapters.
 
 Governing decision, restated: **one shared architecture does not imply
 visual sameness.** Repository, file, and function graphs all validate
@@ -19,10 +17,10 @@ All modules live under `src/graph-ir/` and are re-exported from
 `server/*`, or any UI code — a real adapter for a new language or renderer
 only ever needs to import from `src/graph-ir/`.
 
-**Runtime-neutral by construction.** The barrel is the one import surface
-for every consumer, and that explicitly includes browser-side
+**Runtime-neutral by construction.** The barrel is the shared import surface
+for contract consumers, and that explicitly includes browser-side
 renderer/navigation code (MOO-69's repository renderer, and whatever
-MOO-70/71 add), not just the server. Nothing under `src/graph-ir/` depends
+MOO-70/71 add), not just the server. The offset utility `codeUnitOffset.js` is imported directly. Nothing under `src/graph-ir/` depends
 on `Buffer`, `node:crypto`, or any other Node-only global — coordinate
 route tokens use `TextEncoder`/`TextDecoder` plus the global `btoa`/`atob`,
 and cache-key fingerprints use a small dependency-free FNV-1a-64 hash
@@ -45,7 +43,7 @@ itself provides those globals.
    (see `src/graph-ir/sourceCoordinate.js`) names that file's `path` at
    `context.resolvedSha`, with `symbolPath: []` (module/file-level, no
    symbol within it yet).
-3. **Double-clicking a file node** emits a `drillDown` navigation event
+3. **Activating an eligible file node** (double-click or explicit Open file action) emits a `drillDown` navigation event
    (`src/graph-ir/navigation.js`'s `createDrillDownEvent`) carrying that
    node's coordinate and `targetLayer: 'file'`. Before the file adapter
    (MOO-70) runs, `githubContext.js`'s `assertContextPropagation()` checks
@@ -54,11 +52,12 @@ itself provides those globals.
    revision switch.
 4. **The file adapter** (pyan3 + tree-sitter, MOO-70) produces a
    `layer: 'file'` `GraphIR` whose nodes are functions/classes within that
-   file, each carrying a fully-scoped coordinate (`symbolPath: ['Class',
-   'method']`, a `SourceRange`, `ambiguous: false` once tree-sitter/pyan3
-   agree on the resolution — `ambiguous: true` when they don't, e.g. an
-   unresolved import target).
-5. **Double-clicking a function node** (only when
+   file, each carrying a fully-scoped coordinate for matched or symbol-only definitions
+   (`symbolPath: ['Class', 'method']` and a `SourceRange`). The current file
+   adapter emits `coordinate: null` for unresolved/ambiguous pyan nodes;
+   it does not invent an exact range. The coordinate contract separately
+   supports an ambiguity flag when a coordinate is available.
+5. **Activating a function node** (double-click or explicit Open function action) (only when
    `isDrillDownEligible(coordinate, 'function')` — i.e. not ambiguous and
    resolved to a `function`/`method` symbol kind) emits another
    `drillDown` event, context-checked the same way, into the function
@@ -71,9 +70,10 @@ itself provides those globals.
 At every step, `src/graph-ir/navigation.js`'s `NavigationHistory` records a
 `BreadcrumbEntry` (layer, coordinate, selected node, and the parent graph's
 *cache key* — see below — rather than the graph itself) so back/forward can
-restore a prior graph from cache instead of re-running analysis, and so
-routes stay deep-linkable (a coordinate token from
-`encodeCoordinateToken`/`decodeCoordinateToken` is itself URL-safe).
+restore a prior graph from cache instead of re-running analysis, and coordinates can be encoded as URL-safe tokens with
+`encodeCoordinateToken`/`decodeCoordinateToken`. This is a contract capability,
+not a claim of native browser-history restoration: the current app uses in-app
+breadcrumbs/cache, while `src/state/route.js` persists only repository/run state.
 
 ## Modules
 
@@ -83,8 +83,8 @@ routes stay deep-linkable (a coordinate token from
 | `githubContext.js` | `AnalysisContext` — normalizes repository/branch/commit/PR requests into one shape, always pinned to a resolved SHA. Distinguishes the requested **base** repository (`owner`/`repo` — provenance and allowlist identity) from the resolved **source** repository (`sourceOwner`/`sourceRepo` — where content is actually fetched from, which differs from the base for a forked PR; equal to it otherwise). `assertContextPropagation` enforces that a drill-down request cannot silently switch revisions *or* source repositories relative to its parent graph. |
 | `graphIR.js` | `GraphIR` itself: schema version, layer, context, nodes/edges/groups, analyzer provenance, confidence, warnings, rendering hints. `validateGraphIR` rejects cross-layer node/edge references and dangling edges with a specific message, but ignores unknown extra fields anywhere in the tree so future schema growth stays backward-compatible. It also enforces coordinate/context consistency: a node's `origin` (default `'local'`) says whether its coordinate must belong to the graph's own analyzed context (same resolved source repository + revision) or is an intentionally different reference (`'external'`, `'cached'`) or has no single real location (`'synthetic'`) — see below. |
 | `adapterResult.js` | `AdapterResult` (graph, warnings, diagnostics, provenance, timing, cache info, partial flag) and the fixed `ErrorCategory` set (`github_access`, `unsupported_input`, `parser_failure`, `subprocess_failure`, `malformed_analyzer_output`, `timeout`, `renderer_failure`, `internal_error`). `sanitizeDiagnostic` strips stack traces and redacts secret-shaped keys at any depth, applied unconditionally inside `buildAdapterResult`. |
-| `navigation.js` | Interaction contract: single click → `createSelectionEvent` (select/focus only); double click → `createDrillDownEvent` (drill-down intent), gated by `isDrillDownEligible` so an unresolved/ambiguous coordinate can never dispatch an incorrect drill-down. Carries the selected node's `origin` (see `graphIR.js`) into an `intent` (`localDrillDown`/`newContext`/`cachedContext`) a renderer must branch on — a synthetic node has no source location of its own and requires an explicit `anchorCoordinate`. `createOpenSourceEvent` for "view raw source." `NavigationHistory` is the back/forward breadcrumb stack. |
-| `cacheKey.js` | `buildCacheKey` — a stable sha256-based key from normalized context + analyzer name/version + GraphIR schema version + requested coordinate + depth/options, so equivalent normalized requests collapse to one key while any real difference never collides. `isCacheStale` and `buildProvenanceSummary` (visible provenance plus resolved/unresolved adapter-match counts). |
+| `navigation.js` | Interaction contract: single click → `createSelectionEvent` (select/focus only); activation (double click or explicit action) → `createDrillDownEvent` (drill-down intent), gated by `isDrillDownEligible` so an unresolved/ambiguous coordinate can never dispatch an incorrect drill-down. Carries the selected node's `origin` (see `graphIR.js`) into an `intent` (`localDrillDown`/`newContext`/`cachedContext`) a renderer must branch on — a synthetic node has no source location of its own and requires an explicit `anchorCoordinate`. `createOpenSourceEvent` for "view raw source." `NavigationHistory` is the back/forward breadcrumb stack. |
+| `cacheKey.js` | `buildCacheKey` — a stable FNV-1a-64 fingerprint from normalized context + analyzer name/version + GraphIR schema version + requested coordinate + depth/options, so equivalent normalized requests collapse to one key while changed inputs normally produce distinct fingerprints (this is not a cryptographic collision guarantee). `isCacheStale` and `buildProvenanceSummary` (visible provenance plus resolved/unresolved adapter-match counts). |
 
 ## Coordinate/context consistency (`node.origin`)
 
@@ -135,9 +135,8 @@ validation — the one place it's meant to govern behavior actually sees it.
   analyzer that produces the same `GraphIR` shape for the `file`/`function`
   layers — it does not need a new schema version unless it needs a
   genuinely new top-level field, in which case bump
-  `GRAPH_IR_SCHEMA_VERSION` and update `validateGraphIR` additively (old
-  fixtures/consumers should keep validating against the new version too,
-  since validation ignores unknown fields rather than requiring them).
+  `GRAPH_IR_SCHEMA_VERSION` and explicitly review `validateGraphIR`, fixtures and consumer compatibility;
+  ignoring extra fields does not make schema-version changes automatically safe.
 - **A new analyzer** for an existing layer only needs to produce a
   schema-valid `GraphIR` and wrap it in an `AdapterResult` — it does not
   need its own cache-key scheme (`buildCacheKey` already parameterizes on
@@ -173,3 +172,19 @@ application beyond `src/graph-ir/index.js` — it fabricates a tiny synthetic
 `AdapterResult` from it, and consumes the result (selection event,
 drill-down event, provenance summary) using only contract functions. Run it
 directly with `node examples/minimal-graphir-adapter.mjs`.
+
+## Current cache and coordinate implementation notes
+
+`buildCacheKey` canonicalizes the context identity, analyzer/version, schema,
+coordinate, depth and options before fingerprinting. Whole-response routes also
+include `cacheKeyRequestIdentity` options so an omitted ref and an explicit
+branch resolving to the same SHA do not replay the wrong request provenance.
+Layer-specific options and lookup timing are mapped in [architecture.md](architecture.md).
+The cache's serialized-byte budget is not an in-memory heap measurement.
+
+Source ranges use 1-based lines and 0-based columns. The current web-tree-sitter
+binding and CodeVisualizer offsets use UTF-16 code units despite the upstream
+`startByte`/`endByte` names; use `codeUnitOffset.js`, not UTF-8 byte length.
+Schema validation ignores unknown fields, but that alone does not guarantee
+old schema-version compatibility: any version change requires explicit fixture
+and consumer compatibility review, not merely incrementing the constant.

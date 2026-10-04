@@ -1,5 +1,7 @@
 # Codeflow #28 local repair review
 
+> Status note — October 4, 2026: Historical lane review. The later [integration acceptance](integration-acceptance-20261004.md) records the merged upstream raw-label repair and downstream adoption; use the [documentation index](README.md) for current architecture and release status.
+
 This is a partial, reviewable implementation, not full acceptance or deployed functionality.
 
 ## Scope

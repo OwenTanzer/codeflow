@@ -64,7 +64,7 @@ function sortKeysDeep(value) {
  */
 
 /**
- * Build a stable cache key. Deliberately hashed (sha256) rather than a raw
+ * Build a stable cache key. Deliberately fingerprinted (FNV-1a-64) rather than a raw
  * concatenated string: request option objects can be arbitrarily shaped
  * per layer, and hashing the canonicalized JSON sidesteps needing every
  * layer's options to individually avoid a delimiter character the way
