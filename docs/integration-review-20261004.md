@@ -45,8 +45,14 @@ The overview captures the actual parsed bridge response without mutating it; Dev
 
 CodeVisualizer remains pinned at `974d907a5490aa96fb8e84b6723d15bc5455c658`. Six source-oracle completeness cases lose text upstream: for, with, return, ternary true/false, and higher-order assignment. The full-labels gate must remain red until an approved upstream change preserves original text. No lost text is invented here, and no pin is changed.
 
-A separately approved upstream proposal would add versioned raw text with parser-composition provenance before presentation escaping, preserving legacy labels/IDs/edges/locations. It needs parser/service propagation, both higher-order assignment sites, source-oracle tests and compatibility snapshots; the prior rawLabel proposal is not applied or assumed correct.
+A separately approved upstream proposal would add versioned raw text with parser-composition provenance before presentation escaping, preserving legacy labels/IDs/edges/locations. It needs parser attachment, tests of the existing service passthrough, both higher-order assignment sites, source-oracle tests and compatibility snapshots; the prior rawLabel proposal is not applied or assumed correct.
 
 Kotlin/Java remain limited heuristic repository overviews. Their source and ownership can be inspected, but deeper navigation is unavailable. OA-210 semantic reconciliation is outside this integration. Chromium touch emulation is not physical iOS/Android coverage. Unconfigured private-repository smoke fixtures remain unrun.
 
 The private results report records the exact final tested commit, command exits, fresh live/cache measurements, failed attempts, independent review and remote checks. Runtime evidence is retained separately rather than committed into the repository.
+
+## Alternate view follow-up
+
+The independent final audit found pre-existing visual subset caps in Matrix, Tree, Flow, Cluster and Bundle. They are separate from the already uncapped repository retrieval. The repair removes these view caps while keeping Matrix sparse: empty cells share one background plane and dependency cells scale with actual edges instead of file-count squared. Full labels use measured bounds and separate fit/readable controls, with font/resize cleanup and keyboard focus into the readable view. Flow retains its explicit unsupported-cycles message; semantic reconciliation is outside this change.
+
+Run `node tests/alternate-views-browser.mjs http://127.0.0.1:4334/ <output-directory> <captured-repository-response.json>` for the five repaired views. This is explicitly a captured real-response replay, with source-coordinate filename/folder oracles. Broader 3D camera legibility and architecture aggregate semantics are not established by this test.

@@ -646,6 +646,7 @@ body{height:100dvh;min-height:100dvh}
 import * as analyzer from './src/analyzer.js';
 import { renderRepositoryGraph } from './src/render/repositoryGraph.js';
 import { renderFileGraph } from './src/render/fileGraph.js';
+import { installAlternateViewport, makeAlternateSelectable } from './src/render/alternateViewport.js';
 import { useRepositorySelection } from './src/state/selection.js';
 import { buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute } from './src/state/route.js';
 import { adaptRepositoryAnalysis } from './src/adapters/repositoryGraphAdapter.js';
@@ -670,7 +671,7 @@ import { AnalysisSession } from './src/state/analysisSession.js';
 import { fetchCapabilities } from './src/state/capabilitiesClient.js';
 import { fetchBlame, fetchFileContentFromServer } from './src/state/githubMetaClient.js';
 Object.assign(window, analyzer, {
-  renderRepositoryGraph, renderFileGraph, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute,
+  renderRepositoryGraph, renderFileGraph, installAlternateViewport, makeAlternateSelectable, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute,
   adaptRepositoryAnalysis, repositoryGraphToViewModel, normalizeContext, calcBlastFromGraph,
   tryCreateDrillDown, tryCreateDrillDownById, createSelectionEventForPath, tryCreateOpenSourceEvent, tryCreateOpenSourceEventById, githubBlobUrl,
   useRepositoryDrillDownPanel,
@@ -3295,31 +3296,36 @@ function App(){
         container.selectAll('*').remove();
         var w=matrixRef.current.clientWidth||800,h=matrixRef.current.clientHeight||600;
         var svg=container.append('svg').attr('width',w).attr('height',h);
-        var g=svg.append('g').attr('transform','translate(100,80)');
-        var zoom=d3.zoom().scaleExtent([0.5,3]).on('zoom',function(e){g.attr('transform','translate('+(100+e.transform.x)+','+(80+e.transform.y)+') scale('+e.transform.k+')');});
-        svg.call(zoom);
+        var g=svg.append('g');
         var filteredFiles=folderFilter?data.files.filter(function(f){return f.folder===folderFilter||f.folder.startsWith(folderFilter+'/');}):data.files;
-        var files=filteredFiles.slice(0,40);
-        var n=files.length;
-        var cellSize=Math.min(18,Math.max(10,(Math.min(w-120,h-100))/n));
-        var matrix=[];var fileIdx={};
-        files.forEach(function(f,i){fileIdx[f.path]=i;matrix[i]=[];for(var j=0;j<n;j++)matrix[i][j]=0;});
+        var files=filteredFiles;
+        var n=files.length,cellSize=20;
+        // One zero plane and only existing connection cells: O(files+edges),
+        // never a quadratic allocation for an uncapped repository.
+        var sparseCells=new Map(),fileIdx=new Map();
+        files.forEach(function(f,i){fileIdx.set(f.path,i);});
         data.connections.forEach(function(c){
             var src=typeof c.source==='object'?c.source.id:c.source;
             var tgt=typeof c.target==='object'?c.target.id:c.target;
-            if(fileIdx[src]!==undefined&&fileIdx[tgt]!==undefined)matrix[fileIdx[src]][fileIdx[tgt]]+=c.count||1;
+            if(fileIdx.has(src)&&fileIdx.has(tgt)){
+                var row=fileIdx.get(src),col=fileIdx.get(tgt),key=row+':'+col;
+                var entry=sparseCells.get(key)||{row:row,col:col,value:0,source:files[row],target:files[col]};
+                entry.value+=c.count||1;sparseCells.set(key,entry);
+            }
         });
-        var maxVal=1;matrix.forEach(function(row){row.forEach(function(v){if(v>maxVal)maxVal=v;});});
+        var cellData=Array.from(sparseCells.values()),maxVal=1;
+        cellData.forEach(function(cell){maxVal=Math.max(maxVal,cell.value);});
+        g.append('rect').attr('class','matrix-zero-plane').attr('width',n*cellSize).attr('height',n*cellSize).attr('fill','var(--bg2)');
         var colLabels=g.selectAll('text.col-label').data(files).join('text').attr('class','col-label')
-            .attr('x',function(d,i){return i*cellSize+cellSize/2;}).attr('y',-8).attr('text-anchor','start').attr('transform',function(d,i){return'rotate(-45,'+(i*cellSize+cellSize/2)+','+-8+')';})
+            .attr('x',function(d,i){return i*cellSize+cellSize/2;}).attr('y',-8).attr('text-anchor','start').attr('transform',function(d,i){return'rotate(-90,'+(i*cellSize+cellSize/2)+','+-8+')';})
             .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){return d.name;}).style('cursor','pointer')
             .on('click',function(e,d){if(selectFileRef.current)selectFileRef.current(d.path);});
         var rowLabels=g.selectAll('text.row-label').data(files).join('text').attr('class','row-label')
             .attr('x',-8).attr('y',function(d,i){return i*cellSize+cellSize/2+3;}).attr('text-anchor','end')
             .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){return d.name;}).style('cursor','pointer')
             .on('click',function(e,d){if(selectFileRef.current)selectFileRef.current(d.path);});
-        var cellData=[];
-        files.forEach(function(f,i){files.forEach(function(g,j){cellData.push({row:i,col:j,value:matrix[i][j],source:f,target:g});});});
+        makeAlternateSelectable(colLabels,{path:function(d){return d.path;},select:function(path){selectFileRef.current?.(path);}});
+        makeAlternateSelectable(rowLabels,{path:function(d){return d.path;},select:function(path){selectFileRef.current?.(path);}});
         var tooltip=container.append('div').attr('class','treemap-tooltip').style('display','none').style('position','absolute');
         var cells=g.selectAll('rect.matrix-cell-rect').data(cellData).join('rect').attr('class','matrix-cell-rect')
             .attr('x',function(d){return d.col*cellSize;}).attr('y',function(d){return d.row*cellSize;})
@@ -3345,6 +3351,8 @@ function App(){
         }).on('click',function(e,d){e.stopPropagation();if(selectFileRef.current)selectFileRef.current(d.source.path);});
         var legend=container.append('div').attr('class','heatmap-legend').style('position','absolute').style('bottom','60px').style('right','20px');
         legend.html('<div style="font-size:9px;color:var(--t2)">Connection Strength</div><div class="heatmap-gradient"></div><div style="display:flex;justify-content:space-between;font-size:8px;color:var(--t3)"><span>0</span><span>'+maxVal+'</span></div>');
+        var viewport=installAlternateViewport({container:container,svg:svg,content:g});
+        return function(){viewport.dispose();};
     },[data,graphConfig.vizType,folderFilter]);
 
     // Cluster Dendrogram - Hierarchical tree visualization
@@ -3354,13 +3362,11 @@ function App(){
         container.selectAll('*').remove();
         var w=dendroRef.current.clientWidth||800,h=dendroRef.current.clientHeight||600;
         var svg=container.append('svg').attr('width',w).attr('height',h);
-        var g=svg.append('g').attr('transform','translate(80,20)');
-        var zoom=d3.zoom().scaleExtent([0.3,3]).on('zoom',function(e){g.attr('transform','translate('+(80+e.transform.x)+','+(20+e.transform.y)+') scale('+e.transform.k+')');});
-        svg.call(zoom);
+        var g=svg.append('g');
         var filteredFiles=folderFilter?data.files.filter(function(f){return f.folder===folderFilter||f.folder.startsWith(folderFilter+'/');}):data.files;
         var hier={name:'root',children:[]};
         var folderMap={};
-        filteredFiles.slice(0,80).forEach(function(f){
+        filteredFiles.forEach(function(f){
             var folder=f.folder||'root';
             if(!folderMap[folder])folderMap[folder]={name:folder||'root',fullPath:folder,children:[]};
             folderMap[folder].children.push({name:f.name,path:f.path,fns:f.functions.length,lines:f.lines,folder:folder,layer:f.layer});
@@ -3400,6 +3406,10 @@ function App(){
             if(d.data.path&&selectFileRef.current)selectFileRef.current(d.data.path);
             else if(d.data.fullPath)filterByFolder(d.data.fullPath);
         });
+        makeAlternateSelectable(node.filter(function(d){return!!d.data.path;}),{path:function(d){return d.data.path;},select:function(path){selectFileRef.current?.(path);}});
+        makeAlternateSelectable(node.filter(function(d){return!d.data.path&&!!d.data.fullPath;}),{path:function(d){return d.data.fullPath;},select:filterByFolder,prefix:'Filter folder: '});
+        var viewport=installAlternateViewport({container:container,svg:svg,content:g});
+        return function(){viewport.dispose();};
     },[data,graphConfig.vizType,colorMap,folderFilter]);
 
     // Sankey Diagram - Flow visualization showing dependencies between folders
@@ -3409,26 +3419,25 @@ function App(){
         container.selectAll('*').remove();
         var w=sankeyRef.current.clientWidth||800,h=sankeyRef.current.clientHeight||600;
         var svg=container.append('svg').attr('width',w).attr('height',h);
-        var g=svg.append('g').attr('transform','translate(20,20)');
-        var zoom=d3.zoom().scaleExtent([0.5,2]).on('zoom',function(e){g.attr('transform','translate('+(20+e.transform.x)+','+(20+e.transform.y)+') scale('+e.transform.k+')');});
-        svg.call(zoom);
+        var g=svg.append('g');
         var filteredFiles=folderFilter?data.files.filter(function(f){return f.folder===folderFilter||f.folder.startsWith(folderFilter+'/');}):data.files;
-        var folders=[...new Set(filteredFiles.map(function(f){return f.folder||'root';}))].slice(0,15);
+        var folders=[...new Set(filteredFiles.map(function(f){return f.folder||'root';}))];
         var folderIdx={};folders.forEach(function(f,i){folderIdx[f]=i;});
         var filteredPaths=new Set(filteredFiles.map(function(f){return f.path;}));
         var flowMap={};
+        var sourceFiles=new Map(data.files.map(function(f){return[f.path,f];}));
         data.connections.forEach(function(c){
             var src=typeof c.source==='object'?c.source.id:c.source;
             var tgt=typeof c.target==='object'?c.target.id:c.target;
             if(!filteredPaths.has(src)&&!filteredPaths.has(tgt))return;
-            var srcFile=data.files.find(function(f){return f.path===src;});
-            var tgtFile=data.files.find(function(f){return f.path===tgt;});
+            var srcFile=sourceFiles.get(src);
+            var tgtFile=sourceFiles.get(tgt);
             if(srcFile&&tgtFile&&srcFile.folder!==tgtFile.folder){
                 var key=srcFile.folder+'|'+tgtFile.folder;
                 flowMap[key]=(flowMap[key]||0)+(c.count||1);
             }
         });
-        var nodes=folders.map(function(f,i){return{id:i,name:f.split('/').pop()||'root',fullPath:f,fileCount:filteredFiles.filter(function(x){return x.folder===f;}).length};});
+        var nodes=folders.map(function(f,i){return{id:i,name:f,fullPath:f,fileCount:filteredFiles.filter(function(x){return x.folder===f;}).length};});
         // Merge bidirectional flows to avoid circular link errors
         var linkMap={};
         Object.entries(flowMap).forEach(function(e){
@@ -3447,17 +3456,24 @@ function App(){
             else if(net<0)links.push({source:l.b,target:l.a,value:-net});
             else if(l.ab>0)links.push({source:l.a,target:l.b,value:l.ab});
         });
-        if(links.length===0){
-            g.append('text').attr('x',w/2-20).attr('y',h/2).attr('fill','var(--t3)').attr('font-size','12px').text('No cross-folder dependencies to visualize');
-            return;
+        function flowFallback(message){
+            container.append('div').attr('role','status').attr('class','sankey-unavailable')
+                .style('position','absolute').style('left','12px').style('right','12px').style('top','92px')
+                .style('font-size','12px').style('overflow-wrap','anywhere').text(message);
+            var rows=g.selectAll('text.sankey-folder-fallback').data(nodes).join('text').attr('class','sankey-folder-fallback')
+                .attr('x',0).attr('y',function(d,i){return i*22;}).attr('font-size','10px').attr('fill','var(--t1)')
+                .text(function(d){return d.fullPath+' ('+d.fileCount+')';}).on('click',function(e,d){e.stopPropagation();filterByFolder(d.fullPath);});
+            makeAlternateSelectable(rows,{path:function(d){return d.fullPath;},select:filterByFolder,prefix:'Filter folder: '});
+            var viewport=installAlternateViewport({container:container,svg:svg,content:g,topInset:180});
+            return function(){viewport.dispose();};
         }
-        var sankey=d3.sankey().nodeId(function(d){return d.id;}).nodeWidth(20).nodePadding(15).extent([[0,0],[w-60,h-60]]);
+        if(links.length===0)return flowFallback('No cross-folder dependencies to visualize. All folders are listed below.');
+        var sankey=d3.sankey().nodeId(function(d){return d.id;}).nodeWidth(20).nodePadding(20).extent([[0,0],[Math.max(200,w-60),Math.max(h-60,nodes.length*32)]]);
         var graph;
         try{
             graph=sankey({nodes:nodes.map(function(d){return Object.assign({},d);}),links:links.map(function(d){return Object.assign({},d);})});
         }catch(e){
-            g.append('text').attr('x',w/2-20).attr('y',h/2).attr('fill','var(--t3)').attr('font-size','12px').attr('text-anchor','middle').text('Sankey diagram unavailable: dependency graph has circular references. Try the Force Graph view.');
-            return;
+            return flowFallback('Sankey diagram unavailable: dependency graph has circular references. Try the Force Graph view. All folders are listed below.');
         }
         var tooltip=container.append('div').attr('class','treemap-tooltip').style('display','none').style('position','absolute');
         g.selectAll('path.sankey-link').data(graph.links).join('path').attr('class','sankey-link')
@@ -3486,6 +3502,16 @@ function App(){
             g.selectAll('path.sankey-link').attr('stroke-opacity',function(l){return l.source.id===d.id||l.target.id===d.id?0.8:0.1;});
         }).on('mouseleave',function(){tooltip.style('display','none');g.selectAll('path.sankey-link').attr('stroke-opacity',0.4);})
         .on('click',function(e,d){e.stopPropagation();filterByFolder(d.fullPath);});
+        makeAlternateSelectable(node,{path:function(d){return d.fullPath;},select:filterByFolder,prefix:'Filter folder: '});
+        function measureFlowLabels(){
+            var widest=1;node.selectAll('text').each(function(){widest=Math.max(widest,this.getBBox().width);});
+            graph.nodes.forEach(function(d){d.x0=d.depth*(widest+64);d.x1=d.x0+20;});
+            node.select('rect').attr('x',function(d){return d.x0;}).attr('width',20);
+            node.select('text').attr('x',function(d){return d.x1+8;}).attr('text-anchor','start');
+            g.selectAll('path.sankey-link').attr('d',d3.sankeyLinkHorizontal());
+        }
+        var viewport=installAlternateViewport({container:container,svg:svg,content:g,onMeasure:measureFlowLabels});
+        return function(){viewport.dispose();};
     },[data,graphConfig.vizType,colorMap,folderFilter]);
 
     // Disjoint Force-Directed - Separate clusters per folder
@@ -3496,14 +3522,12 @@ function App(){
         var w=disjointRef.current.clientWidth||800,h=disjointRef.current.clientHeight||600;
         var svg=container.append('svg').attr('width',w).attr('height',h);
         var g=svg.append('g');
-        var zoom=d3.zoom().scaleExtent([0.2,4]).on('zoom',function(e){g.attr('transform',e.transform);});
-        svg.call(zoom);
         var filteredFiles=folderFilter?data.files.filter(function(f){return f.folder===folderFilter||f.folder.startsWith(folderFilter+'/');}):data.files;
-        var files=filteredFiles.slice(0,100);
+        var files=filteredFiles;
         var fileIdx={};files.forEach(function(f,i){fileIdx[f.path]=i;});
         var folders=[...new Set(files.map(function(f){return f.folder||'root';}))];
         var cols=Math.ceil(Math.sqrt(folders.length));
-        var cellW=w/cols,cellH=h/Math.ceil(folders.length/cols);
+        var cellW=Math.max(700,w/Math.max(1,cols)),cellH=Math.max(700,h/Math.max(1,Math.ceil(folders.length/cols)));
         var centers={};
         folders.forEach(function(f,i){centers[f]={x:(i%cols+0.5)*cellW,y:(Math.floor(i/cols)+0.5)*cellH};});
         var nodes=files.map(function(f){return{id:f.path,name:f.name,folder:f.folder||'root',fns:f.functions.length,lines:f.lines,layer:f.layer,cx:centers[f.folder||'root'].x,cy:centers[f.folder||'root'].y};});
@@ -3519,14 +3543,12 @@ function App(){
             .force('x',d3.forceX(function(d){return d.cx;}).strength(0.15))
             .force('y',d3.forceY(function(d){return d.cy;}).strength(0.15))
             .force('collide',d3.forceCollide(15));
-        g.selectAll('rect.cluster-bg').data(folders).join('rect').attr('class','cluster-bg')
-            .attr('x',function(d,i){return(i%cols)*cellW+10;}).attr('y',function(d,i){return Math.floor(i/cols)*cellH+10;})
-            .attr('width',cellW-20).attr('height',cellH-20).attr('rx',12)
-            .attr('fill',function(d){return colorMap[d]||COLORS[folders.indexOf(d)%COLORS.length];}).attr('opacity',0.08)
-            .attr('stroke',function(d){return colorMap[d]||COLORS[folders.indexOf(d)%COLORS.length];}).attr('stroke-width',1).attr('stroke-opacity',0.3);
-        g.selectAll('text.cluster-label').data(folders).join('text').attr('class','cluster-label')
-            .attr('x',function(d,i){return(i%cols)*cellW+20;}).attr('y',function(d,i){return Math.floor(i/cols)*cellH+28;})
-            .attr('fill','var(--t2)').attr('font-size','11px').attr('font-weight','600').text(function(d){return d.split('/').pop()||'root';});
+        // A full folder key sits above the measured graph, outside node labels.
+        var folderLabels=g.selectAll('text.cluster-label').data(folders).join('text').attr('class','cluster-label')
+            .attr('x',0).attr('y',function(d,i){return -30-i*20;})
+            .attr('fill',function(d){return colorMap[d]||COLORS[0];}).attr('font-size','11px').attr('font-weight','600').text(function(d){return d;})
+            .on('click',function(e,d){e.stopPropagation();filterByFolder(d);});
+        makeAlternateSelectable(folderLabels,{path:function(d){return d;},select:filterByFolder,prefix:'Filter folder: '});
         var link=g.selectAll('line.disjoint-link').data(links).join('line').attr('class','disjoint-link')
             .attr('stroke','var(--border)').attr('stroke-width',1).attr('stroke-opacity',0.3);
         var tooltip=container.append('div').attr('class','treemap-tooltip').style('display','none').style('position','absolute');
@@ -3535,6 +3557,14 @@ function App(){
                 .on('drag',function(e,d){d.fx=e.x;d.fy=e.y;}).on('end',function(e,d){if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
         node.append('circle').attr('class','disjoint-circle').attr('r',function(d){return Math.max(6,Math.min(14,4+d.fns));})
             .attr('fill',function(d){return colorMap[d.folder]||COLORS[0];}).attr('stroke','var(--bg0)').attr('stroke-width',1.5);
+        node.append('text').attr('class','disjoint-label').attr('x',20).attr('dy','0.35em')
+            .attr('font-size','10px').attr('fill','var(--t1)').text(function(d){return d.name;});
+        makeAlternateSelectable(node,{path:function(d){return d.id;},select:function(path){if(selectFileRef.current)selectFileRef.current(path);}});
+        function measureClusterLabels(){
+            node.each(function(d){var b=this.getBBox();d.labelRadius=Math.hypot(Math.max(Math.abs(b.x),Math.abs(b.x+b.width)),Math.max(Math.abs(b.y),Math.abs(b.y+b.height)))+8;});
+            sim.force('collide',d3.forceCollide(function(d){return d.labelRadius;}).strength(1).iterations(3));
+            sim.alpha(0.6).restart();
+        }
         node.on('mouseenter',function(e,d){
             tooltip.html(renderTooltipHtml(d.name,[
                 {label:'Lines',value:d.lines||0},
@@ -3550,27 +3580,38 @@ function App(){
             link.attr('stroke-opacity',0.3).attr('stroke','var(--border)');
             d3.select(this).select('circle').transition().duration(150).attr('r',Math.max(6,Math.min(14,4+d.fns))).attr('stroke','var(--bg0)').attr('stroke-width',1.5);
         }).on('click',function(e,d){e.stopPropagation();if(selectFileRef.current)selectFileRef.current(d.id);});
-        sim.on('tick',function(){
+        function drawCluster(){
             link.attr('x1',function(d){return d.source.x;}).attr('y1',function(d){return d.source.y;}).attr('x2',function(d){return d.target.x;}).attr('y2',function(d){return d.target.y;});
             node.attr('transform',function(d){return'translate('+d.x+','+d.y+')';});
-        });
+            var minY=d3.min(nodes,function(d){return d.y-(d.labelRadius||20);})||0;
+            folderLabels.attr('y',function(d,i){return minY-30-i*20;});
+        }
+        sim.on('tick',drawCluster);
         svg.on('click',function(){setSelected(null);setBlastRadius(null);});
-        return function(){sim.stop();};
+        var viewport=installAlternateViewport({container:container,svg:svg,content:g,onMeasure:measureClusterLabels});
+        sim.on('end.alt-view',function(){
+            // Finish with the same bounded collision-only relaxation as the
+            // repository renderer; attraction must not leave labels compressed.
+            var settle=d3.forceSimulation(nodes).stop().velocityDecay(0.2)
+                .force('collision',d3.forceCollide().radius(function(d){return d.labelRadius;}).iterations(8));
+            settle.tick(80);settle.stop();drawCluster();viewport.fit();
+        });
+        return function(){sim.stop();viewport.dispose();};
     },[data,graphConfig.vizType,colorMap,folderFilter]);
 
     // Circular Bundle visualization - Interactive with zoom, selection, blast radius
+    var bundleSelectionRef=useRef(null),bundleApplySelectionRef=useRef(null);
+    bundleSelectionRef.current={selected:selected,blastRadius:blastRadius};
     useEffect(function(){
         if(!data||!bundleRef.current||graphConfig.vizType!=='bundle')return;
         var container=d3.select(bundleRef.current);
         container.selectAll('*').remove();
         var w=bundleRef.current.clientWidth||800,h=bundleRef.current.clientHeight||600;
         var svg=container.append('svg').attr('width',w).attr('height',h);
-        var mainG=svg.append('g').attr('transform','translate('+w/2+','+h/2+')');
-        var zoom=d3.zoom().scaleExtent([0.4,3]).on('zoom',function(e){mainG.attr('transform','translate('+(w/2+e.transform.x)+','+(h/2+e.transform.y)+') scale('+e.transform.k+')');});
-        svg.call(zoom);
-        var radius=Math.min(w,h)/2-100;
+        var mainG=svg.append('g');
         var filteredFiles=folderFilter?data.files.filter(function(f){return f.folder===folderFilter||f.folder.startsWith(folderFilter+'/');}):data.files;
-        var files=filteredFiles.slice(0,70);
+        var files=filteredFiles;
+        var radius=Math.max(80,Math.min(w,h)/2-100,files.length*16/(2*Math.PI));
         var fileIdx={};files.forEach(function(f,i){fileIdx[f.path]=i;});
         var folderGroups={};files.forEach(function(f){var folder=f.folder||'root';if(!folderGroups[folder])folderGroups[folder]=[];folderGroups[folder].push(f);});
         var nodes=[],angle=0;
@@ -3625,6 +3666,7 @@ function App(){
             .attr('transform',function(d){return d.angle>Math.PI?'translate(-6,0)':'translate(6,0)';});
         node.append('text').attr('dy','0.31em').attr('x',function(d){return d.angle>Math.PI?-14:14;}).attr('text-anchor',function(d){return d.angle>Math.PI?'end':'start';})
             .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){return d.name;});
+        makeAlternateSelectable(node,{path:function(d){return d.id;},select:function(path){if(selectFileRef.current)selectFileRef.current(path);}});
         function applyBundleDefaultState(){
             link.transition().duration(200)
                 .attr('stroke-opacity',0.35)
@@ -3675,8 +3717,9 @@ function App(){
         }).on('mousemove',function(e){var rect=bundleRef.current.getBoundingClientRect();tooltip.style('left',(e.clientX-rect.left+15)+'px').style('top',(e.clientY-rect.top+15)+'px');})
         .on('mouseleave',function(){
             tooltip.style('display','none');
-            if(selected&&nodeMap[selected.path]){
-                applyBundleSelectionState(selected.path,blastRadius);
+            var state=bundleSelectionRef.current;
+            if(state.selected&&nodeMap[state.selected.path]){
+                applyBundleSelectionState(state.selected.path,state.blastRadius);
             }else{
                 applyBundleDefaultState();
             }
@@ -3686,7 +3729,8 @@ function App(){
                 selectFileRef.current(d.id);
             }
         });
-        var arcGen=d3.arc().innerRadius(radius+20).outerRadius(radius+30);
+        // Folder bands sit inside the circle, away from complete radial names.
+        var arcGen=d3.arc().innerRadius(radius-28).outerRadius(radius-20);
         var folderAngleStart=0;
         sortedFolders.forEach(function(entry,i){
             var folder=entry[0],count=entry[1].length;
@@ -3694,25 +3738,32 @@ function App(){
             mainG.append('path').attr('d',arcGen({startAngle:folderAngleStart,endAngle:folderAngleStart+span}))
                 .attr('fill',colorMap[folder]||COLORS[i%COLORS.length]).attr('opacity',0.5).style('cursor','pointer')
                 .on('click',function(){filterByFolder(folder);});
-            if(span>0.15){
-                var midAngle=folderAngleStart+span/2-Math.PI/2;
-                mainG.append('text').attr('x',Math.cos(midAngle)*(radius+40)).attr('y',Math.sin(midAngle)*(radius+40))
-                    .attr('text-anchor','middle').attr('fill','var(--t2)').attr('font-size','8px')
-                    .attr('transform','rotate('+(midAngle*180/Math.PI+90)+','+Math.cos(midAngle)*(radius+40)+','+Math.sin(midAngle)*(radius+40)+')')
-                    .text(folder.split('/').pop()||'root');
-            }
             folderAngleStart+=span;
         });
+        // A measured key represents every folder, including single-file folders.
+        var folderLabels=mainG.selectAll('text.bundle-folder-label').data(sortedFolders).join('text').attr('class','bundle-folder-label')
+            .attr('y',function(d,i){return i*20;}).attr('fill',function(d,i){return colorMap[d[0]]||COLORS[i%COLORS.length];})
+            .attr('font-size','10px').text(function(d){return d[0];})
+            .on('click',function(e,d){e.stopPropagation();filterByFolder(d[0]);});
+        makeAlternateSelectable(folderLabels,{path:function(d){return d[0];},select:filterByFolder,prefix:'Filter folder: '});
+        function measureBundleLabels(){
+            var widest=0;node.selectAll('text').each(function(){widest=Math.max(widest,this.getBBox().width);});
+            folderLabels.attr('x',radius+widest+70);
+        }
         svg.on('click',function(){
             setSelected(null);setBlastRadius(null);
             applyBundleDefaultState();
         });
-        if(selected&&nodeMap[selected.path]){
-            applyBundleSelectionState(selected.path,blastRadius);
-        }else{
-            applyBundleDefaultState();
-        }
-    },[data,graphConfig.vizType,colorMap,folderFilter,selected,blastRadius]);
+        bundleApplySelectionRef.current=function(){
+            var state=bundleSelectionRef.current;
+            if(state.selected&&nodeMap[state.selected.path])applyBundleSelectionState(state.selected.path,state.blastRadius);
+            else applyBundleDefaultState();
+        };
+        bundleApplySelectionRef.current();
+        var viewport=installAlternateViewport({container:container,svg:svg,content:mainG,onMeasure:measureBundleLabels});
+        return function(){bundleApplySelectionRef.current=null;viewport.dispose();};
+    },[data,graphConfig.vizType,colorMap,folderFilter]);
+    useEffect(function(){if(bundleApplySelectionRef.current)bundleApplySelectionRef.current();},[selected,blastRadius]);
 
     function zoomIn(){
         if(graphConfig.vizType==='graph3d'&&graph3dInstanceRef.current){

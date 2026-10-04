@@ -1,0 +1,232 @@
+// Five alternate views, using an unchanged captured real repository response.
+// Run against the production local app (not Vite): node tests/alternate-views-browser.mjs [base] [out] [fixture]
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+const [base='http://127.0.0.1:4334/',out='test-results/alternate-views',fixturePath='test-results/final/simbrain-cold.json']=process.argv.slice(2);
+assert.ok(['localhost','127.0.0.1'].includes(new URL(base).hostname),'Local app only');
+const commit=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+const workingTree=execFileSync('git',['status','--short'],{encoding:'utf8'}).trim();
+const bytes=await readFile(fixturePath),fixture=JSON.parse(bytes),context=fixture.graph.context;
+const files=fixture.graph.nodes.filter(n=>n.kind==='file'&&n.coordinate?.path).map(n=>({
+  id:n.id,path:n.coordinate.path,name:n.coordinate.path.split('/').at(-1),
+  folder:n.coordinate.path.split('/').slice(0,-1).join('/')||'root',
+}));
+const oracle=Object.fromEntries(files.map(f=>[f.path,f.name]));
+const folders={};for(const f of files)folders[f.folder]=(folders[f.folder]||0)+1;
+const idToPath=new Map(files.map(f=>[f.id,f.path]));
+const connectionPairs=new Set(fixture.graph.edges.filter(e=>idToPath.has(e.source)&&idToPath.has(e.target))
+  .map(e=>idToPath.get(e.source)+'\0'+idToPath.get(e.target)));
+const paths=files.map(f=>f.path).sort(),folderPaths=Object.keys(folders).sort();
+assert.ok(paths.length>0);
+const specs=[
+  {id:'matrix',labels:'text.row-label,text.col-label'},
+  {id:'dendro',labels:'g.dendro-node text'},
+  {id:'sankey',labels:'g.sankey-node text,text.sankey-folder-fallback'},
+  {id:'disjoint',labels:'text.disjoint-label,text.cluster-label'},
+  {id:'bundle',labels:'g.bundle-node text,text.bundle-folder-label'},
+];
+await mkdir(out,{recursive:true});
+const result={commit,workingTree,base,fixturePath,fixtureSha256:createHash('sha256').update(bytes).digest('hex'),
+  mode:'full captured repository response replay; metadata uses actual local server; font-event injection explicitly controlled',
+  oracle:'coordinate.path supplies full filenames/folders independently of rendered text',
+  context,sourceFileCount:files.length,sourceFolderCount:folderPaths.length,uniqueSourceConnections:connectionPairs.size,
+  limitations:['Chromium emulation only','3D and architecture remain separate baseline gaps','Flow cycle fallback is not a successful Sankey diagram',
+    'no claim of exhaustive edge routing or geometry outside measured Cluster node bounds'],views:[]};
+const browser=await chromium.launch();
+try{
+for(const spec of specs){
+  const entry={view:spec.id,checks:[],errors:[],requests:[]};result.views.push(entry);
+  const page=await browser.newPage({viewport:{width:1680,height:1000}});
+  page.setDefaultTimeout(20000);
+  page.on('pageerror',e=>entry.errors.push({kind:'pageerror',message:e.message}));
+  page.on('console',m=>{if(m.type()==='error')entry.errors.push({kind:'console',message:m.text()});});
+  page.on('request',r=>{
+    if(!new URL(r.url()).pathname.startsWith('/api/'))return;
+    entry.requests.push({endpoint:new URL(r.url()).pathname,body:r.postData()?r.postDataJSON():null,authorizationPresent:!!r.headers().authorization});
+  });
+  await page.addInitScript(()=>{
+    const track=window.__altLifetime={capture:false,fonts:new Set(),observers:new Set()};
+    const add=document.fonts.addEventListener.bind(document.fonts),remove=document.fonts.removeEventListener.bind(document.fonts);
+    document.fonts.addEventListener=function(type,listener,...rest){if(type==='loadingdone'&&track.capture)track.fonts.add(listener);return add(type,listener,...rest);};
+    document.fonts.removeEventListener=function(type,listener,...rest){if(type==='loadingdone')track.fonts.delete(listener);return remove(type,listener,...rest);};
+    const Native=window.ResizeObserver;
+    window.ResizeObserver=class extends Native{
+      observe(target,...rest){if(target.matches?.('.matrix-container,.dendro-container,.sankey-container,.disjoint-container,.bundle-container'))track.observers.add(this);return super.observe(target,...rest);}
+      disconnect(){track.observers.delete(this);return super.disconnect();}
+    };
+  });
+  await page.route('**/api/graph/repository',async route=>{
+    const body=route.request().postDataJSON();
+    try{
+      assert.equal(body.owner,context.owner);assert.equal(body.repo,context.repo);assert.equal(body.ref,context.resolvedSha);
+      await route.fulfill({status:200,contentType:'application/json',body:bytes});
+    }catch(e){entry.errors.push({kind:'replay',message:e.message});await route.abort();}
+  });
+  const host=()=>page.locator('.'+spec.id+'-container');
+  async function settle(){
+    if(spec.id!=='disjoint')return;
+    await page.evaluate(()=>{window.__clusterStable=null;});
+    await page.waitForFunction(()=>{
+      const nodes=[...document.querySelectorAll('.disjoint-node')];
+      if(!nodes.length)return false;
+      const signature=nodes.map(n=>n.getAttribute('transform')).join('|'),now=performance.now();
+      const prior=window.__clusterStable;
+      if(!prior||signature!==prior.signature){window.__clusterStable={signature,since:now};return false;}
+      return now-prior.since>=1000;
+    },null,{timeout:60000,polling:150});
+  }
+  async function snapshot(){
+    return host().evaluate((root,{spec,oracle,folders})=>{
+      const labels=[...root.querySelectorAll(spec.labels)].map(t=>{
+        const d=t.__data__;
+        // D3 hierarchy nodes have an inherited path() METHOD. It is not a source path.
+        const candidate=d?.data?.path??(typeof d?.path==='string'?d.path:null)??(typeof d?.id==='string'?d.id:null);
+        const path=typeof candidate==='string'&&Object.hasOwn(oracle,candidate)?candidate:null;
+        const folderCandidate=d?.data?.fullPath??d?.fullPath??(typeof d==='string'?d:Array.isArray(d)?d[0]:null);
+        const folder=typeof folderCandidate==='string'&&Object.hasOwn(folders,folderCandidate)?folderCandidate:null;
+        const expected=path?oracle[path]:folder?folder+(spec.id==='sankey'?' ('+folders[folder]+')':''):null;
+        return {path,folder,actual:t.textContent,expected,opacity:Number(getComputedStyle(t).opacity)};
+      });
+      return {labels,cellCount:root.querySelectorAll('.matrix-cell-rect').length,
+        rows:root.querySelectorAll('.row-label').length,columns:root.querySelectorAll('.col-label').length,
+        fallback:root.querySelector('[role="status"]')?.textContent||null};
+    },{spec,oracle,folders});
+  }
+  async function fitCheck(label){
+    await host().getByRole('button',{name:'Fit complete view',exact:true}).click();
+    const bounds=await host().evaluate(root=>{
+      const svg=root.querySelector('svg'),group=svg.querySelector('g'),s=svg.getBoundingClientRect(),b=group.getBoundingClientRect();
+      return {scale:svg.__zoom.k,left:b.left-s.left,top:b.top-s.top,right:s.right-b.right,bottom:s.bottom-b.bottom};
+    });
+    assert.ok(Object.values(bounds).every(Number.isFinite),label+': finite bounds');
+    assert.ok(bounds.left>=-2&&bounds.top>=-2&&bounds.right>=-2&&bounds.bottom>=-2,label+': complete content inside SVG '+JSON.stringify(bounds));
+    entry.checks.push({name:label,bounds});
+  }
+  try{
+    const documentResponse=await page.goto(base,{waitUntil:'domcontentloaded'});
+    entry.documentSha256=createHash('sha256').update(await documentResponse.body()).digest('hex');
+    await page.waitForFunction(()=>typeof window.fetchRepositoryGraph==='function');
+    await page.evaluate(ref=>{const original=window.fetchRepositoryGraph;window.fetchRepositoryGraph=input=>original({...input,ref});},context.resolvedSha);
+    const input=page.getByRole('textbox',{name:'Repository URL',exact:true}).first();
+    await input.fill(context.owner+'/'+context.repo);await input.press('Enter');
+    await page.getByTestId('revision-badge').waitFor({state:'attached',timeout:120000});
+    await page.evaluate(()=>{window.__altLifetime.capture=true;});
+    await page.getByRole('combobox',{name:'Visualization type',exact:true}).selectOption(spec.id);
+    await host().locator('svg').waitFor();await host().getByRole('button',{name:'Readable labels',exact:true}).waitFor();
+    await page.evaluate(()=>document.fonts.ready);await settle();
+    const initial=await snapshot();
+    assert.equal(initial.labels.filter(l=>l.expected===null).length,0,'every label has an independent source oracle');
+    assert.deepEqual(initial.labels.filter(l=>l.actual!==l.expected),[],'complete labels match source oracle');
+    if(spec.id==='sankey'){
+      assert.deepEqual([...new Set(initial.labels.map(l=>l.folder))].sort(),folderPaths,'all folders represented');
+      entry.diagramStatus=initial.fallback?'UNSUPPORTED_WITH_COMPLETE_FOLDER_LIST':'RENDERED';
+      entry.fallback=initial.fallback;
+      if(initial.fallback)assert.match(initial.fallback,/No cross-folder dependencies|circular references/);
+    }else{
+      assert.deepEqual([...new Set(initial.labels.filter(l=>l.path).map(l=>l.path))].sort(),paths,'all source file paths represented');
+      if(spec.id==='matrix'){
+        assert.equal(initial.rows,files.length);assert.equal(initial.columns,files.length);
+        assert.ok(initial.cellCount<=connectionPairs.size,'sparse matrix cells bounded by unique source connections');
+        entry.sparseMatrix={cells:initial.cellCount,uniqueConnections:connectionPairs.size,quadraticCells:files.length**2};
+      }else assert.deepEqual([...new Set(initial.labels.filter(l=>l.folder).map(l=>l.folder))].sort(),folderPaths,'all full folder labels represented');
+    }
+    entry.checks.push({name:'source completeness',fileLabels:initial.labels.filter(l=>l.path).length,folderLabels:initial.labels.filter(l=>l.folder).length});
+    await fitCheck('initial complete fit');
+    // Real wheel input exercises overview hiding, not an injected zoom callback.
+    await host().getByRole('button',{name:'Readable labels',exact:true}).click();
+    const svg=host().locator('svg'),box=await svg.boundingBox();
+    await page.mouse.move(box.x+box.width*.55,box.y+box.height*.6);await page.mouse.wheel(0,1600);
+    await page.waitForFunction(sel=>document.querySelector(sel+' svg').__zoom.k<.45,'.'+spec.id+'-container');
+    assert.ok((await snapshot()).labels.every(l=>l.opacity===0),'overview hides whole labels');
+    await host().getByRole('button',{name:'Readable labels',exact:true}).click();
+    assert.ok((await snapshot()).labels.every(l=>l.opacity===1),'readable view restores every complete label');
+    entry.checks.push({name:'wheel overview and readable restoration',status:'PASS'});
+    await page.setViewportSize({width:1100,height:850});
+    await page.evaluate(()=>document.fonts.dispatchEvent(new Event('loadingdone')));
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    await settle();
+    assert.deepEqual((await snapshot()).labels.map(l=>[l.path,l.folder,l.actual]),initial.labels.map(l=>[l.path,l.folder,l.actual]),'resize/font remeasure preserves all labels');
+    await fitCheck('resize and controlled font remeasure fit');
+    if(spec.id==='disjoint'){
+      entry.cluster=await host().evaluate(root=>{
+        const nodes=[...root.querySelectorAll('.disjoint-node')].map(el=>{
+          const b=el.getBBox(),d=el.__data__;return{id:d.id,x:d.x+b.x,y:d.y+b.y,w:b.width,h:b.height};
+        }).sort((a,b)=>a.x-b.x);
+        const overlaps=[];
+        for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length&&nodes[j].x<nodes[i].x+nodes[i].w-.1;j++){
+          const a=nodes[i],b=nodes[j];
+          if(a.y<b.y+b.h-.1&&a.y+a.h>b.y+.1)overlaps.push([a.id,b.id]);
+        }
+        return {nodes:nodes.length,overlapCount:overlaps.length,examples:overlaps.slice(0,20)};
+      });
+      assert.equal(entry.cluster.overlapCount,0,'settled measured Cluster node bounds do not overlap');
+    }
+    // Focus an overview-hidden label through actual keyboard controls.
+    const targetPath=spec.id==='sankey'?folderPaths.find(f=>f!=='root'):files.slice().sort((a,b)=>b.name.length-a.name.length)[0].path;
+    const target=host().getByRole('button',{name:(spec.id==='sankey'?'Filter folder: ':'Select file: ')+targetPath,exact:true}).first();
+    await target.focus();
+    assert.equal(await target.evaluate(e=>document.activeElement===e),true);
+    assert.equal(await svg.evaluate(e=>e.__zoom.k),1,'focus reveals a readable scale');
+    assert.ok((await snapshot()).labels.every(l=>l.opacity===1),'focus restores label opacity');
+    const visibleTarget=await target.evaluate(e=>{
+      const a=e.getBoundingClientRect(),b=e.ownerSVGElement.getBoundingClientRect();
+      return a.right>b.left&&a.left<b.right&&a.bottom>b.top&&a.top<b.bottom;
+    });
+    assert.ok(visibleTarget,'focused source target is in the viewport');
+    await page.screenshot({path:join(out,spec.id+'-readable.png')});
+    await target.press('Enter');
+    if(spec.id==='sankey'){
+      const expectedFolders=folderPaths.filter(f=>f===targetPath||f.startsWith(targetPath+'/'));
+      await page.waitForFunction(({selector,expected})=>{
+        const root=document.querySelector(selector);
+        return root&&root.querySelectorAll('.sankey-node text,.sankey-folder-fallback').length===expected;
+      },{selector:'.sankey-container',expected:expectedFolders.length});
+      assert.deepEqual([...new Set((await snapshot()).labels.map(l=>l.folder))].sort(),expectedFolders,'keyboard folder filter applies');
+    }else{
+      const selectedSource=files.find(f=>f.path===targetPath);
+      await page.waitForFunction(({name,folder})=>
+        [...document.querySelectorAll('.right-panel .panel-header')].some(header=>
+          header.querySelector('.panel-title')?.textContent.trim()===name&&
+          header.querySelector('.panel-subtitle')?.textContent.startsWith(folder+' • ')),
+        {name:selectedSource.name,folder:selectedSource.folder});
+      entry.inspectorOracle={path:targetPath,name:selectedSource.name,folder:selectedSource.folder};
+    }
+    entry.checks.push({name:'keyboard focus reveal and selection',targetPath,status:'PASS'});
+    // Switch away, then verify that font/resize events cannot mutate disposed SVG.
+    await page.evaluate(selector=>{
+      window.__oldAlternateSvg=document.querySelector(selector+' svg');
+      window.__altLifetime.capture=false;
+    },'.'+spec.id+'-container');
+    await page.getByRole('combobox',{name:'Visualization type',exact:true}).selectOption('matrix'===spec.id?'dendro':'matrix');
+    await page.locator('.alternate-view-controls').waitFor();
+    const disposed=await page.evaluate(()=>{
+      const old=window.__oldAlternateSvg;
+      window.__oldAlternateHtml=old.outerHTML;
+      document.fonts.dispatchEvent(new Event('loadingdone'));
+      return {connected:old.isConnected,fonts:window.__altLifetime.fonts.size,
+        oldZoomListeners:(old.__on||[]).filter(x=>x.name==='zoom').length,
+        // The replacement owns one observer. No previous observer may remain.
+        alternateObservers:window.__altLifetime.observers.size};
+    });
+    assert.equal(disposed.connected,false);assert.equal(disposed.fonts,0);
+    assert.equal(disposed.oldZoomListeners,0);assert.equal(disposed.alternateObservers,1);
+    await page.setViewportSize({width:1200,height:900});await page.waitForTimeout(200);
+    assert.equal(await page.evaluate(()=>window.__oldAlternateSvg.outerHTML===window.__oldAlternateHtml),true,'disposed SVG remains unchanged');
+    entry.checks.push({name:'font/resize/zoom cleanup',...disposed});
+    assert.ok(entry.requests.every(r=>!r.authorizationPresent),'no browser Authorization headers');
+    assert.deepEqual(entry.errors,[],'unexpected console/page errors');
+    entry.status=entry.diagramStatus==='UNSUPPORTED_WITH_COMPLETE_FOLDER_LIST'?'PASS_FOLDER_LIST_DIAGRAM_UNSUPPORTED':'PASS';
+  }catch(e){
+    entry.status='FAIL';entry.error=e.stack||String(e);
+    await page.screenshot({path:join(out,spec.id+'-failure.png')}).catch(()=>{});
+  }finally{await page.close();}
+}
+}finally{
+  result.browser=browser.version();await writeFile(join(out,'results.json'),JSON.stringify(result,null,2));await browser.close();
+}
+console.log(JSON.stringify(result,null,2));
+if(result.views.some(v=>v.status==='FAIL'))process.exitCode=1;

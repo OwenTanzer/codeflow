@@ -276,7 +276,7 @@ for(const viewport of [{width:390,height:844},{width:844,height:390}]){
     await closePanel(p);await p.getByRole('button',{name:'Open insights panel'}).click();await settled(p);
     await selectable(p,p.locator('.card > .panel-title').filter({hasText:PATH}).first());
     await p.screenshot({path:join(out,'inspector-selection-'+p.viewportSize().width+'.png')});
-    
+
     // Explicit fallback is reachable in the Inspector; unsupported module is disabled.
     const choose=p.getByRole('combobox',{name:'Function to open'});
     await choose.selectOption({index:1});
