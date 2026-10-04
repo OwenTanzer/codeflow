@@ -1,3 +1,4 @@
+import { installNodeActivation } from './nodeActivation.js';
 // Repository graph (2D D3 force layout) renderer — MOO-67 Commits 4B/4E.
 //
 // Mechanically extracted from index.html's App() component (the useEffect
@@ -69,7 +70,11 @@ export function renderRepositoryGraph(options) {
 
         if(!data||!svgEl)return;
         var svg=d3.select(svgEl);
+    // D3 owns graph pan/pinch; prevent native page zoom from stealing it.
+    svg.style('touch-action','none');
         svg.selectAll('*').remove();
+    var disposeActivation = function () {};
+    var userMoved=false;
         try{
         var w=svgEl.clientWidth;
         var h=svgEl.clientHeight;
@@ -89,13 +94,14 @@ export function renderRepositoryGraph(options) {
         var ch=h/(Math.ceil(folders.length/cols)+1);
         var centers={};
         folders.forEach(function(f,i){centers[f]={x:(i%cols+1)*cw,y:(Math.floor(i/cols)+1)*ch};});
-        var zoom=d3.zoom().scaleExtent([0.2,5]).on('zoom',function(e){container.attr('transform',e.transform);});
+        var zoom=d3.zoom().scaleExtent([0.2,5]).on('zoom',function(e){userMoved=true;container.attr('transform',e.transform);container.selectAll('text').attr('visibility',e.transform.k<0.45?'hidden':null);});
         svg.call(zoom);
         zoomRef.current=zoom;
         var container=svg.append('g');
         var defs=svg.append('defs');
         defs.append('marker').attr('id','arr').attr('viewBox','0 -5 10 10').attr('refX',14).attr('markerWidth',4).attr('markerHeight',4).attr('orient','auto').append('path').attr('d','M0,-4L10,0L0,4').attr('fill',theme==='light'?'#aaa':'#444');
-        var hullLayer=container.append('g');
+        // Hull paths are replaced on simulation ticks. They must not own a touch target.
+        var hullLayer=container.append('g').attr('pointer-events','none');
         var linkLayer=container.append('g');
         var nodeLayer=container.append('g');
         var sim=d3.forceSimulation(nodes);
@@ -164,9 +170,15 @@ export function renderRepositoryGraph(options) {
         linksRef.current=link;
         var node=nodeLayer.selectAll('g').data(nodes).join('g').style('cursor','pointer');
         nodesRef.current=node;
-        node.call(d3.drag().on('start',function(e,d){if(!e.active)sim.alphaTarget(0.1).restart();d.fx=d.x;d.fy=d.y;}).on('drag',function(e,d){d.fx=e.x;d.fy=e.y;}).on('end',function(e,d){if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
+        node.call(d3.drag().on('start',function(e,d){userMoved=true;if(!e.active)sim.alphaTarget(0.1).restart();d.fx=d.x;d.fy=d.y;}).on('drag',function(e,d){d.fx=e.x;d.fy=e.y;}).on('end',function(e,d){if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
         node.on('click',function(e,d){e.stopPropagation();if(selectFileRef.current)selectFileRef.current(d.id);});
         node.on('dblclick',function(e,d){e.stopPropagation();if(activateFileRef&&activateFileRef.current)activateFileRef.current(d.id);});
+        disposeActivation = installNodeActivation(node, {
+            activate: d => activateFileRef.current?.(d.id),
+            select: d => selectFileRef.current?.(d.id),
+            label: d => 'Open file: ' + d.id,
+            eligible: d => !options.canActivate || options.canActivate(d.id),
+        });
         node.on('mouseenter',function(e,d){var r=svgEl.getBoundingClientRect();var churnLine=d.churn==null?'Churn not computed':d.churn+' recent commits';onHover({x:e.clientX-r.left+10,y:e.clientY-r.top,title:d.name,content:d.fnCount+' functions\n'+d.layer+' layer\n'+churnLine});}).on('mouseleave',function(){onHover(null);});
         svg.on('click',function(e){if(e.target===svgEl){onBackgroundClick();link.attr('stroke',theme==='light'?'#ccc':'#333').attr('stroke-opacity',0.4);node.selectAll('.nc').attr('opacity',1).attr('fill',getC);}});
         node.append('circle').attr('class','nc').attr('r',getR).attr('fill',getC)
@@ -174,9 +186,26 @@ export function renderRepositoryGraph(options) {
             .attr('stroke-width',function(d){return changedPaths&&changedPaths.has(d.id)?3:1.5;})
             .attr('stroke-dasharray',function(d){return changedPaths&&changedPaths.has(d.id)?'3,2':null;});
         // Hide labels for large graphs to reduce DOM overhead
-        if(!isLargeGraph||graphConfig.showLabels){
-            node.append('text').attr('text-anchor','middle').attr('dy',0).attr('fill',theme==='light'?'#333':'#eee').attr('font-size',function(d){return Math.max(6,Math.min(10,getR(d)*0.6))+'px';}).attr('font-family','JetBrains Mono').attr('font-weight','500').attr('pointer-events','none').text(function(d){var n=d.name.replace(/\.[^.]+$/,'');var maxLen=Math.max(4,Math.floor(getR(d)/2));return n.length>maxLen+1?n.slice(0,maxLen)+'…':n;});
+        {
+            node.append('text').attr('text-anchor','middle').attr('dy',0).attr('fill',theme==='light'?'#333':'#eee').attr('font-size',function(d){return Math.max(6,Math.min(10,getR(d)*0.6))+'px';}).attr('font-family','JetBrains Mono').attr('font-weight','500').attr('pointer-events','none').text(function(d){return d.name;});
         }
+
+    // Reserve the enclosing circle of shape AND rendered label. Re-measure
+    // after font load; forceCollide caches radii until radius() is called.
+    function refreshLabelCollision() {
+      node.each(function(d) {
+        var b=this.getBBox(), r=getR(d);
+        d.labelCollisionRadius=Math.max(r,
+          Math.hypot(Math.max(Math.abs(b.x),Math.abs(b.x+b.width)),
+                     Math.max(Math.abs(b.y),Math.abs(b.y+b.height))))+8;
+      });
+      sim.force('collision',d3.forceCollide().radius(function(d){return d.labelCollisionRadius;}).iterations(3));
+      sim.alpha(0.6).restart();
+    }
+    refreshLabelCollision();
+    var labelFontListener=function(){refreshLabelCollision();};
+    if(document.fonts)document.fonts.addEventListener('loadingdone',labelFontListener);
+
         // Pre-index nodes by folder for faster hull computation
         var nodesByFolder={};
         folders.forEach(function(f){nodesByFolder[f]=nodes.filter(function(n){return n.folder===f;});});
@@ -192,15 +221,15 @@ export function renderRepositoryGraph(options) {
                 if(hull){
                     var color=colorMap[f]||COLORS[folders.indexOf(f)%COLORS.length];
                     hullLayer.append('path').attr('d','M'+hull.join('L')+'Z').attr('fill',color).attr('fill-opacity',0.04).attr('stroke',color).attr('stroke-width',2).attr('stroke-opacity',0.25).attr('rx',8);
-                    var cx=d3.mean(fn,function(n){return n.x;}),cy=d3.min(fn,function(n){return n.y;})-pad-8;
-                    hullLayer.append('text').attr('x',cx).attr('y',cy).attr('text-anchor','middle').attr('fill',color).attr('font-size','10px').attr('font-family','JetBrains Mono').attr('font-weight','600').attr('opacity',0.7).text(f||'root');
+                    var cx=d3.mean(fn,function(n){return n.x;}),cy=d3.min(nodes,function(n){return n.y-getR(n);})-pad-8-folders.indexOf(f)*16;
+                    hullLayer.append('text').attr('visibility',d3.zoomTransform(svgEl).k<0.45?'hidden':null).attr('x',cx).attr('y',cy).attr('text-anchor','middle').attr('fill',color).attr('font-size','10px').attr('font-family','JetBrains Mono').attr('font-weight','600').attr('opacity',0.7).text(f||'root');
                 }
             });
         }
         // Throttle hull updates for large graphs (every N ticks instead of every tick)
         var hullInterval=isLargeGraph?5:1;
         var tickCount=0;
-        sim.on('tick',function(){
+        function draw(){
             if(graphConfig.curvedLinks){
                 link.attr('d',function(d){var dx=d.target.x-d.source.x,dy=d.target.y-d.source.y,dr=Math.sqrt(dx*dx+dy*dy);return'M'+d.source.x+','+d.source.y+'A'+dr+','+dr+' 0 0,1 '+d.target.x+','+d.target.y;});
             }else{
@@ -209,8 +238,21 @@ export function renderRepositoryGraph(options) {
             node.attr('transform',function(d){return'translate('+d.x+','+d.y+')';});
             tickCount++;
             if(tickCount%hullInterval===0)updateHulls();
+        }
+        sim.on('tick',draw).on('end',function(){
+            // Attraction can still compress measured labels when alpha cools.
+            // Finish with bounded collision-only relaxation, preserving the
+            // force layout's neighborhoods and every node (no sampling).
+            var settle=d3.forceSimulation(nodes).stop().velocityDecay(0.2)
+                .force('collision',d3.forceCollide().radius(function(d){return d.labelCollisionRadius;}).iterations(8));
+            settle.tick(80);settle.stop();draw();updateHulls();
+            if(!userMoved&&nodes.length>300){
+                var b=container.node().getBBox(),pad=24;
+                var k=Math.min(1,(w-pad*2)/b.width,(h-pad*2)/b.height);
+                if(k>0){zoom.scaleExtent([Math.min(0.2,k),5]);svg.call(zoom.transform,d3.zoomIdentity.translate((w-b.width*k)/2-b.x*k,(h-b.height*k)/2-b.y*k).scale(k));}
+            }
         });
         node.selectAll('text').attr('opacity',graphConfig.showLabels?1:0);
         }catch(e){console.error('Force graph error:',e);svg.selectAll('*').remove();svg.append('text').attr('x',20).attr('y',30).attr('fill','var(--t3)').text('Graph rendering error: '+e.message);}
-        return function(){if(simRef.current)simRef.current.stop();};
+        return function(){disposeActivation();if(document.fonts)document.fonts.removeEventListener('loadingdone',labelFontListener);if(simRef.current)simRef.current.stop();};
 }

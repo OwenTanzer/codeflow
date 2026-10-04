@@ -56,8 +56,8 @@ fails startup, not silently keeps the default) and surfaced two ways:
 
 Pre-existing (env-configurable, validated fail-fast at startup — see
 `server/lib/config.js` for exact defaults): request body size
-(`MAX_REQUEST_BODY_BYTES`), per-request file/byte caps
-(`MAX_REPO_FILES`/`MAX_FILE_BYTES`/`MAX_REPO_BYTES`), analysis and pyan3
+(`MAX_REQUEST_BODY_BYTES`), per-request byte caps
+(`MAX_FILE_BYTES`/`MAX_REPO_BYTES`; `MAX_REPO_FILES` is retired and ignored), analysis and pyan3
 timeouts (`GRAPH_ANALYSIS_TIMEOUT_MS`/`PYAN3_TIMEOUT_MS`), and per-minute
 rate limiting (`RATE_LIMIT_PER_MINUTE`).
 
@@ -430,3 +430,38 @@ unattended.
     Railway hostname was never a release-level rollback path, only a
     domain-level one. (Not yet decided as of the MOO-72 cutover — the
     fallback hostname `codeviz-production.up.railway.app` is still live.)
+
+## Repository overview resource policy (#29)
+
+Repository and explicitly selected package scans have no file-count cap.
+MAX_REPO_FILES is retired; setting it has no effect. Existing selection and
+exclusion rules remain in force. MAX_FILE_BYTES (1 MiB) skips oversized files;
+MAX_REPO_BYTES (25 MiB) rejects an oversized aggregate. Unknown tree blob sizes,
+truncated trees, and invalid upstream responses fail explicitly. Retrieval also
+checks decoded blob sizes against the pinned tree and the byte budgets.
+
+Server GitHub JSON transfers are bounded at 8 MiB for metadata/tree responses;
+blob responses are bounded at 1.5 times MAX_FILE_BYTES plus 64 KiB of encoding
+and metadata allowance. These are transfer-byte limits, not file-count policies.
+GITHUB_FETCH_CONCURRENCY still defaults to 8. Repository admission now happens
+before ref resolution, so cache hits briefly consume a shared analysis slot too.
+File/function network phases also acquire this shared capacity.
+
+withTimeout now takes a work factory. It propagates caller/deadline abort to
+active fetch/body reads, stops scheduling, and waits for all workers to settle
+before returning. Noncooperative work retains its capacity until it settles.
+Analysis yields between batches and at existing aggregate checkpoints; a single
+synchronous parser invocation cannot be preempted mid-call.
+
+Tree retrieval uses the resolved commit SHA, never the original mutable ref.
+Cache identity includes that SHA, exclusions, parser capability, byte budgets,
+and analyzer version. Cache bounds measure UTF-8 serialized bytes.
+
+Repository graph metadata.coverage reports tree blobs/bytes, selected files/bytes
+(before per-file skips), analyzed/skipped/failed counts, skip reasons and paths,
+and content bytes. On success: treeBlobs = analyzed + skipped + failed, and
+selected = analyzed + per-file-byte skips. Retrieval failures return no partial
+graph and report files not analyzed because retrieval failed. Per-phase
+retrieval/analysis/serialization timings and response/cache sizes are logged.
+Relationships remain a limited heuristic overview; Java/Kotlin semantic
+navigation is not implemented by this change.

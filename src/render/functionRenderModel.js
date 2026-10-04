@@ -34,8 +34,8 @@
 // (psf/requests SessionRedirectMixin.resolve_redirects) runs ~40 ranks deep,
 // and the extra vertical spacing bought nothing except height that then had to
 // be zoomed away, which is what made the labels unreadable.
+import { measureFunctionNode } from './labelGeometry.js';
 const RANK_HEIGHT = 60;
-const NODE_SPACING = 150;
 const MARGIN_X = 90;
 const MARGIN_Y = 50;
 
@@ -226,7 +226,7 @@ function orderWithinRanks(nodes, forwardEdges, rank, discoveryIndex) {
  * @param {import('../graph-ir/graphIR.js').GraphIR} graph
  * @returns {{nodes: FunctionRenderNode[], links: FunctionRenderLink[], width: number, height: number, maxRank: number}}
  */
-export function buildFunctionRenderModel(graph) {
+export function buildFunctionRenderModel(graph, options = {}) {
   if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
     return { nodes: [], links: [], width: 0, height: 0, maxRank: 0 };
   }
@@ -269,29 +269,42 @@ export function buildFunctionRenderModel(graph) {
   const discoveryIndex = new Map(nodes.map((n, i) => [n.id, i]));
   const { byRank, ranks, position } = orderWithinRanks(nodes, forwardEdges, rank, discoveryIndex);
 
-  let widestRank = 1;
-  for (const r of ranks) widestRank = Math.max(widestRank, byRank.get(r).length);
-  const width = MARGIN_X * 2 + (widestRank - 1) * NODE_SPACING;
-  const height = MARGIN_Y * 2 + maxRank * RANK_HEIGHT;
+  const geometry = new Map(nodes.map(n => [n.id,
+    measureFunctionNode(n, options.measureText, options.maxTextWidth)]));
+  const rowWidths = new Map(ranks.map(r => [r, byRank.get(r).reduce(
+    (sum, n) => sum + geometry.get(n.id).width, 0) + (byRank.get(r).length - 1) * 40]));
+  const width = MARGIN_X * 2 + Math.max(...rowWidths.values());
+  const positions = new Map();
+  let top = MARGIN_Y;
+  for (const r of ranks) {
+    const group = byRank.get(r);
+    const rowHeight = Math.max(...group.map(n => geometry.get(n.id).height));
+    let left = (width - rowWidths.get(r)) / 2;
+    for (const n of group) {
+      const size = geometry.get(n.id);
+      positions.set(n.id, { x: left + size.width / 2, y: top + rowHeight / 2 });
+      left += size.width + 40;
+    }
+    const outgoingCount = edges.filter(e => rank.get(e.source) === r).length;
+    top += rowHeight + Math.max(RANK_HEIGHT, outgoingCount * 20 + 40);
+  }
+  const height = top - RANK_HEIGHT + MARGIN_Y;
 
   const renderNodes = nodes.map((node) => {
     const r = rank.get(node.id);
-    const group = byRank.get(r);
     const order = position.get(node.id);
-    // Each rank is centered on the widest rank, so the flow reads down a
-    // consistent spine instead of being left-aligned.
-    const rowWidth = (group.length - 1) * NODE_SPACING;
-    const x = MARGIN_X + (width - MARGIN_X * 2 - rowWidth) / 2 + order * NODE_SPACING;
     return {
       id: node.id,
       label: node.label,
+      labelProvenance: node.metadata?.labelProvenance || null,
+      rawLabel: node.metadata?.rawLabel || null,
       kind: node.kind,
       shape: (node.hints && node.hints.shape) || 'rect',
       colorRole: (node.hints && node.hints.colorRole) || 'default',
       rank: r,
       order,
-      x,
-      y: MARGIN_Y + r * RANK_HEIGHT,
+      ...positions.get(node.id),
+      ...geometry.get(node.id),
       isSynthetic: node.origin === 'synthetic',
       isEntry: !!(node.hints && node.hints.isEntry),
       isExit: !!(node.hints && node.hints.isExit),

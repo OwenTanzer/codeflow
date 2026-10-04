@@ -20,16 +20,16 @@ const [url = 'http://localhost:3000/'] = process.argv.slice(2);
 
 // Same known-benign Babel Standalone notice tests/ui-smoke.mjs filters.
 const KNOWN_NOISE = /\[BABEL\] Note: The code generator has deoptimised the styling/;
-const REPO = 'psf/requests';
+const REPO = 'https://github.com/psf/requests/tree/611c6162cbc4ac2020a2f91c7cfa4f3abf9bbb60';
 // The repository renderer labels file nodes by stem, not filename -- the node
 // for src/requests/sessions.py reads "sessions".
-const FILE_LABEL = 'sessions';
+const FILE_LABEL = 'sessions.py';
 // SessionRedirectMixin.resolve_redirects: for loop, while loop, try/except
 // with multiple handlers, continue, break, and several returns -- the case the
 // layered renderer exists for. The file layer truncates labels at 16 chars.
 const TARGET_FUNCTION = 'resolve_redirects';
 // fileGraph.js truncates at 16: label.slice(0, 15) + '…'
-const TARGET_LABEL = 'resolve_redirec…';
+const TARGET_LABEL = 'resolve_redirects';
 
 const failures = [];
 function ok(name) { console.log('ok   - ' + name); }
@@ -39,7 +39,12 @@ async function step(name, fn) {
 }
 
 const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1680, height: 1000 } });
+const smokeWidth=Number(process.env.CODEFLOW_SMOKE_WIDTH||1680);
+const page = await browser.newPage({ viewport: { width: smokeWidth, height: smokeWidth<600?844:1000 } });
+if(process.env.CODEFLOW_SMOKE_FIXTURE==='labels') {
+  const {installLabelAppFixture}=await import('./fixtures/full-label-app.mjs');
+  await installLabelAppFixture(page);
+}
 const consoleErrors = [];
 page.on('console', (m) => { if (m.type() === 'error' && !KNOWN_NOISE.test(m.text())) consoleErrors.push(m.text()); });
 page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + e.message));
@@ -49,14 +54,27 @@ page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + e.message));
 let functionRequests = 0;
 let fileRequests = 0;
 let capabilityRequests = 0;
+let blameRequests = 0, previewRequests = 0;
+const metadataRequests = [];
 page.on('request', (r) => {
   if (r.url().endsWith('/api/graph/function')) functionRequests += 1;
   if (r.url().endsWith('/api/graph/file')) fileRequests += 1;
   if (r.url().endsWith('/api/capabilities')) capabilityRequests += 1;
+  if (/\/api\/github\/(blame|file-content)$/.test(r.url())) {
+    metadataRequests.push({body:r.postDataJSON(),headers:r.headers()});
+    if(r.url().endsWith('/blame')) blameRequests++;
+    else previewRequests++;
+  }
 });
 
 await page.goto(url, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(2000);
+// The toolbar currently extracts only owner/repo. Pin this smoke's source
+// explicitly at the existing bridge seam instead of trusting /tree/ref.
+await page.evaluate(() => {
+  const original = window.fetchRepositoryGraph;
+  window.fetchRepositoryGraph = input => original({...input,ref:'611c6162cbc4ac2020a2f91c7cfa4f3abf9bbb60'});
+});
 
 // --- repository layer -------------------------------------------------------
 await step('app-auth controls are absent', async () => {
@@ -75,16 +93,32 @@ await step('repository analysis completes and the graph renders', async () => {
   // The breadcrumb header only appears once repositoryGraph exists, and it
   // shows the resolved ref@sha -- a far more specific signal than "some svg
   // has children".
-  await page.waitForSelector('text=/@[0-9a-f]{7}/', { timeout: 300000 });
+  await page.waitForSelector('text=/@[0-9a-f]{7}/', { timeout: process.env.CODEFLOW_SMOKE_FIXTURE?30000:300000 });
 });
 
-await page.screenshot({ path: 'docs/img/smoke-1-repository.png' });
+await page.screenshot({ path: (process.env.CODEFLOW_SMOKE_FIXTURE==='labels'?'.git/run2-app-'+smokeWidth+'-':'docs/img/')+'smoke-1-repository.png' });
+
+await step('selection loads ownership and preview uses the credential-free pinned fallback', async () => {
+  await page.getByRole('button', { name: 'Open file: src/requests/sessions.py', exact: true }).click();
+  await page.locator('.card-header').filter({hasText:'Ownership'}).click();
+  await page.locator('.owner-list, [role=status]').waitFor({timeout:60000});
+  if(await page.locator('.loading-owner').count()) throw new Error('ownership still loading');
+  if (!blameRequests) throw new Error('no blame request');
+  await page.getByRole('button', { name: 'View Source', exact: true }).click();
+  await page.waitForSelector('.file-preview-code, .file-preview-error', {timeout:60000});
+  if (!previewRequests) throw new Error('no file-content fallback request');
+  for (const {body,headers} of metadataRequests) {
+    if(body.owner!=='psf'||body.repo!=='requests'||body.ref!=='611c6162cbc4ac2020a2f91c7cfa4f3abf9bbb60') throw new Error('metadata context not pinned');
+    if(headers.authorization) throw new Error('browser Authorization header');
+  }
+  await page.locator('.file-preview-close').click();
+});
 
 // --- repository -> file -----------------------------------------------------
 await step(`double-click ${FILE_LABEL} to drill into the file layer`, async () => {
   // Target the node group, not the text: the label is drawn below the shape,
   // so clicking the text's own box can miss the node's hit area.
-  const node = page.locator(`svg g:has(> text:text-is("${FILE_LABEL}"))`).first();
+  const node = page.getByRole('button', { name: 'Open file: src/requests/sessions.py', exact: true });
   await node.waitFor({ timeout: 20000 });
   await node.dblclick();
 });
@@ -101,7 +135,7 @@ await step('file drill-down checks server capabilities', async () => {
   if (fileRequests < 1) throw new Error('file drill-down issued no /api/graph/file request');
 });
 
-await page.screenshot({ path: 'docs/img/smoke-2-file.png' });
+await page.screenshot({ path: (process.env.CODEFLOW_SMOKE_FIXTURE==='labels'?'.git/run2-app-'+smokeWidth+'-':'docs/img/')+'smoke-2-file.png' });
 
 // --- file -> function -------------------------------------------------------
 await step(`double-click ${TARGET_FUNCTION} to drill into the function layer`, async () => {
@@ -111,7 +145,7 @@ await step(`double-click ${TARGET_FUNCTION} to drill into the function layer`, a
   // meaningless three-node graph, which would let the loop/branch assertions
   // below pass without ever exercising them. The file-layer renderer
   // truncates labels at 16 characters, hence the prefix match.
-  const target = page.locator(`svg g:has(> text:text-is("${TARGET_LABEL}"))`).first();
+  const target = page.getByRole('button', { name: 'Open function: resolve_redirects', exact: true });
   await target.waitFor({ timeout: 20000 });
   await target.dblclick();
   await page.waitForTimeout(1200);
@@ -145,7 +179,7 @@ await step('function drill-down reaches the credential-free graph endpoint', asy
   if (functionRequests < 1) throw new Error('function drill-down issued no /api/graph/function request');
 });
 
-await page.screenshot({ path: 'docs/img/smoke-3-function.png' });
+await page.screenshot({ path: (process.env.CODEFLOW_SMOKE_FIXTURE==='labels'?'.git/run2-app-'+smokeWidth+'-':'docs/img/')+'smoke-3-function.png' });
 
 await step('search highlights matching nodes without re-rendering the graph', async () => {
   const search = page.locator('input[aria-label="Search control-flow nodes"]');
@@ -165,6 +199,39 @@ await step('selecting a node shows its metadata', async () => {
   await page.waitForSelector('text=/kind: /', { timeout: 10000 });
 });
 
+
+await step('fit includes actual labels, paths and loop lanes',async()=>{
+ await page.getByRole('button',{name:'Fit function graph',exact:true}).click();
+ const fits=await page.evaluate(()=>{
+  const svg=document.querySelector('.fn-nc').ownerSVGElement,view=svg.getBoundingClientRect();
+  return [...svg.querySelectorAll('path.fn-nc,text')].every(el=>{
+   const b=el.getBoundingClientRect();
+   return b.left>=view.left-1&&b.right<=view.right+1&&b.top>=view.top-1&&b.bottom<=view.bottom+1;
+  });
+ });
+ if(!fits)throw new Error('Fit leaves graph content outside SVG viewport');
+ await page.getByRole('button',{name:'Readable function view',exact:true}).click();
+});
+await step('all required searches highlight at least one node',async()=>{
+ const search=page.locator('input[aria-label="Search control-flow nodes"]');
+ for(const query of ['resp','purged_headers','yield_requests','rewindable','TooManyRedirects']){
+  await search.fill(query);
+  const matched=await page.evaluate(()=>[...document.querySelectorAll('.fn-nc')].some(n=>n.getAttribute('stroke')==='#f0abfc'));
+  if(!matched)throw new Error('No visible highlight for '+query);
+ }
+ await search.fill('');
+});
+await step('selection highlights relations and background clears them',async()=>{
+ const shape=page.locator('svg path.fn-nc').nth(2);
+ await shape.click();
+ if(!await page.evaluate(()=>[...document.querySelectorAll('.fn-nc')].some(p=>p.parentNode.getAttribute('opacity')==='0.18')))throw new Error('Unrelated nodes not dimmed');
+ await shape.evaluate(el=>{
+  const svg=el.ownerSVGElement;
+  svg.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+ });
+ if(!await page.evaluate(()=>[...document.querySelectorAll('.fn-nc')].every(p=>p.parentNode.getAttribute('opacity')==='1')))throw new Error('Background did not clear relations');
+});
+
 // --- back navigation --------------------------------------------------------
 await step('back restores the file view from cache without re-running analysis', async () => {
   const fileRequestsBefore = fileRequests;
@@ -180,7 +247,7 @@ await step('back restores the file view from cache without re-running analysis',
   }
 });
 
-await page.screenshot({ path: 'docs/img/smoke-4-back.png' });
+await page.screenshot({ path: (process.env.CODEFLOW_SMOKE_FIXTURE==='labels'?'.git/run2-app-'+smokeWidth+'-':'docs/img/')+'smoke-4-back.png' });
 
 console.log('\nrequests issued: capabilities=' + capabilityRequests + ' file=' + fileRequests + ' function=' + functionRequests);
 console.log('console errors: ' + (consoleErrors.length ? JSON.stringify(consoleErrors.slice(0, 6), null, 2) : 'none'));

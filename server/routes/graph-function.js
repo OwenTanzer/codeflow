@@ -241,8 +241,10 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
     try {
       let resolved;
       try {
+        const retrievalPermit = concurrencyLimiter.tryAcquire();
+        if (!retrievalPermit.acquired) return sendCapacityResponse(res, { requestId, sessionId: request.sessionId });
         resolved = await withTimeout(
-          (async () => {
+          async () => {
             configureGithubClient({ token: config.githubToken });
 
             const { owner, repo, ref: resolvedRef } = await resolveRef(request);
@@ -250,7 +252,7 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
 
             assertRevisionStillExpected(request, { sourceOwner: owner, sourceRepo: repo, resolvedSha });
 
-            const entry = await resolvePathEntry({ owner, repo, resolvedRef, path: request.path });
+            const entry = await resolvePathEntry({ owner, repo, resolvedRef: resolvedSha, path: request.path });
             if (!entry) {
               throw new ValidationError(`"${request.path}" was not found in this revision`);
             }
@@ -261,15 +263,15 @@ export function createGraphFunctionHandler({ config, getCodeVisualizerAvailable,
               throw new ValidationError(`"${request.path}" is not a Python file — the function layer only supports .py files`);
             }
 
-            const [content] = await fetchAllContents(owner, repo, [entry], config.githubFetchConcurrency);
+            const [content] = await fetchAllContents(owner, repo, [entry], config.githubFetchConcurrency, config);
             return { sourceOwner: owner, sourceRepo: repo, resolvedSha, path: entry.path, content: content || '' };
-          })(),
+          },
           {
             timeoutMs: config.graphAnalysisTimeoutMs,
             signal,
             timeoutMessage: `Function analysis did not complete within ${config.graphAnalysisTimeoutMs}ms`,
           }
-        );
+        ).finally(retrievalPermit.release);
       } catch (err) {
         const durationMs = Date.now() - startedAtMs;
         if (err instanceof RequestCancelledError) {

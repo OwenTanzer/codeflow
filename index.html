@@ -404,14 +404,14 @@ body{font-family:'JetBrains Mono',monospace;background:var(--bg0);color:var(--t0
 .conn-goto:hover{background:var(--acc);color:var(--bg0)}
 .file-preview-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:1100;backdrop-filter:blur(4px)}
 .file-preview-modal{background:var(--bg0);border:1px solid var(--border);border-radius:12px;width:90vw;max-width:1000px;height:85vh;display:flex;flex-direction:column;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5)}
-.file-preview-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--bg1);border-bottom:1px solid var(--border);border-radius:12px 12px 0 0}
-.file-preview-title{display:flex;align-items:center;gap:10px}
-.file-preview-icon{color:var(--acc)}
-.file-preview-name{font-size:13px;font-weight:600;color:var(--t0)}
-.file-preview-path{font-size:10px;color:var(--t3);margin-left:8px;font-family:'JetBrains Mono',monospace}
-.file-preview-actions{display:flex;align-items:center;gap:8px}
-.file-preview-line-badge{font-size:10px;padding:4px 10px;background:var(--accbg);color:var(--acc);border-radius:6px;font-weight:600}
-.file-preview-close{background:transparent;border:1px solid var(--border);color:var(--t2);width:32px;height:32px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all 0.15s}
+.file-preview-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:12px;flex-shrink:0;padding:12px 16px;background:var(--bg1);border-bottom:1px solid var(--border);border-radius:12px 12px 0 0}
+.file-preview-title{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:start;gap:4px 10px;min-width:0;user-select:text}
+.file-preview-icon{color:var(--acc);grid-column:1;grid-row:1}
+.file-preview-name{grid-column:2;grid-row:1;min-width:0;white-space:normal;overflow-wrap:anywhere;font-size:13px;font-weight:600;color:var(--t0)}
+.file-preview-path{grid-column:2;grid-row:2;min-width:0;white-space:normal;overflow-wrap:anywhere;font-size:10px;color:var(--t3);font-family:'JetBrains Mono',monospace}
+.file-preview-actions{display:flex;flex-direction:column;align-items:flex-end;gap:8px;min-width:44px;max-width:96px}
+.file-preview-line-badge{max-width:100%;white-space:normal;overflow-wrap:anywhere;font-size:10px;padding:4px 10px;background:var(--accbg);color:var(--acc);border-radius:6px;font-weight:600}
+.file-preview-close{background:transparent;border:1px solid var(--border);color:var(--t2);width:44px;height:44px;flex-shrink:0;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all 0.15s}
 .file-preview-close:hover{background:var(--red);border-color:var(--red);color:white}
 .file-preview-content{flex:1;overflow:auto;position:relative}
 .file-preview-code{margin:0;padding:16px 0;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.6;background:var(--bg0);counter-reset:line;min-height:100%}
@@ -518,8 +518,8 @@ body{height:100dvh;min-height:100dvh}
 .export-options,.pr-grid,.pr-impact-grid,.unused-summary{grid-template-columns:1fr}
 .pr-risk{flex-direction:column;align-items:flex-start}
 .file-preview-modal{width:calc(100vw - 12px);height:min(88dvh,760px)}
-.file-preview-header{flex-wrap:wrap;align-items:flex-start;gap:10px}
-.file-preview-actions{width:100%;justify-content:space-between}
+.file-preview-header{gap:10px}
+.file-preview-actions{width:auto}
 .file-preview-path{margin-left:0;display:block}
 .file-preview-code{font-size:11px}
 .file-preview-linenum{min-width:42px;padding:0 10px}
@@ -607,7 +607,11 @@ body{height:100dvh;min-height:100dvh}
 .canvas-toolbar{bottom:70px}
 .legend{bottom:70px}
 }
-    </style>
+    /* Selection suppression is scoped to graph nodes; source and Inspector remain copyable. */
+.graph-interactive-node{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.graph-interactive-node:focus-visible{outline:3px solid #f59e0b;outline-offset:4px}
+.graph-interactive-node[data-holding="true"]{filter:brightness(1.4)}
+</style>
 </head>
 <body>
 <div id="root"></div>
@@ -642,6 +646,7 @@ body{height:100dvh;min-height:100dvh}
 import * as analyzer from './src/analyzer.js';
 import { renderRepositoryGraph } from './src/render/repositoryGraph.js';
 import { renderFileGraph } from './src/render/fileGraph.js';
+import { installAlternateViewport, makeAlternateSelectable } from './src/render/alternateViewport.js';
 import { useRepositorySelection } from './src/state/selection.js';
 import { buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute } from './src/state/route.js';
 import { adaptRepositoryAnalysis } from './src/adapters/repositoryGraphAdapter.js';
@@ -666,7 +671,7 @@ import { AnalysisSession } from './src/state/analysisSession.js';
 import { fetchCapabilities } from './src/state/capabilitiesClient.js';
 import { fetchBlame, fetchFileContentFromServer } from './src/state/githubMetaClient.js';
 Object.assign(window, analyzer, {
-  renderRepositoryGraph, renderFileGraph, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute,
+  renderRepositoryGraph, renderFileGraph, installAlternateViewport, makeAlternateSelectable, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute,
   adaptRepositoryAnalysis, repositoryGraphToViewModel, normalizeContext, calcBlastFromGraph,
   tryCreateDrillDown, tryCreateDrillDownById, createSelectionEventForPath, tryCreateOpenSourceEvent, tryCreateOpenSourceEventById, githubBlobUrl,
   useRepositoryDrillDownPanel,
@@ -674,7 +679,7 @@ Object.assign(window, analyzer, {
   fetchRepositoryGraph, GraphRepositoryClientError,
   renderFunctionGraph, buildFunctionRenderModel, fetchFunctionGraph, GraphFunctionClientError,
   AnalysisSession,
-  fetchCapabilities,
+  fetchCapabilities, fetchBlame, fetchFileContentFromServer,
 });
 </script>
 <script type="text/babel">
@@ -1183,11 +1188,12 @@ function FileGraphCanvas(props){
     var fileGraph=props.fileGraph,theme=props.theme,openFileDrillDown=props.openFileDrillDown,
         showNotification=props.showNotification,onHover=props.onHover;
     var svgRef=useRef(null);
-    var zoomRef=useRef(null),simRef=useRef(null);
+    var zoomRef=useRef(null),simRef=useRef(null),rendererRef=useRef(null);
     var selectSymbolRef=useRef(null);
     var activateSymbolRef=useRef(null);
 
-    selectSymbolRef.current=function(){}; // MOO-70 Commit 8: selection highlighting deferred, matching this pass's minimal scope
+    var _symbol=useState(''),selectedSymbolId=_symbol[0],setSelectedSymbolId=_symbol[1];
+    selectSymbolRef.current=function(id){setSelectedSymbolId(id);};
     activateSymbolRef.current=function(nodeId){
         var result=tryCreateDrillDownById(fileGraph,nodeId);
         if(result.eligible){
@@ -1199,15 +1205,33 @@ function FileGraphCanvas(props){
 
     useEffect(function(){
         if(!fileGraph||!svgRef.current)return;
-        return renderFileGraph({
+        var dispose=renderFileGraph({
             svgEl:svgRef.current,graph:fileGraph,theme:theme,
             zoomRef:zoomRef,simRef:simRef,
             selectSymbolRef:selectSymbolRef,activateSymbolRef:activateSymbolRef,
-            onHover:onHover,onBackgroundClick:function(){},
+            onHover:onHover,onBackgroundClick:function(){setSelectedSymbolId('');},
+            canActivate:function(id){return tryCreateDrillDownById(fileGraph,id).eligible;},
         });
+        rendererRef.current=dispose;
+        return function(){dispose();rendererRef.current=null;};
     },[fileGraph,theme]);
 
-    return React.createElement('svg',{ref:svgRef,style:{width:'100%',height:320,background:'var(--bg2)',borderRadius:8}});
+    var selectedResult=selectedSymbolId?tryCreateDrillDownById(fileGraph,selectedSymbolId):null;
+    return React.createElement(React.Fragment,null,
+        React.createElement('div',{style:{display:'flex',flexWrap:'wrap',gap:8,marginBottom:8}},
+            React.createElement('select',{'aria-label':'Function to open',value:selectedSymbolId,onChange:function(e){setSelectedSymbolId(e.target.value);},style:{maxWidth:'100%',minHeight:44}},
+                React.createElement('option',{value:''},'Select a symbol'),
+                fileGraph.nodes.map(function(n){return React.createElement('option',{key:n.id,value:n.id},n.coordinate&&n.coordinate.symbolPath&&n.coordinate.symbolPath.length?n.coordinate.symbolPath.join('.'):(n.label||n.id));})
+            ),
+            React.createElement('button',{type:'button',className:'top-btn',style:{minHeight:44},disabled:!selectedResult||!selectedResult.eligible,'aria-describedby':'function-open-help',onClick:function(){activateSymbolRef.current(selectedSymbolId);}},'Open function')
+        ),
+        React.createElement('div',{id:'function-open-help',style:{fontSize:11,marginBottom:8}},selectedResult&&!selectedResult.eligible?selectedResult.reason:'Select a symbol and choose Open function, or hold a node until the ring completes.'),
+        React.createElement('div',{style:{display:'flex',gap:8,marginBottom:8}},
+            React.createElement('button',{type:'button',className:'top-btn','aria-label':'Fit file graph',onClick:function(){rendererRef.current?.fit?.();}},'Fit'),
+            React.createElement('button',{type:'button',className:'top-btn','aria-label':'Readable file view',onClick:function(){rendererRef.current?.readable?.();}},'Readable')
+        ),
+        React.createElement('svg',{ref:svgRef,'aria-label':'File symbols',style:{width:'100%',height:320,background:'var(--bg2)',borderRadius:8}})
+    );
 }
 
 // MOO-70 Commit 8: the file-layer view. A separate component (not inlined
@@ -1413,7 +1437,12 @@ function FunctionGraphCanvas(props){
         return function(){handleRef.current=null;handle();};
     },[functionGraph,theme]);
 
-    return React.createElement('svg',{ref:svgRef,style:{width:'100%',height:420,background:'var(--bg2)',borderRadius:8}});
+    return React.createElement('div',null,
+        React.createElement('div',{style:{display:'flex',gap:8,marginBottom:6}},
+            React.createElement('button',{className:'top-btn','aria-label':'Fit function graph',onClick:function(){handleRef.current?.fit?.();}},'Fit graph'),
+            React.createElement('button',{className:'top-btn','aria-label':'Readable function view',onClick:function(){handleRef.current?.readable?.();}},'Readable view')),
+        React.createElement('svg',{ref:svgRef,style:{width:'100%',height:420,background:'var(--bg2)',borderRadius:8}}));
+
 }
 
 // MOO-71 Commit 7: the function-layer view -- the real replacement for the
@@ -1668,6 +1697,7 @@ function RepositoryGraphRenderEffect(props){
             COLORS,LAYER_COLORS,changedPaths,
             zoomRef,simRef,linksRef,nodesRef,selectFileRef,activateFileRef,
             onHover,onBackgroundClick,
+            canActivate:function(id){return tryCreateDrillDown(repositoryGraph,id).eligible;},
         });
     },[data,repositoryGraph,colorMap,colorMode,theme,folderFilter,graphConfig,changedPaths]);
     return null;
@@ -1685,6 +1715,8 @@ function App(){
     var _e=useState(''),progress=_e[0],setProgress=_e[1];
     var _f=useState(null),error=_f[0],setError=_f[1];
     var _g=useState(null),data=_g[0],setData=_g[1];
+    var [repositorySearch,setRepositorySearch]=useState('');
+    var repositoryMatches=useMemo(function(){var q=repositorySearch.trim().toLowerCase();return q&&data?data.files.filter(function(f){return f.path.toLowerCase().includes(q);}):[];},[repositorySearch,data]);
     var _h=useState(null),repoInfo=_h[0],setRepoInfo=_h[1];
     // MOO-69 Commit 4: the repository-layer GraphIR for the current
     // analysis, built once (see finishAnalysis' GitHub-backed branch) from
@@ -1740,6 +1772,9 @@ function App(){
     var _k=useState(new Set([''])),expandedPaths=_k[0],setExpandedPaths=_k[1];
     var _l=useState(new Set(['blast','fns'])),expandedCards=_l[0],setExpandedCards=_l[1];
     var _o=useState(null),ownership=_o[0],setOwnership=_o[1];
+    var _oe=useState(null),ownershipError=_oe[0],setOwnershipError=_oe[1];
+    var previewGeneration=useRef(0),previewController=useRef(null);
+    function closeFilePreview(){previewGeneration.current++;previewController.current?.abort();previewController.current=null;setFilePreview(null);}
     var _p=useState(''),prUrl=_p[0],setPrUrl=_p[1];
     var _q=useState(null),prData=_q[0],setPrData=_q[1];
     var _r=useState(false),showExport=_r[0],setShowExport=_r[1];
@@ -1973,6 +2008,8 @@ function App(){
     }
 
     function resetAnalysisState(){
+        setRepositorySearch('');
+        closeFilePreview();
         setError(null);
         setData(null);
         setRepositoryGraph(null);
@@ -1996,7 +2033,7 @@ function App(){
         setOwnership(null);
         setFolderFilter(null);
         setPrData(null);
-        setFilePreview(null);
+        closeFilePreview();
         setMobilePanel(null);
         setShowGraphConfig(false);
     }
@@ -2043,6 +2080,13 @@ function App(){
 
     function toggleMobilePanel(panel){
         setMobilePanel(function(prev){return prev===panel?null:panel;});
+    }
+
+    function cancelRepositoryLoad(){
+        beginNewAnalysisGeneration();
+        resetAnalysisState();
+        setLoading(false);
+        setProgress('');
     }
 
     function analyze(){
@@ -2562,26 +2606,39 @@ function App(){
             // tests/blast-radius.test.mjs's parity proof.
             var blast=repositoryGraph?calcBlastFromGraph(path,repositoryGraph):calcBlast(path,data.connections,data.files);
             setBlastRadius(blast);
-            setOwnership(null);
             setExpandedFns(new Set());
-            if(repoInfo&&!localSourceKind){
-                setOwnerLoading(true);
-                // MOO-86: runs server-side now (the server's own
-                // GITHUB_TOKEN), pinned to the same resolved revision the
-                // analysis actually ran against -- same source/ref choice
-                // openFilePreview's fallback below uses.
-                var blameOwner=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceOwner)||repoInfo.owner;
-                var blameRepo=(repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.sourceRepo)||repoInfo.repo;
-                var blameRef=repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha;
-                fetchBlame({owner:blameOwner,repo:blameRepo,path:path,ref:blameRef}).then(function(owners){setOwnership(owners);setOwnerLoading(false);}).catch(function(){setOwnerLoading(false);});
-            }else if(localSourceKind){
-                setOwnerLoading(false);
-                setOwnership([]);
-            }
             updateGraphHighlight(path,blast);
         }
     },[data,repositoryGraph,repoInfo,localSourceKind,isMobile]);
     selectFileRef.current=selectFile;
+
+    useEffect(function(){
+        if(!selected||!repoInfo||localSourceKind){
+            setOwnerLoading(false);
+            setOwnership(localSourceKind?[]:null);
+            setOwnershipError(null);
+            return;
+        }
+        var active=true,controller=new AbortController();
+        var context=repositoryGraph&&repositoryGraph.context;
+        setOwnerLoading(true);setOwnership(null);setOwnershipError(null);
+        // The microtask boundary catches a synchronous helper failure too.
+        Promise.resolve().then(function(){
+            return fetchBlame({owner:(context&&context.sourceOwner)||repoInfo.owner,
+                repo:(context&&context.sourceRepo)||repoInfo.repo,path:selected.path,
+                ref:context&&context.resolvedSha,signal:controller.signal});
+        }).then(function(owners){if(active)setOwnership(owners);})
+        .catch(function(err){if(active)setOwnershipError(err.message||'Failed to load ownership');})
+        .finally(function(){if(active)setOwnerLoading(false);});
+        return function(){active=false;controller.abort();};
+    },[selected,repositoryGraph,repoInfo,localSourceKind]);
+
+    useEffect(function(){
+        document.dispatchEvent(new Event('codeflow:navigation'));
+        if(navPanel&&isMobile)setMobilePanel('details');
+        closeFilePreview();
+    },[navPanel,repositoryGraph]);
+
 
     // MOO-69 Commit 4: double-click drill-down. Reads only the already-built
     // repositoryGraph (see finishAnalysis' GitHub-backed branch) -- never
@@ -2622,63 +2679,40 @@ function App(){
     var toggleCard=useCallback(function(id){setExpandedCards(function(prev){var n=new Set(prev);if(n.has(id))n.delete(id);else n.add(id);return n;});},[]);
     var toggleFn=useCallback(function(name){setExpandedFns(function(prev){var n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});},[]);
 
-    // Syntax highlighting function
+    // Tokenize source once; never match generated highlighting markup.
     function highlightSyntax(code,filename){
-        if(!code)return'';
         var ext=(filename||'').split('.').pop().toLowerCase();
-        var isJS=['js','jsx','ts','tsx','mjs','cjs'].includes(ext);
-        var isPy=['py','pyw','pyi'].indexOf(ext)>=0;
-        var isJava=['java','kt','scala','cs','go'].includes(ext);
-        var isHTML=['html','htm','vue','svelte'].includes(ext);
-        var isCSS=['css','scss','sass','less'].includes(ext);
-        var isJSON=['json','yaml','yml','toml'].includes(ext);
-        var isRuby=['rb','rake'].includes(ext);
-        var isPHP=ext==='php';
-        var isVBA=['vba','bas','cls','xlsm','xlam','xlsb','xla','xlw'].includes(ext);
-        function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-        // Split into tokens while preserving structure
-        var result=code.split('\n').map(function(line){
-            var escaped=esc(line);
-            // Comments
-            if(isJS||isJava||isPHP||isCSS)escaped=escaped.replace(/(\/\/.*$)/gm,'<span class="syn-com">$1</span>');
-            if(isPy||isRuby)escaped=escaped.replace(/(#.*$)/gm,'<span class="syn-com">$1</span>');
-            if(isHTML)escaped=escaped.replace(/(&lt;!--[\s\S]*?--&gt;)/g,'<span class="syn-com">$1</span>');
-            // Strings - careful with order
-            escaped=escaped.replace(/(&quot;[^&]*&quot;|'[^']*'|`[^`]*`)/g,'<span class="syn-str">$1</span>');
-            // Numbers
-            escaped=escaped.replace(/\b(\d+\.?\d*)\b/g,'<span class="syn-num">$1</span>');
-            // Keywords
-            if(isJS)escaped=escaped.replace(/\b(const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|import|export|from|default|async|await|yield|typeof|instanceof|in|of|this|super|null|undefined|true|false|void|static|get|set)\b/g,'<span class="syn-kw">$1</span>');
-            if(isPy){
-                escaped=escaped.replace(/\b(async|await|def|class|return|if|elif|else|for|while|try|except|finally|raise|import|from|as|with|pass|break|continue|lambda|yield|global|nonlocal|assert|True|False|None|and|or|not|in|is|del|match|case|type)\b/g,'<span class="syn-kw">$1</span>');
-                escaped=escaped.replace(/(@\w+)/g,'<span class="syn-fn">$1</span>');
-                escaped=escaped.replace(/\b(self|cls)\b/g,'<span class="syn-kw" style="opacity:0.7">$1</span>');
-            }
-            if(isJava)escaped=escaped.replace(/\b(public|private|protected|static|final|void|class|interface|extends|implements|return|if|else|for|while|do|switch|case|break|continue|try|catch|finally|throw|new|import|package|this|super|null|true|false)\b/g,'<span class="syn-kw">$1</span>');
-            if(isRuby)escaped=escaped.replace(/\b(def|class|module|end|return|if|elsif|else|unless|case|when|for|while|until|do|begin|rescue|ensure|raise|require|include|extend|attr_accessor|attr_reader|attr_writer|true|false|nil|self)\b/g,'<span class="syn-kw">$1</span>');
-            if(isPHP)escaped=escaped.replace(/\b(function|class|return|if|else|elseif|for|foreach|while|do|switch|case|break|continue|try|catch|finally|throw|new|public|private|protected|static|const|use|namespace|extends|implements|true|false|null)\b/g,'<span class="syn-kw">$1</span>');
-            if(isVBA)escaped=escaped.replace(/\b(Public|Private|Friend|Static|Dim|Set|Let|Get|Call|Function|Sub|End Sub|End Function|Exit Sub|Exit Function|If|Then|Else|ElseIf|End If|For|To|Step|Next|Do|Loop|While|Wend|Select|Case|End Select|With|End With|On Error|Resume|GoTo|ByVal|ByRef|Optional|ParamArray|As|Type|Enum|Const|True|False|Nothing|Empty|Null|Me|Application|ThisWorkbook|Worksheets|Cells|Range|MsgBox|InputBox|Debug\.Print)\b/gi,'<span class="syn-kw">$1</span>');
-            if(isCSS)escaped=escaped.replace(/(@media|@import|@keyframes|@font-face|!important)/g,'<span class="syn-kw">$1</span>');
-            if(isHTML){escaped=escaped.replace(/(&lt;\/?)([\w-]+)/g,'$1<span class="syn-tag">$2</span>');escaped=escaped.replace(/([\w-]+)(=)/g,'<span class="syn-attr">$1</span>$2');}
-            // Function calls
-            escaped=escaped.replace(/\b([a-zA-Z_]\w*)\s*\(/g,'<span class="syn-fn">$1</span>(');
-            // Types (capitalized words in certain contexts)
-            if(isJS||isJava)escaped=escaped.replace(/:\s*([A-Z]\w*)/g,': <span class="syn-type">$1</span>');
-            return escaped;
+        var hashComments=['py','pyw','pyi','rb','rake','yaml','yml','toml'].includes(ext);
+        var keywords=new Set(('async await def class return if elif else for while try except finally raise import from as with pass break continue lambda yield global nonlocal assert True False None and or not in is del match case type const let var function new export default switch throw catch public private protected static final void interface extends implements package this super null true false').split(' '));
+        function esc(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+        return String(code||'').split('\n').map(function(line){
+            var tokens=/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60(?:\\.|[^\x60\\])*\x60|\/\/.*$|#.*$|\b\d+(?:\.\d+)?\b|\b[A-Za-z_]\w*\b|[\s\S]/g;
+            return Array.from(line.matchAll(tokens),function(m){
+                var t=m[0],kind='';
+                if(/^["'\x60]/.test(t))kind='str';
+                else if(t.startsWith('//')||(hashComments&&t.startsWith('#')))kind='com';
+                else if(/^\d/.test(t))kind='num';
+                else if(keywords.has(t))kind='kw';
+                else if(/^[A-Za-z_]\w*$/.test(t)&&/^\s*\(/.test(line.slice(m.index+t.length)))kind='fn';
+                return kind?'<span class="syn-'+kind+'">'+esc(t)+'</span>':esc(t);
+            }).join('');
         });
-        return result;
     }
 
     // Open file preview
     function openFilePreview(path,line){
         if(!repoInfo)return;
+        previewController.current?.abort();
+        var controller=new AbortController();previewController.current=controller;
+        var generation=++previewGeneration.current;
+        function settlePreview(value){if(generation===previewGeneration.current)setFilePreview(value);}
         var filename=path.split('/').pop();
-        setFilePreview({path:path,filename:filename,content:null,line:line||null,loading:true,error:null});
+        settlePreview({path:path,filename:filename,content:null,line:line||null,loading:true,error:null});
         // Check if we already have the content in data
         if(data){
             var existingFile=data.files.find(function(f){return f.path===path;});
-            if(existingFile&&existingFile.content){
-                setFilePreview({path:path,filename:filename,content:existingFile.content,line:line||null,loading:false,error:null});
+            if(existingFile&&(existingFile.content||(localSourceKind&&existingFile.content!=null))){
+                settlePreview({path:path,filename:filename,content:existingFile.content,line:line||null,loading:false,error:null});
                 return;
             }
         }
@@ -2695,9 +2729,9 @@ function App(){
                     var fileHandle=await currentHandle.getFileHandle(parts[parts.length-1]);
                     var fileObj=await fileHandle.getFile();
                     var content=await fileObj.text();
-                    setFilePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
+                    settlePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
                 }catch(e){
-                    setFilePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:e.message||'Failed to load file'});
+                    settlePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:e.message||'Failed to load file'});
                 }
             })();
         }else if(localSourceKind==='zip'){
@@ -2707,9 +2741,9 @@ function App(){
                     var entry=archive&&archive.entriesByPath?archive.entriesByPath[path]:null;
                     if(!entry)throw new Error('File is not available in the loaded ZIP archive');
                     var content=await entry.async('string');
-                    setFilePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
+                    settlePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
                 }catch(e){
-                    setFilePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:e.message||'Failed to load ZIP file'});
+                    settlePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:e.message||'Failed to load ZIP file'});
                 }
             })();
         }else{
@@ -2736,25 +2770,28 @@ function App(){
             var previewRef=repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha;
             // MOO-86: runs server-side now (the server's own GITHUB_TOKEN)
             // instead of the removed client-side GitHub PAT field.
-            fetchFileContentFromServer({owner:previewOwner,repo:previewRepo,path:path,ref:previewRef}).then(function(content){
-                if(content){
-                    setFilePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
+            Promise.resolve().then(function(){return fetchFileContentFromServer({owner:previewOwner,repo:previewRepo,path:path,ref:previewRef,signal:controller.signal});}).then(function(content){
+                if(content!=null){
+                    settlePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
                 }else{
-                    setFilePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:'Could not load file content'});
+                    settlePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:'Could not load file content'});
                 }
             }).catch(function(e){
-                setFilePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:e.message||'Failed to load file'});
+                settlePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:e.message||'Failed to load file'});
             });
         }
     }
 
-    // Scroll to highlighted line after file preview loads
+    // A dismissed/replaced preview must not scroll a later modal.
     useEffect(function(){
-        if(filePreview&&filePreview.content&&filePreview.line&&filePreviewRef.current){
-            setTimeout(function(){
-                var el=filePreviewRef.current.querySelector('.file-preview-line.highlighted');
+        if(filePreview&&filePreview.content!=null&&filePreview.line&&filePreviewRef.current){
+            var element=filePreviewRef.current;
+            var timer=setTimeout(function(){
+                if(filePreviewRef.current!==element)return;
+                var el=element.querySelector('.file-preview-line.highlighted');
                 if(el)el.scrollIntoView({behavior:'smooth',block:'center'});
             },100);
+            return function(){clearTimeout(timer);};
         }
     },[filePreview]);
 
@@ -3175,10 +3212,12 @@ function App(){
         if(!data||!treemapRef.current||graphConfig.vizType!=='treemap')return;
         var container=d3.select(treemapRef.current);
         container.selectAll('*').remove();
-        var w=treemapRef.current.clientWidth||800,h=treemapRef.current.clientHeight||600;
+        var totalWidth=treemapRef.current.clientWidth||800,h=treemapRef.current.clientHeight||600;
+        var w=Math.max(80,totalWidth*0.55);
+        var labelList=container.append('div').attr('class','treemap-label-list').attr('aria-label','Treemap file labels').style('position','absolute').style('left',w+'px').style('right','0').style('top','0').style('bottom','0').style('overflow','auto').style('padding','6px');
         var svg=container.append('svg').attr('width',w).attr('height',h).style('cursor','grab');
         var g=svg.append('g');
-        var zoom=d3.zoom().scaleExtent([0.3,4]).on('zoom',function(e){g.attr('transform',e.transform);svg.style('cursor',e.transform.k>1?'grab':'default');});
+        var zoom=d3.zoom().scaleExtent([0.3,4]).on('zoom',function(e){g.attr('transform',e.transform);g.selectAll('text').attr('visibility',e.transform.k<0.45?'hidden':null);svg.style('cursor',e.transform.k>1?'grab':'default');});
         svg.call(zoom);
         var hier={name:'root',children:[]};
         var folderMap={};
@@ -3198,9 +3237,17 @@ function App(){
         cells.append('rect').attr('class','treemap-rect').attr('width',function(d){return Math.max(0,d.x1-d.x0);}).attr('height',function(d){return Math.max(0,d.y1-d.y0);})
             .attr('fill',function(d){return colorMap[d.parent.data.name]||COLORS[hier.children.indexOf(d.parent.data)%COLORS.length];})
             .attr('opacity',0.85).attr('rx',3).attr('stroke','var(--bg0)').attr('stroke-width',1).style('cursor','pointer');
-        cells.filter(function(d){return d.x1-d.x0>45&&d.y1-d.y0>22;}).append('text').attr('class','treemap-text')
-            .attr('x',4).attr('y',14).attr('fill','white').attr('font-size','10px').attr('font-weight','500').style('text-shadow','0 1px 2px rgba(0,0,0,0.5)').style('pointer-events','none')
-            .text(function(d){var n=d.data.name.replace(/\.[^.]+$/,'');var maxLen=Math.floor((d.x1-d.x0-8)/6);return n.length>maxLen?n.slice(0,maxLen-1)+'…':n;});
+        labelList.selectAll('button').data(root.leaves()).join('button')
+            .attr('type','button').attr('class','top-btn treemap-text')
+            .attr('aria-label',function(d){return 'Select treemap file: '+d.data.path;})
+            .style('display','block').style('width','100%').style('min-height','36px')
+            .style('text-align','left').style('white-space','normal').style('overflow-wrap','anywhere')
+            .style('border-left',function(d){return '4px solid '+(colorMap[d.parent.data.name]||COLORS[0]);})
+            .style('background',function(d){return selected?.path===d.data.path?'var(--accbg)':'';})
+            .text(function(d){return d.data.name;})
+            .on('mouseenter',function(e,d){cells.select('rect').attr('opacity',function(n){return n===d?1:0.25;});})
+            .on('mouseleave',function(){cells.select('rect').attr('opacity',0.85);})
+            .on('click',function(e,d){e.stopPropagation();selectFileRef.current?.(d.data.path);});
         cells.filter(function(d){return d.x1-d.x0>60&&d.y1-d.y0>35;}).append('text').attr('class','treemap-subtext')
             .attr('x',4).attr('y',26).attr('fill','rgba(255,255,255,0.7)').attr('font-size','8px').style('pointer-events','none')
             .text(function(d){return d.data.value+' lines';});
@@ -3240,7 +3287,7 @@ function App(){
             cells.select('rect').transition().duration(300).attr('opacity',0.85).attr('fill',function(d){return colorMap[d.parent.data.name]||COLORS[0];}).attr('stroke','var(--bg0)').attr('stroke-width',1);
         });
         svg.on('dblclick.zoom',function(e){e.preventDefault();svg.transition().duration(300).call(zoom.scaleTo,1);});
-    },[data,graphConfig.vizType,colorMap,folderFilter,selected,blastRadius]);
+    },[data,graphConfig.vizType,colorMap,folderFilter,selected,blastRadius,viewportWidth,sidebarWidth,rightPanelWidth]);
 
     // Dependency Matrix visualization - Interactive with zoom, highlighting, selection
     useEffect(function(){
@@ -3249,31 +3296,36 @@ function App(){
         container.selectAll('*').remove();
         var w=matrixRef.current.clientWidth||800,h=matrixRef.current.clientHeight||600;
         var svg=container.append('svg').attr('width',w).attr('height',h);
-        var g=svg.append('g').attr('transform','translate(100,80)');
-        var zoom=d3.zoom().scaleExtent([0.5,3]).on('zoom',function(e){g.attr('transform','translate('+(100+e.transform.x)+','+(80+e.transform.y)+') scale('+e.transform.k+')');});
-        svg.call(zoom);
+        var g=svg.append('g');
         var filteredFiles=folderFilter?data.files.filter(function(f){return f.folder===folderFilter||f.folder.startsWith(folderFilter+'/');}):data.files;
-        var files=filteredFiles.slice(0,40);
-        var n=files.length;
-        var cellSize=Math.min(18,Math.max(10,(Math.min(w-120,h-100))/n));
-        var matrix=[];var fileIdx={};
-        files.forEach(function(f,i){fileIdx[f.path]=i;matrix[i]=[];for(var j=0;j<n;j++)matrix[i][j]=0;});
+        var files=filteredFiles;
+        var n=files.length,cellSize=20;
+        // One zero plane and only existing connection cells: O(files+edges),
+        // never a quadratic allocation for an uncapped repository.
+        var sparseCells=new Map(),fileIdx=new Map();
+        files.forEach(function(f,i){fileIdx.set(f.path,i);});
         data.connections.forEach(function(c){
             var src=typeof c.source==='object'?c.source.id:c.source;
             var tgt=typeof c.target==='object'?c.target.id:c.target;
-            if(fileIdx[src]!==undefined&&fileIdx[tgt]!==undefined)matrix[fileIdx[src]][fileIdx[tgt]]+=c.count||1;
+            if(fileIdx.has(src)&&fileIdx.has(tgt)){
+                var row=fileIdx.get(src),col=fileIdx.get(tgt),key=row+':'+col;
+                var entry=sparseCells.get(key)||{row:row,col:col,value:0,source:files[row],target:files[col]};
+                entry.value+=c.count||1;sparseCells.set(key,entry);
+            }
         });
-        var maxVal=1;matrix.forEach(function(row){row.forEach(function(v){if(v>maxVal)maxVal=v;});});
+        var cellData=Array.from(sparseCells.values()),maxVal=1;
+        cellData.forEach(function(cell){maxVal=Math.max(maxVal,cell.value);});
+        g.append('rect').attr('class','matrix-zero-plane').attr('width',n*cellSize).attr('height',n*cellSize).attr('fill','var(--bg2)');
         var colLabels=g.selectAll('text.col-label').data(files).join('text').attr('class','col-label')
-            .attr('x',function(d,i){return i*cellSize+cellSize/2;}).attr('y',-8).attr('text-anchor','start').attr('transform',function(d,i){return'rotate(-45,'+(i*cellSize+cellSize/2)+','+-8+')';})
-            .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){var n=d.name.replace(/\.[^.]+$/,'');return n.length>10?n.slice(0,8)+'…':n;}).style('cursor','pointer')
+            .attr('x',function(d,i){return i*cellSize+cellSize/2;}).attr('y',-8).attr('text-anchor','start').attr('transform',function(d,i){return'rotate(-90,'+(i*cellSize+cellSize/2)+','+-8+')';})
+            .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){return d.name;}).style('cursor','pointer')
             .on('click',function(e,d){if(selectFileRef.current)selectFileRef.current(d.path);});
         var rowLabels=g.selectAll('text.row-label').data(files).join('text').attr('class','row-label')
             .attr('x',-8).attr('y',function(d,i){return i*cellSize+cellSize/2+3;}).attr('text-anchor','end')
-            .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){var n=d.name.replace(/\.[^.]+$/,'');return n.length>10?n.slice(0,8)+'…':n;}).style('cursor','pointer')
+            .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){return d.name;}).style('cursor','pointer')
             .on('click',function(e,d){if(selectFileRef.current)selectFileRef.current(d.path);});
-        var cellData=[];
-        files.forEach(function(f,i){files.forEach(function(g,j){cellData.push({row:i,col:j,value:matrix[i][j],source:f,target:g});});});
+        makeAlternateSelectable(colLabels,{path:function(d){return d.path;},select:function(path){selectFileRef.current?.(path);}});
+        makeAlternateSelectable(rowLabels,{path:function(d){return d.path;},select:function(path){selectFileRef.current?.(path);}});
         var tooltip=container.append('div').attr('class','treemap-tooltip').style('display','none').style('position','absolute');
         var cells=g.selectAll('rect.matrix-cell-rect').data(cellData).join('rect').attr('class','matrix-cell-rect')
             .attr('x',function(d){return d.col*cellSize;}).attr('y',function(d){return d.row*cellSize;})
@@ -3299,6 +3351,8 @@ function App(){
         }).on('click',function(e,d){e.stopPropagation();if(selectFileRef.current)selectFileRef.current(d.source.path);});
         var legend=container.append('div').attr('class','heatmap-legend').style('position','absolute').style('bottom','60px').style('right','20px');
         legend.html('<div style="font-size:9px;color:var(--t2)">Connection Strength</div><div class="heatmap-gradient"></div><div style="display:flex;justify-content:space-between;font-size:8px;color:var(--t3)"><span>0</span><span>'+maxVal+'</span></div>');
+        var viewport=installAlternateViewport({container:container,svg:svg,content:g});
+        return function(){viewport.dispose();};
     },[data,graphConfig.vizType,folderFilter]);
 
     // Cluster Dendrogram - Hierarchical tree visualization
@@ -3308,20 +3362,18 @@ function App(){
         container.selectAll('*').remove();
         var w=dendroRef.current.clientWidth||800,h=dendroRef.current.clientHeight||600;
         var svg=container.append('svg').attr('width',w).attr('height',h);
-        var g=svg.append('g').attr('transform','translate(80,20)');
-        var zoom=d3.zoom().scaleExtent([0.3,3]).on('zoom',function(e){g.attr('transform','translate('+(80+e.transform.x)+','+(20+e.transform.y)+') scale('+e.transform.k+')');});
-        svg.call(zoom);
+        var g=svg.append('g');
         var filteredFiles=folderFilter?data.files.filter(function(f){return f.folder===folderFilter||f.folder.startsWith(folderFilter+'/');}):data.files;
         var hier={name:'root',children:[]};
         var folderMap={};
-        filteredFiles.slice(0,80).forEach(function(f){
+        filteredFiles.forEach(function(f){
             var folder=f.folder||'root';
-            if(!folderMap[folder])folderMap[folder]={name:folder.split('/').pop()||'root',fullPath:folder,children:[]};
+            if(!folderMap[folder])folderMap[folder]={name:folder||'root',fullPath:folder,children:[]};
             folderMap[folder].children.push({name:f.name,path:f.path,fns:f.functions.length,lines:f.lines,folder:folder,layer:f.layer});
         });
         hier.children=Object.values(folderMap);
         var root=d3.hierarchy(hier);
-        var treeLayout=d3.cluster().size([h-60,w-200]);
+        var treeLayout=d3.cluster().size([Math.max(h-60,root.leaves().length*20),Math.max(190,w-200)]);
         treeLayout(root);
         var tooltip=container.append('div').attr('class','treemap-tooltip').style('display','none').style('position','absolute');
         g.selectAll('path.dendro-link').data(root.links()).join('path').attr('class','dendro-link')
@@ -3333,7 +3385,7 @@ function App(){
             .attr('fill',function(d){return d.children?'var(--bg3)':colorMap[d.data.folder]||COLORS[0];})
             .attr('stroke',function(d){return d.children?'var(--t3)':'var(--bg0)';}).attr('stroke-width',2);
         node.filter(function(d){return!d.children;}).append('text').attr('x',12).attr('dy','0.35em')
-            .attr('fill','var(--t1)').attr('font-size','9px').text(function(d){var n=d.data.name.replace(/\.[^.]+$/,'');return n.length>20?n.slice(0,18)+'…':n;});
+            .attr('fill','var(--t1)').attr('font-size','9px').text(function(d){return d.data.name;});
         node.filter(function(d){return d.children&&d.depth>0;}).append('text').attr('x',-10).attr('dy','0.35em').attr('text-anchor','end')
             .attr('fill','var(--t2)').attr('font-size','10px').attr('font-weight','600').text(function(d){return d.data.name;});
         node.on('mouseenter',function(e,d){
@@ -3354,6 +3406,10 @@ function App(){
             if(d.data.path&&selectFileRef.current)selectFileRef.current(d.data.path);
             else if(d.data.fullPath)filterByFolder(d.data.fullPath);
         });
+        makeAlternateSelectable(node.filter(function(d){return!!d.data.path;}),{path:function(d){return d.data.path;},select:function(path){selectFileRef.current?.(path);}});
+        makeAlternateSelectable(node.filter(function(d){return!d.data.path&&!!d.data.fullPath;}),{path:function(d){return d.data.fullPath;},select:filterByFolder,prefix:'Filter folder: '});
+        var viewport=installAlternateViewport({container:container,svg:svg,content:g});
+        return function(){viewport.dispose();};
     },[data,graphConfig.vizType,colorMap,folderFilter]);
 
     // Sankey Diagram - Flow visualization showing dependencies between folders
@@ -3363,26 +3419,25 @@ function App(){
         container.selectAll('*').remove();
         var w=sankeyRef.current.clientWidth||800,h=sankeyRef.current.clientHeight||600;
         var svg=container.append('svg').attr('width',w).attr('height',h);
-        var g=svg.append('g').attr('transform','translate(20,20)');
-        var zoom=d3.zoom().scaleExtent([0.5,2]).on('zoom',function(e){g.attr('transform','translate('+(20+e.transform.x)+','+(20+e.transform.y)+') scale('+e.transform.k+')');});
-        svg.call(zoom);
+        var g=svg.append('g');
         var filteredFiles=folderFilter?data.files.filter(function(f){return f.folder===folderFilter||f.folder.startsWith(folderFilter+'/');}):data.files;
-        var folders=[...new Set(filteredFiles.map(function(f){return f.folder||'root';}))].slice(0,15);
+        var folders=[...new Set(filteredFiles.map(function(f){return f.folder||'root';}))];
         var folderIdx={};folders.forEach(function(f,i){folderIdx[f]=i;});
         var filteredPaths=new Set(filteredFiles.map(function(f){return f.path;}));
         var flowMap={};
+        var sourceFiles=new Map(data.files.map(function(f){return[f.path,f];}));
         data.connections.forEach(function(c){
             var src=typeof c.source==='object'?c.source.id:c.source;
             var tgt=typeof c.target==='object'?c.target.id:c.target;
             if(!filteredPaths.has(src)&&!filteredPaths.has(tgt))return;
-            var srcFile=data.files.find(function(f){return f.path===src;});
-            var tgtFile=data.files.find(function(f){return f.path===tgt;});
+            var srcFile=sourceFiles.get(src);
+            var tgtFile=sourceFiles.get(tgt);
             if(srcFile&&tgtFile&&srcFile.folder!==tgtFile.folder){
                 var key=srcFile.folder+'|'+tgtFile.folder;
                 flowMap[key]=(flowMap[key]||0)+(c.count||1);
             }
         });
-        var nodes=folders.map(function(f,i){return{id:i,name:f.split('/').pop()||'root',fullPath:f,fileCount:filteredFiles.filter(function(x){return x.folder===f;}).length};});
+        var nodes=folders.map(function(f,i){return{id:i,name:f,fullPath:f,fileCount:filteredFiles.filter(function(x){return x.folder===f;}).length};});
         // Merge bidirectional flows to avoid circular link errors
         var linkMap={};
         Object.entries(flowMap).forEach(function(e){
@@ -3401,17 +3456,24 @@ function App(){
             else if(net<0)links.push({source:l.b,target:l.a,value:-net});
             else if(l.ab>0)links.push({source:l.a,target:l.b,value:l.ab});
         });
-        if(links.length===0){
-            g.append('text').attr('x',w/2-20).attr('y',h/2).attr('fill','var(--t3)').attr('font-size','12px').text('No cross-folder dependencies to visualize');
-            return;
+        function flowFallback(message){
+            container.append('div').attr('role','status').attr('class','sankey-unavailable')
+                .style('position','absolute').style('left','12px').style('right','12px').style('top','92px')
+                .style('font-size','12px').style('overflow-wrap','anywhere').text(message);
+            var rows=g.selectAll('text.sankey-folder-fallback').data(nodes).join('text').attr('class','sankey-folder-fallback')
+                .attr('x',0).attr('y',function(d,i){return i*22;}).attr('font-size','10px').attr('fill','var(--t1)')
+                .text(function(d){return d.fullPath+' ('+d.fileCount+')';}).on('click',function(e,d){e.stopPropagation();filterByFolder(d.fullPath);});
+            makeAlternateSelectable(rows,{path:function(d){return d.fullPath;},select:filterByFolder,prefix:'Filter folder: '});
+            var viewport=installAlternateViewport({container:container,svg:svg,content:g,topInset:180});
+            return function(){viewport.dispose();};
         }
-        var sankey=d3.sankey().nodeId(function(d){return d.id;}).nodeWidth(20).nodePadding(15).extent([[0,0],[w-60,h-60]]);
+        if(links.length===0)return flowFallback('No cross-folder dependencies to visualize. All folders are listed below.');
+        var sankey=d3.sankey().nodeId(function(d){return d.id;}).nodeWidth(20).nodePadding(20).extent([[0,0],[Math.max(200,w-60),Math.max(h-60,nodes.length*32)]]);
         var graph;
         try{
             graph=sankey({nodes:nodes.map(function(d){return Object.assign({},d);}),links:links.map(function(d){return Object.assign({},d);})});
         }catch(e){
-            g.append('text').attr('x',w/2-20).attr('y',h/2).attr('fill','var(--t3)').attr('font-size','12px').attr('text-anchor','middle').text('Sankey diagram unavailable: dependency graph has circular references. Try the Force Graph view.');
-            return;
+            return flowFallback('Sankey diagram unavailable: dependency graph has circular references. Try the Force Graph view. All folders are listed below.');
         }
         var tooltip=container.append('div').attr('class','treemap-tooltip').style('display','none').style('position','absolute');
         g.selectAll('path.sankey-link').data(graph.links).join('path').attr('class','sankey-link')
@@ -3440,6 +3502,16 @@ function App(){
             g.selectAll('path.sankey-link').attr('stroke-opacity',function(l){return l.source.id===d.id||l.target.id===d.id?0.8:0.1;});
         }).on('mouseleave',function(){tooltip.style('display','none');g.selectAll('path.sankey-link').attr('stroke-opacity',0.4);})
         .on('click',function(e,d){e.stopPropagation();filterByFolder(d.fullPath);});
+        makeAlternateSelectable(node,{path:function(d){return d.fullPath;},select:filterByFolder,prefix:'Filter folder: '});
+        function measureFlowLabels(){
+            var widest=1;node.selectAll('text').each(function(){widest=Math.max(widest,this.getBBox().width);});
+            graph.nodes.forEach(function(d){d.x0=d.depth*(widest+64);d.x1=d.x0+20;});
+            node.select('rect').attr('x',function(d){return d.x0;}).attr('width',20);
+            node.select('text').attr('x',function(d){return d.x1+8;}).attr('text-anchor','start');
+            g.selectAll('path.sankey-link').attr('d',d3.sankeyLinkHorizontal());
+        }
+        var viewport=installAlternateViewport({container:container,svg:svg,content:g,onMeasure:measureFlowLabels});
+        return function(){viewport.dispose();};
     },[data,graphConfig.vizType,colorMap,folderFilter]);
 
     // Disjoint Force-Directed - Separate clusters per folder
@@ -3450,14 +3522,12 @@ function App(){
         var w=disjointRef.current.clientWidth||800,h=disjointRef.current.clientHeight||600;
         var svg=container.append('svg').attr('width',w).attr('height',h);
         var g=svg.append('g');
-        var zoom=d3.zoom().scaleExtent([0.2,4]).on('zoom',function(e){g.attr('transform',e.transform);});
-        svg.call(zoom);
         var filteredFiles=folderFilter?data.files.filter(function(f){return f.folder===folderFilter||f.folder.startsWith(folderFilter+'/');}):data.files;
-        var files=filteredFiles.slice(0,100);
+        var files=filteredFiles;
         var fileIdx={};files.forEach(function(f,i){fileIdx[f.path]=i;});
         var folders=[...new Set(files.map(function(f){return f.folder||'root';}))];
         var cols=Math.ceil(Math.sqrt(folders.length));
-        var cellW=w/cols,cellH=h/Math.ceil(folders.length/cols);
+        var cellW=Math.max(700,w/Math.max(1,cols)),cellH=Math.max(700,h/Math.max(1,Math.ceil(folders.length/cols)));
         var centers={};
         folders.forEach(function(f,i){centers[f]={x:(i%cols+0.5)*cellW,y:(Math.floor(i/cols)+0.5)*cellH};});
         var nodes=files.map(function(f){return{id:f.path,name:f.name,folder:f.folder||'root',fns:f.functions.length,lines:f.lines,layer:f.layer,cx:centers[f.folder||'root'].x,cy:centers[f.folder||'root'].y};});
@@ -3473,14 +3543,12 @@ function App(){
             .force('x',d3.forceX(function(d){return d.cx;}).strength(0.15))
             .force('y',d3.forceY(function(d){return d.cy;}).strength(0.15))
             .force('collide',d3.forceCollide(15));
-        g.selectAll('rect.cluster-bg').data(folders).join('rect').attr('class','cluster-bg')
-            .attr('x',function(d,i){return(i%cols)*cellW+10;}).attr('y',function(d,i){return Math.floor(i/cols)*cellH+10;})
-            .attr('width',cellW-20).attr('height',cellH-20).attr('rx',12)
-            .attr('fill',function(d){return colorMap[d]||COLORS[folders.indexOf(d)%COLORS.length];}).attr('opacity',0.08)
-            .attr('stroke',function(d){return colorMap[d]||COLORS[folders.indexOf(d)%COLORS.length];}).attr('stroke-width',1).attr('stroke-opacity',0.3);
-        g.selectAll('text.cluster-label').data(folders).join('text').attr('class','cluster-label')
-            .attr('x',function(d,i){return(i%cols)*cellW+20;}).attr('y',function(d,i){return Math.floor(i/cols)*cellH+28;})
-            .attr('fill','var(--t2)').attr('font-size','11px').attr('font-weight','600').text(function(d){return d.split('/').pop()||'root';});
+        // A full folder key sits above the measured graph, outside node labels.
+        var folderLabels=g.selectAll('text.cluster-label').data(folders).join('text').attr('class','cluster-label')
+            .attr('x',0).attr('y',function(d,i){return -30-i*20;})
+            .attr('fill',function(d){return colorMap[d]||COLORS[0];}).attr('font-size','11px').attr('font-weight','600').text(function(d){return d;})
+            .on('click',function(e,d){e.stopPropagation();filterByFolder(d);});
+        makeAlternateSelectable(folderLabels,{path:function(d){return d;},select:filterByFolder,prefix:'Filter folder: '});
         var link=g.selectAll('line.disjoint-link').data(links).join('line').attr('class','disjoint-link')
             .attr('stroke','var(--border)').attr('stroke-width',1).attr('stroke-opacity',0.3);
         var tooltip=container.append('div').attr('class','treemap-tooltip').style('display','none').style('position','absolute');
@@ -3489,6 +3557,14 @@ function App(){
                 .on('drag',function(e,d){d.fx=e.x;d.fy=e.y;}).on('end',function(e,d){if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
         node.append('circle').attr('class','disjoint-circle').attr('r',function(d){return Math.max(6,Math.min(14,4+d.fns));})
             .attr('fill',function(d){return colorMap[d.folder]||COLORS[0];}).attr('stroke','var(--bg0)').attr('stroke-width',1.5);
+        node.append('text').attr('class','disjoint-label').attr('x',20).attr('dy','0.35em')
+            .attr('font-size','10px').attr('fill','var(--t1)').text(function(d){return d.name;});
+        makeAlternateSelectable(node,{path:function(d){return d.id;},select:function(path){if(selectFileRef.current)selectFileRef.current(path);}});
+        function measureClusterLabels(){
+            node.each(function(d){var b=this.getBBox();d.labelRadius=Math.hypot(Math.max(Math.abs(b.x),Math.abs(b.x+b.width)),Math.max(Math.abs(b.y),Math.abs(b.y+b.height)))+8;});
+            sim.force('collide',d3.forceCollide(function(d){return d.labelRadius;}).strength(1).iterations(3));
+            sim.alpha(0.6).restart();
+        }
         node.on('mouseenter',function(e,d){
             tooltip.html(renderTooltipHtml(d.name,[
                 {label:'Lines',value:d.lines||0},
@@ -3504,27 +3580,38 @@ function App(){
             link.attr('stroke-opacity',0.3).attr('stroke','var(--border)');
             d3.select(this).select('circle').transition().duration(150).attr('r',Math.max(6,Math.min(14,4+d.fns))).attr('stroke','var(--bg0)').attr('stroke-width',1.5);
         }).on('click',function(e,d){e.stopPropagation();if(selectFileRef.current)selectFileRef.current(d.id);});
-        sim.on('tick',function(){
+        function drawCluster(){
             link.attr('x1',function(d){return d.source.x;}).attr('y1',function(d){return d.source.y;}).attr('x2',function(d){return d.target.x;}).attr('y2',function(d){return d.target.y;});
             node.attr('transform',function(d){return'translate('+d.x+','+d.y+')';});
-        });
+            var minY=d3.min(nodes,function(d){return d.y-(d.labelRadius||20);})||0;
+            folderLabels.attr('y',function(d,i){return minY-30-i*20;});
+        }
+        sim.on('tick',drawCluster);
         svg.on('click',function(){setSelected(null);setBlastRadius(null);});
-        return function(){sim.stop();};
+        var viewport=installAlternateViewport({container:container,svg:svg,content:g,onMeasure:measureClusterLabels});
+        sim.on('end.alt-view',function(){
+            // Finish with the same bounded collision-only relaxation as the
+            // repository renderer; attraction must not leave labels compressed.
+            var settle=d3.forceSimulation(nodes).stop().velocityDecay(0.2)
+                .force('collision',d3.forceCollide().radius(function(d){return d.labelRadius;}).iterations(8));
+            settle.tick(80);settle.stop();drawCluster();viewport.fit();
+        });
+        return function(){sim.stop();viewport.dispose();};
     },[data,graphConfig.vizType,colorMap,folderFilter]);
 
     // Circular Bundle visualization - Interactive with zoom, selection, blast radius
+    var bundleSelectionRef=useRef(null),bundleApplySelectionRef=useRef(null);
+    bundleSelectionRef.current={selected:selected,blastRadius:blastRadius};
     useEffect(function(){
         if(!data||!bundleRef.current||graphConfig.vizType!=='bundle')return;
         var container=d3.select(bundleRef.current);
         container.selectAll('*').remove();
         var w=bundleRef.current.clientWidth||800,h=bundleRef.current.clientHeight||600;
         var svg=container.append('svg').attr('width',w).attr('height',h);
-        var mainG=svg.append('g').attr('transform','translate('+w/2+','+h/2+')');
-        var zoom=d3.zoom().scaleExtent([0.4,3]).on('zoom',function(e){mainG.attr('transform','translate('+(w/2+e.transform.x)+','+(h/2+e.transform.y)+') scale('+e.transform.k+')');});
-        svg.call(zoom);
-        var radius=Math.min(w,h)/2-100;
+        var mainG=svg.append('g');
         var filteredFiles=folderFilter?data.files.filter(function(f){return f.folder===folderFilter||f.folder.startsWith(folderFilter+'/');}):data.files;
-        var files=filteredFiles.slice(0,70);
+        var files=filteredFiles;
+        var radius=Math.max(80,Math.min(w,h)/2-100,files.length*16/(2*Math.PI));
         var fileIdx={};files.forEach(function(f,i){fileIdx[f.path]=i;});
         var folderGroups={};files.forEach(function(f){var folder=f.folder||'root';if(!folderGroups[folder])folderGroups[folder]=[];folderGroups[folder].push(f);});
         var nodes=[],angle=0;
@@ -3578,7 +3665,8 @@ function App(){
         node.append('circle').attr('class','bundle-circle').attr('r',6).attr('fill',function(d){return colorMap[d.folder]||COLORS[0];}).attr('stroke','var(--bg0)').attr('stroke-width',1.5)
             .attr('transform',function(d){return d.angle>Math.PI?'translate(-6,0)':'translate(6,0)';});
         node.append('text').attr('dy','0.31em').attr('x',function(d){return d.angle>Math.PI?-14:14;}).attr('text-anchor',function(d){return d.angle>Math.PI?'end':'start';})
-            .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){var n=d.name.replace(/\.[^.]+$/,'');return n.length>16?n.slice(0,13)+'…':n;});
+            .attr('fill','var(--t2)').attr('font-size','9px').text(function(d){return d.name;});
+        makeAlternateSelectable(node,{path:function(d){return d.id;},select:function(path){if(selectFileRef.current)selectFileRef.current(path);}});
         function applyBundleDefaultState(){
             link.transition().duration(200)
                 .attr('stroke-opacity',0.35)
@@ -3629,8 +3717,9 @@ function App(){
         }).on('mousemove',function(e){var rect=bundleRef.current.getBoundingClientRect();tooltip.style('left',(e.clientX-rect.left+15)+'px').style('top',(e.clientY-rect.top+15)+'px');})
         .on('mouseleave',function(){
             tooltip.style('display','none');
-            if(selected&&nodeMap[selected.path]){
-                applyBundleSelectionState(selected.path,blastRadius);
+            var state=bundleSelectionRef.current;
+            if(state.selected&&nodeMap[state.selected.path]){
+                applyBundleSelectionState(state.selected.path,state.blastRadius);
             }else{
                 applyBundleDefaultState();
             }
@@ -3640,7 +3729,8 @@ function App(){
                 selectFileRef.current(d.id);
             }
         });
-        var arcGen=d3.arc().innerRadius(radius+20).outerRadius(radius+30);
+        // Folder bands sit inside the circle, away from complete radial names.
+        var arcGen=d3.arc().innerRadius(radius-28).outerRadius(radius-20);
         var folderAngleStart=0;
         sortedFolders.forEach(function(entry,i){
             var folder=entry[0],count=entry[1].length;
@@ -3648,25 +3738,32 @@ function App(){
             mainG.append('path').attr('d',arcGen({startAngle:folderAngleStart,endAngle:folderAngleStart+span}))
                 .attr('fill',colorMap[folder]||COLORS[i%COLORS.length]).attr('opacity',0.5).style('cursor','pointer')
                 .on('click',function(){filterByFolder(folder);});
-            if(span>0.15){
-                var midAngle=folderAngleStart+span/2-Math.PI/2;
-                mainG.append('text').attr('x',Math.cos(midAngle)*(radius+40)).attr('y',Math.sin(midAngle)*(radius+40))
-                    .attr('text-anchor','middle').attr('fill','var(--t2)').attr('font-size','8px')
-                    .attr('transform','rotate('+(midAngle*180/Math.PI+90)+','+Math.cos(midAngle)*(radius+40)+','+Math.sin(midAngle)*(radius+40)+')')
-                    .text(folder.split('/').pop()||'root');
-            }
             folderAngleStart+=span;
         });
+        // A measured key represents every folder, including single-file folders.
+        var folderLabels=mainG.selectAll('text.bundle-folder-label').data(sortedFolders).join('text').attr('class','bundle-folder-label')
+            .attr('y',function(d,i){return i*20;}).attr('fill',function(d,i){return colorMap[d[0]]||COLORS[i%COLORS.length];})
+            .attr('font-size','10px').text(function(d){return d[0];})
+            .on('click',function(e,d){e.stopPropagation();filterByFolder(d[0]);});
+        makeAlternateSelectable(folderLabels,{path:function(d){return d[0];},select:filterByFolder,prefix:'Filter folder: '});
+        function measureBundleLabels(){
+            var widest=0;node.selectAll('text').each(function(){widest=Math.max(widest,this.getBBox().width);});
+            folderLabels.attr('x',radius+widest+70);
+        }
         svg.on('click',function(){
             setSelected(null);setBlastRadius(null);
             applyBundleDefaultState();
         });
-        if(selected&&nodeMap[selected.path]){
-            applyBundleSelectionState(selected.path,blastRadius);
-        }else{
-            applyBundleDefaultState();
-        }
-    },[data,graphConfig.vizType,colorMap,folderFilter,selected,blastRadius]);
+        bundleApplySelectionRef.current=function(){
+            var state=bundleSelectionRef.current;
+            if(state.selected&&nodeMap[state.selected.path])applyBundleSelectionState(state.selected.path,state.blastRadius);
+            else applyBundleDefaultState();
+        };
+        bundleApplySelectionRef.current();
+        var viewport=installAlternateViewport({container:container,svg:svg,content:mainG,onMeasure:measureBundleLabels});
+        return function(){bundleApplySelectionRef.current=null;viewport.dispose();};
+    },[data,graphConfig.vizType,colorMap,folderFilter]);
+    useEffect(function(){if(bundleApplySelectionRef.current)bundleApplySelectionRef.current();},[selected,blastRadius]);
 
     function zoomIn(){
         if(graphConfig.vizType==='graph3d'&&graph3dInstanceRef.current){
@@ -3704,11 +3801,14 @@ function App(){
         if(!zoomRef.current||!svgRef.current||!simRef.current)return null;
         var nodes=simRef.current.nodes();
         if(!nodes.length)return null;
-        var xs=nodes.map(function(n){return n.x;}),ys=nodes.map(function(n){return n.y;});
-        var minX=Math.min.apply(null,xs),maxX=Math.max.apply(null,xs),minY=Math.min.apply(null,ys),maxY=Math.max.apply(null,ys);
+        // Include complete labels and folder titles, not only node centers.
+        var group=svgRef.current.querySelector('g');
+        if(!group)return null;
+        var bounds=group.getBBox();
+        var minX=bounds.x,maxX=bounds.x+bounds.width,minY=bounds.y,maxY=bounds.y+bounds.height;
         var w=svgRef.current.clientWidth,h=svgRef.current.clientHeight;
         if(w<1||h<1)return null;
-        var scale=0.8/Math.max((maxX-minX+paddingSlack)/w,(maxY-minY+paddingSlack)/h);
+        var scale=Math.min(2,0.8/Math.max((maxX-minX+paddingSlack)/w,(maxY-minY+paddingSlack)/h));
         return d3.zoomIdentity.translate(w/2-scale*(minX+maxX)/2,h/2-scale*(minY+maxY)/2).scale(Math.min(scale,2));
     }
     function fitView(){
@@ -4248,7 +4348,7 @@ function App(){
                         ]).then(function(results){
                             var content=results[0];
                             var commits=results[1];
-                            if(content){
+                            if(content!=null){
                                 var layer=Parser.detectLayer(f.path);
                                 var actualIsCode=!Parser.isScriptContainer(f.path)||Parser.hasEmbeddedCode(content,f.path);
                                 var fns=actualIsCode?Parser.extract(content,f.path):[];
@@ -4326,7 +4426,7 @@ function App(){
             if(isCurrentAnalysisGeneration(generation)){showNotification('Could not load PR','error');setLoading(false);}
         });
     }
-    function resetAnalysis(){if(pendingSessionRef.current){pendingSessionRef.current.cancelAll();pendingSessionRef.current=null;}if(activeSessionRef.current){activeSessionRef.current.cancelAll();activeSessionRef.current=null;}setData(null);setRepositoryGraph(null);resetNavHistory();graphCacheRef.current.clear();setSelected(null);setBlastRadius(null);setOwnership(null);setRepoInfo(null);setRepoUrl('');setPrData(null);setFolderFilter(null);setLocalDirHandle(null);setLocalSourceKind(null);setArchitectureIncludeTests(false);setArchitectureIncludeBuildOutput(false);zipArchiveRef.current=null;zipFileRef.current=null;clearRoute();}
+    function resetAnalysis(){beginNewAnalysisGeneration();closeFilePreview();setRepositorySearch('');setLoading(false);if(pendingSessionRef.current){pendingSessionRef.current.cancelAll();pendingSessionRef.current=null;}if(activeSessionRef.current){activeSessionRef.current.cancelAll();activeSessionRef.current=null;}setData(null);setRepositoryGraph(null);resetNavHistory();graphCacheRef.current.clear();setSelected(null);setBlastRadius(null);setOwnership(null);setRepoInfo(null);setRepoUrl('');setPrData(null);setFolderFilter(null);setLocalDirHandle(null);setLocalSourceKind(null);setArchitectureIncludeTests(false);setArchitectureIncludeBuildOutput(false);zipArchiveRef.current=null;zipFileRef.current=null;clearRoute();}
     function filterByFolder(path){setFolderFilter(function(prev){return prev===path?null:path;});}
     function getArchitectureViewStats(diagram,includeTests,includeBuildOutput){
         if(!diagram)return{blocks:0,dependencies:0,routes:0,apiRoutes:0,databaseTouchpoints:0,warnings:0};
@@ -4601,6 +4701,9 @@ function App(){
                     ),
                     React.createElement('div',{className:'sidebar-section',style:{paddingBottom:8}},
                         React.createElement('div',{className:'sidebar-title'},'Explorer'),
+                        React.createElement('input',{type:'search','aria-label':'Search repository files',placeholder:'Search file paths',value:repositorySearch,onChange:function(e){setRepositorySearch(e.target.value);},style:{width:'100%',boxSizing:'border-box',marginTop:8,minHeight:36}}),
+                        repositorySearch.trim()&&React.createElement('div',{'aria-live':'polite',style:{fontSize:11,marginTop:6}},repositoryMatches.length+' matching files'),
+                        repositorySearch.trim()&&React.createElement('div',{'aria-label':'Repository search results',style:{maxHeight:240,overflow:'auto'}},repositoryMatches.map(function(f){return React.createElement('button',{key:f.path,type:'button',className:'top-btn','aria-label':'Select file: '+f.path,onClick:function(){selectFile(f.path);},style:{display:'block',width:'100%',textAlign:'left',whiteSpace:'normal',overflowWrap:'anywhere',minHeight:36}},f.path);})),
                         folderFilter&&React.createElement('button',{className:'top-btn',style:{width:'100%',marginTop:8},onClick:function(){setFolderFilter(null);}},
                             React.createElement(Icon,{name:'close',size:'s'}),
                             ' Clear Filter: ',
@@ -4615,7 +4718,7 @@ function App(){
                 )
             ),
             React.createElement('div',{className:'canvas-area'},
-                loading?React.createElement('div',{className:'loading'},React.createElement('div',{className:'spinner'}),React.createElement('div',{className:'loading-text'},'Analyzing...'),React.createElement('div',{className:'loading-progress'},progress)):
+                loading?React.createElement('div',{className:'loading'},React.createElement('div',{className:'spinner'}),React.createElement('div',{className:'loading-text'},'Analyzing...'),React.createElement('div',{className:'loading-progress'},progress),pendingSessionRef.current&&React.createElement('button',{type:'button',className:'top-btn','aria-label':'Cancel repository load',onClick:cancelRepositoryLoad,style:{marginTop:16,minHeight:44}},'Cancel repository load')):
                 !data?React.createElement('div',{className:'empty-state'},
                     React.createElement(Icon,{name:'logo',size:'xxl',className:'empty-icon'}),
                     React.createElement('div',{className:'empty-title'},'CodeFlow'),
@@ -4745,10 +4848,10 @@ function App(){
                 )
             ),
             React.createElement('div',{className:'right-panel'+(isMobile&&mobilePanel==='details'?' mobile-visible':''),style:{width:isMobile?'100vw':rightPanelWidth}},
-                isMobile&&React.createElement('div',{className:'mobile-panel-header'},
-                    React.createElement('div',{className:'mobile-panel-meta'},
-                        React.createElement('div',{className:'mobile-panel-title'},selected?selected.name:'Insights'),
-                        React.createElement('div',{className:'mobile-panel-subtitle'},selected?selected.path:(data?'Browse issues, patterns, and security findings':'Select a file to inspect it'))
+                isMobile&&React.createElement('div',{className:'mobile-panel-header',style:{alignItems:'flex-start',gap:12,flexShrink:0}},
+                    React.createElement('div',{className:'mobile-panel-meta',style:{flex:1,minWidth:0,userSelect:'text'}},
+                        React.createElement('div',{className:'mobile-panel-title',style:{whiteSpace:'normal',overflowWrap:'anywhere'}},selected?selected.name:'Insights'),
+                        React.createElement('div',{className:'mobile-panel-subtitle',style:{whiteSpace:'normal',overflowWrap:'anywhere',overflow:'visible',textOverflow:'clip'}},selected?selected.path:(data?'Browse issues, patterns, and security findings':'Select a file to inspect it'))
                     ),
                     React.createElement('button',{className:'mobile-panel-close',type:'button','aria-label':'Close details panel',onClick:function(){setMobilePanel(null);}},
                         React.createElement(Icon,{name:'close',size:'m'})
@@ -4774,7 +4877,7 @@ function App(){
                         React.createElement('div',{style:{fontSize:11,color:'var(--t3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}},navTrail.map(function(entry){return entry.label;}).join(' / ')),
                         // MOO-69 Commit 5: make the resolved revision visible
                         // in the UI, not just carried invisibly in context.
-                        repositoryGraph&&React.createElement('div',{title:repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha,style:{fontSize:10,color:'var(--t3)',fontFamily:'JetBrains Mono',whiteSpace:'nowrap'}},repositoryGraph.context.ref+'@'+repositoryGraph.context.resolvedSha.slice(0,7)),
+                        repositoryGraph&&React.createElement('div',{'data-testid':'revision-badge',title:repositoryGraph.context.owner+'/'+repositoryGraph.context.repo+' '+(repositoryGraph.context.ref||'default branch')+'@'+repositoryGraph.context.resolvedSha,style:{fontSize:10,color:'var(--t3)',fontFamily:'JetBrains Mono',whiteSpace:'normal',overflowWrap:'anywhere',maxWidth:'55%'}},(repositoryGraph.context.ref||'default branch')+'@'+repositoryGraph.context.resolvedSha.slice(0,7)),
                         // MOO-72 Commit 4: repositoryGraph.warnings is computed
                         // server-side (partial-success degradation) but was
                         // never surfaced here, unlike the file/function panels'
@@ -4816,13 +4919,17 @@ function App(){
                     React.createElement('div',{className:'panel-content'},
                         rightTab==='details'&&(selected?React.createElement(React.Fragment,null,
                             React.createElement('button',{className:'top-btn',style:{width:'100%',marginBottom:12},onClick:function(){setSelected(null);setBlastRadius(null);if(nodesRef.current){nodesRef.current.selectAll('.nc').transition().duration(200).attr('opacity',1).attr('fill',getNodeColor);}if(linksRef.current){linksRef.current.transition().duration(200).attr('stroke-opacity',0.4).attr('stroke',theme==='light'?'#ccc':'#333');}}},'← Back to Issues'),
-                            React.createElement('div',{className:'panel-header',style:{margin:'0 -12px 12px',padding:12}},
-                                React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
-                                    React.createElement('div',null,
-                                        React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' ',selected.name),
-                                        React.createElement('div',{className:'panel-subtitle'},selected.folder||'root',' • ',selected.layer,' • ',selected.lines,' lines',selected.complexity&&selected.complexity.score>0?' • Complexity: '+selected.complexity.score:'')
+                            React.createElement('div',{className:'panel-header','data-testid':'selected-file-header',style:{margin:'0 -12px 12px',padding:12,minWidth:0}},
+                                React.createElement('div',{style:{display:'flex',flexWrap:'wrap',gap:12,alignItems:'flex-start',minWidth:0}},
+                                    React.createElement('div',{style:{flex:'1 1 220px',minWidth:0,maxWidth:'100%',overflowWrap:'anywhere',userSelect:'text'}},
+                                        React.createElement('div',{className:'panel-title',style:{whiteSpace:'normal',overflowWrap:'anywhere'}},React.createElement(Icon,{name:'file',size:'m'}),' ',selected.name),
+                                        React.createElement('div',{className:'panel-subtitle',style:{whiteSpace:'normal',overflowWrap:'anywhere'}},selected.folder||'root',' • ',selected.layer,' • ',selected.lines,' lines',selected.complexity&&selected.complexity.score>0?' • Complexity: '+selected.complexity.score:'')
                                     ),
-                                    React.createElement('button',{className:'view-file-btn',onClick:function(){openFilePreview(selected.path);}},iconLabel('eye','View Source'))
+                                    React.createElement('div',{style:{display:'flex',flexDirection:'column',alignItems:'flex-start',gap:8,flex:'1 1 200px',minWidth:0,maxWidth:'100%'}},
+                                        React.createElement('button',{type:'button',className:'top-btn',style:{minHeight:44,maxWidth:'100%'},disabled:!tryCreateDrillDown(repositoryGraph,selected.path).eligible,'aria-describedby':'file-open-help',onClick:function(){activateFile(selected.path);}},'Open file'),
+                                        React.createElement('div',{id:'file-open-help',style:{fontSize:11,minWidth:0,maxWidth:'100%',whiteSpace:'normal',overflowWrap:'anywhere',userSelect:'text'}},tryCreateDrillDown(repositoryGraph,selected.path).reason||'Open this file’s symbol graph, or hold its node until the ring completes.'),
+                                        React.createElement('button',{className:'view-file-btn',style:{minHeight:44,maxWidth:'100%'},onClick:function(){openFilePreview(selected.path);}},iconLabel('eye','View Source'))
+                                    )
                                 )
                             ),
                             blastRadius&&React.createElement('div',{className:'card',style:{marginBottom:12}},
@@ -4934,7 +5041,7 @@ function App(){
                             React.createElement('div',{className:'card',style:{marginBottom:12}},
                                 React.createElement('div',{className:'card-header',onClick:function(){toggleCard('own');}},React.createElement('div',{className:'card-title'},React.createElement('span',{className:'card-toggle'+(expandedCards.has('own')?' open':'')},'▶'),React.createElement(Icon,{name:'users',size:'s'}),' Ownership')),
                                 expandedCards.has('own')&&React.createElement('div',{className:'card-body'},
-                                    ownerLoading?React.createElement('div',{className:'loading-owner'},'Loading ownership data...'):
+                                    ownerLoading?React.createElement('div',{className:'loading-owner'},'Loading ownership data...'):ownershipError?React.createElement('div',{role:'status'},ownershipError):
                                     ownership&&ownership.length>0?React.createElement(React.Fragment,null,
                                         React.createElement('div',{className:'owner-bar'},ownership.slice(0,5).map(function(o,i){return React.createElement('div',{key:i,className:'owner-segment',style:{width:o.percent+'%',background:COLORS[i%COLORS.length]}});})),
                                         React.createElement('div',{className:'owner-list'},ownership.slice(0,5).map(function(o,i){return React.createElement('div',{key:i,className:'owner-item'},React.createElement('div',{className:'owner-avatar',style:{background:COLORS[i%COLORS.length]}},o.name[0].toUpperCase()),React.createElement('span',{className:'owner-name'},o.name),React.createElement('span',{className:'owner-percent'},o.percent,'%'));}))
@@ -5504,7 +5611,7 @@ function App(){
             );
         })(),
         toast&&React.createElement('div',{className:'toast '+(toast.type||'success'),'role':'alert'},toast.msg),
-        filePreview&&React.createElement('div',{className:'file-preview-overlay',onClick:function(){setFilePreview(null);}},
+        filePreview&&React.createElement('div',{className:'file-preview-overlay',onClick:function(){closeFilePreview();}},
             React.createElement('div',{className:'file-preview-modal',onClick:function(e){e.stopPropagation();}},
                 React.createElement('div',{className:'file-preview-header'},
                     React.createElement('div',{className:'file-preview-title'},
@@ -5514,7 +5621,7 @@ function App(){
                     ),
                     React.createElement('div',{className:'file-preview-actions'},
                         filePreview.line&&React.createElement('span',{className:'file-preview-line-badge'},'Line ',filePreview.line),
-                        React.createElement('button',{className:'file-preview-close',onClick:function(){setFilePreview(null);}},'×')
+                        React.createElement('button',{className:'file-preview-close',onClick:function(){closeFilePreview();}},'×')
                     )
                 ),
                 React.createElement('div',{className:'file-preview-content',ref:filePreviewRef},
@@ -5524,13 +5631,13 @@ function App(){
                     ):filePreview.error?React.createElement('div',{className:'file-preview-error'},
                         React.createElement(Icon,{name:'warning',size:'xxl',className:'file-preview-error-icon'}),
                         React.createElement('div',null,filePreview.error)
-                    ):filePreview.content?React.createElement('pre',{className:'file-preview-code'},
+                     ):filePreview.content!=null?React.createElement('pre',{className:'file-preview-code'},
                         highlightSyntax(filePreview.content,filePreview.filename).map(function(lineHtml,i){
                             var lineNum=i+1;
                             var isHighlighted=filePreview.line&&lineNum===filePreview.line;
                             return React.createElement('div',{key:i,className:'file-preview-line'+(isHighlighted?' highlighted':'')},
                                 React.createElement('span',{className:'file-preview-linenum'},lineNum),
-                                React.createElement('span',{className:'file-preview-text',dangerouslySetInnerHTML:{__html:lineHtml||' '}})
+                                React.createElement('span',{className:'file-preview-text',dangerouslySetInnerHTML:{__html:lineHtml}})
                             );
                         })
                     ):null

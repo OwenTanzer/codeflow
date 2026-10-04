@@ -64,6 +64,10 @@ export function tryCreateDrillDown(graph, path) {
   if (!node) {
     return { eligible: false, reason: 'This file has no resolved coordinate.', node: null };
   }
+  // Match the server file-layer contract; other languages remain selectable overviews.
+  if (graph.layer === 'repository' && !node.coordinate?.path?.endsWith('.py')) {
+    return { eligible: false, reason: 'Deeper navigation supports Python (.py) files only. This file is a limited heuristic overview; source and ownership remain available.', node };
+  }
   try {
     const event = createDrillDownEvent(node, graph.layer);
     return { eligible: true, event, node };
@@ -95,6 +99,10 @@ export function tryCreateDrillDownById(graph, nodeId) {
   const node = findNodeById(graph, nodeId);
   if (!node) {
     return { eligible: false, reason: 'This node has no resolved coordinate.', node: null };
+  }
+  // Match the server file-layer contract; other languages remain selectable overviews.
+  if (graph.layer === 'repository' && !node.coordinate?.path?.endsWith('.py')) {
+    return { eligible: false, reason: 'Deeper navigation supports Python (.py) files only. This file is a limited heuristic overview; source and ownership remain available.', node };
   }
   try {
     const event = createDrillDownEvent(node, graph.layer);

@@ -35,6 +35,7 @@
 // order; a value check assigns real acorn any time the stub left it
 // `undefined`, independent of which bridge module happened to run first.
 import * as acorn from 'acorn';
+import { checkpoint, yieldWork, currentWork, drainingMap } from './request-work.js';
 
 if (typeof globalThis.acorn === 'undefined') globalThis.acorn = acorn;
 if (!('Babel' in globalThis)) globalThis.Babel = undefined;
@@ -135,20 +136,61 @@ export async function verifyGithubReachable({ token, fetchImpl = globalThis.fetc
   }
 }
 
-async function apiRequest(path, errorMap) {
-  // GitHub.request() (shared with the browser) throws a plain Error using
-  // errorMap's messages, not GithubFetchError — wrap it so every failure
-  // from an actual GitHub call is identifiable as such by the route
-  // handler (which maps GithubFetchError to a 502, distinct from a real
-  // internal 500). Found this the hard way: a genuinely-expected condition
-  // (a PR's fork commit had been deleted/garbage-collected upstream) was
-  // surfacing as a generic "Analysis failed" 500 instead of a clear 502
-  // with GitHub's own "not found" message, because the thrown Error
-  // wasn't an instanceof GithubFetchError.
+async function apiRequest(path, errorMap = {}, maxResponseBytes = 8 * 1024 * 1024) {
+  checkpoint();
+  const state = currentWork();
+  if (state?.metrics) state.metrics.upstreamRequests++;
+  const timeout = AbortSignal.timeout(GitHub.requestTimeoutMs || 30000);
+  const signal = state?.signal ? AbortSignal.any([state.signal, timeout]) : timeout;
   try {
-    return await GitHub.request(GITHUB_API + path, {}, errorMap);
+    const response = await fetch(GITHUB_API + path, {
+      headers: {
+        Accept: 'application/vnd.github.v3+json',
+        ...(GitHub.token ? { Authorization: 'Bearer ' + GitHub.token } : {}),
+      },
+      signal,
+    });
+    if (!response.ok) {
+      // Dispose the body before releasing this retrieval slot.
+      await response.body?.cancel();
+      const limited = response.status === 429 ||
+        (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.get('retry-after')));
+      throw new GithubFetchError(limited ? 'GitHub rate limit exceeded' :
+        errorMap[response.status] || (response.status === 403 ? 'GitHub access forbidden (possible secondary rate limit)' :
+        'GitHub request failed (' + response.status + ')'), { status: response.status });
+    }
+    let data;
+    if (response.body?.getReader) {
+      const reader = response.body.getReader();
+      const chunks = [];
+      let size = 0;
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          checkpoint();
+          if (done) break;
+          size += value.byteLength;
+          if (size > maxResponseBytes) throw new GithubFetchError('GitHub response exceeds bounded transfer size');
+          chunks.push(value);
+        }
+        data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      } catch (err) {
+        await reader.cancel().catch(() => {});
+        throw err;
+      } finally {
+        reader.releaseLock();
+      }
+    } else {
+      // Injectable response doubles used by the offline test suite.
+      data = await response.json();
+      if (Buffer.byteLength(JSON.stringify(data)) > maxResponseBytes) throw new GithubFetchError('GitHub response exceeds bounded transfer size');
+    }
+    checkpoint();
+    return data;
   } catch (err) {
-    throw new GithubFetchError(err.message);
+    checkpoint();
+    if (err instanceof GithubFetchError) throw err;
+    throw new GithubFetchError(timeout.aborted ? 'GitHub request timed out' : err.message);
   }
 }
 
@@ -216,16 +258,27 @@ export async function resolveCommitSha(owner, repo, ref) {
  * analysis runs).
  *
  * @param {Array<{type: string, path: string, sha: string, size?: number}>} treeEntries
- * @param {{maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number, compiledExcludePatterns?: Array}} limits
+ * @param {{maxFileBytes: number, maxRepoBytes: number, compiledExcludePatterns?: Array}} limits
  * @returns {{files: Array, skippedOversizedFiles: number}}
- * @throws {GithubFetchError} if the aggregate or file-count limit is exceeded
+ * @throws {GithubFetchError} if the aggregate byte limit is exceeded
  */
-export function selectAnalyzableFiles(treeEntries, { maxRepoFiles, maxFileBytes, maxRepoBytes, compiledExcludePatterns = [] }) {
+export function selectAnalyzableFiles(treeEntries, { maxFileBytes, maxRepoBytes, compiledExcludePatterns = [] }) {
   const files = [];
   let skippedOversizedFiles = 0;
   let totalBytes = 0;
+  const coverage = { treeBlobs: 0, treeBytes: 0, selected: 0, selectedBytes: 0,
+    analyzed: 0, skipped: 0, failed: 0, skippedReasons: {}, skippedFiles: [] };
+  const skip = (entry, reason) => {
+    coverage.skipped++;
+    coverage.skippedReasons[reason] = (coverage.skippedReasons[reason] || 0) + 1;
+    coverage.skippedFiles.push({ path: entry.path, reason, bytes: entry.size });
+  };
   for (const entry of treeEntries) {
     if (entry.type !== 'blob') continue;
+    coverage.treeBlobs++;
+    const size = entry.size;
+    if (!Number.isSafeInteger(size) || size < 0) throw new GithubFetchError('Invalid or missing blob size: ' + entry.path);
+    coverage.treeBytes += size;
     const name = entry.path.includes('/') ? entry.path.slice(entry.path.lastIndexOf('/') + 1) : entry.path;
     const folder = entry.path.includes('/') ? entry.path.slice(0, entry.path.lastIndexOf('/')) : 'root';
     const pathParts = entry.path.split('/');
@@ -233,12 +286,14 @@ export function selectAnalyzableFiles(treeEntries, { maxRepoFiles, maxFileBytes,
       const dirPath = pathParts.slice(0, idx + 1).join('/');
       return shouldIgnoreDirectory(dirPath, part, compiledExcludePatterns);
     });
-    if (ignored) continue;
-    if (shouldExcludeFile(entry.path, name, compiledExcludePatterns)) continue;
+    if (ignored) { skip(entry, 'excluded_directory'); continue; }
+    if (shouldExcludeFile(entry.path, name, compiledExcludePatterns)) { skip(entry, 'excluded_file'); continue; }
 
-    const size = typeof entry.size === 'number' ? entry.size : 0;
+    coverage.selected++;
+    coverage.selectedBytes += size;
     if (size > maxFileBytes) {
       skippedOversizedFiles += 1;
+      skip(entry, 'per_file_bytes');
       continue;
     }
     totalBytes += size;
@@ -251,25 +306,19 @@ export function selectAnalyzableFiles(treeEntries, { maxRepoFiles, maxFileBytes,
     files.push({ path: entry.path, name, folder, sha: entry.sha, size, isCode: Parser.isCode(name) });
   }
 
-  if (files.length > maxRepoFiles) {
-    throw new GithubFetchError(
-      `Repository has ${files.length} analyzable files, over the configured limit of ${maxRepoFiles}. ` +
-        'Point at a narrower ref, or raise MAX_REPO_FILES if this is expected.'
-    );
-  }
-  return { files, skippedOversizedFiles };
+  return { files, skippedOversizedFiles, coverage };
 }
 
 /**
- * @param {{owner: string, repo: string, resolvedRef: string, maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number, compiledExcludePatterns?: Array}} options
+ * @param {{owner: string, repo: string, resolvedRef: string, maxFileBytes: number, maxRepoBytes: number, compiledExcludePatterns?: Array}} options
  * @returns {Promise<{files: Array, skippedOversizedFiles: number}>}
  */
-export async function fetchTree({ owner, repo, resolvedRef, maxRepoFiles, maxFileBytes, maxRepoBytes, compiledExcludePatterns = [] }) {
+export async function fetchTree({ owner, repo, resolvedRef, maxFileBytes, maxRepoBytes, compiledExcludePatterns = [] }) {
   const data = await apiRequest(
     `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(resolvedRef)}?recursive=1`,
     { 404: 'Ref not found (branch, commit, or PR head does not exist)' }
   );
-  if (!data.tree) throw new GithubFetchError('Invalid tree response from GitHub');
+  if (!Array.isArray(data.tree)) throw new GithubFetchError('Invalid tree response from GitHub');
   // GitHub caps a recursive tree response at 100,000 entries / 7MB and
   // sets `truncated: true` rather than erroring — silently proceeding
   // would mean the repository layer analyzes an incomplete subset of a
@@ -280,7 +329,7 @@ export async function fetchTree({ owner, repo, resolvedRef, maxRepoFiles, maxFil
         'the repository is too large to analyze as a whole. Point at a narrower ref/folder if this is expected.'
     );
   }
-  return selectAnalyzableFiles(data.tree, { maxRepoFiles, maxFileBytes, maxRepoBytes, compiledExcludePatterns });
+  return selectAnalyzableFiles(data.tree, { maxFileBytes, maxRepoBytes, compiledExcludePatterns });
 }
 
 /**
@@ -314,7 +363,8 @@ export async function resolvePathEntry({ owner, repo, resolvedRef, path }) {
           `cannot reliably resolve "${path}". Point at a narrower path.`
       );
     }
-    const found = (data.tree || []).find((e) => e.path === segment);
+    if (!Array.isArray(data.tree)) throw new GithubFetchError('Invalid tree response from GitHub');
+    const found = data.tree.find((e) => e.path === segment);
     if (!found) return null;
     // A non-directory segment appeared before the end of the requested
     // path (e.g. requesting "a/b.py/c" where b.py is a file, not a
@@ -340,7 +390,7 @@ export async function fetchSubtreeFiles({ owner, repo, sha, pathPrefix }) {
   const data = await apiRequest(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(sha)}?recursive=1`, {
     404: 'Ref not found (branch, commit, or PR head does not exist)',
   });
-  if (!data.tree) throw new GithubFetchError('Invalid tree response from GitHub');
+  if (!Array.isArray(data.tree)) throw new GithubFetchError('Invalid tree response from GitHub');
   if (data.truncated) {
     throw new GithubFetchError(
       `The requested package "${pathPrefix}" has too many entries for GitHub's recursive tree API (truncated). ` +
@@ -350,31 +400,30 @@ export async function fetchSubtreeFiles({ owner, repo, sha, pathPrefix }) {
   return data.tree.map((entry) => ({ ...entry, path: pathPrefix + '/' + entry.path }));
 }
 
-async function fetchBlobContent(owner, repo, sha) {
-  const data = await apiRequest(`/repos/${owner}/${repo}/git/blobs/${sha}`, {
-    404: 'Blob not found',
-  });
-  if (data.encoding === 'base64') return Buffer.from(data.content, 'base64').toString('utf8');
-  return data.content || '';
+async function fetchBlobContent(owner, repo, file, limits) {
+  const data = await apiRequest(`/repos/${owner}/${repo}/git/blobs/${file.sha}`, { 404: 'Blob not found' }, Math.ceil(limits.maxFileBytes * 1.5) + 65536);
+  if (data.encoding !== 'base64' || typeof data.content !== 'string') {
+    throw new GithubFetchError('Invalid blob response for ' + file.path);
+  }
+  // Check encoded size before allocating a decoded buffer. GitHub wraps
+  // base64 with newlines; those are not content bytes.
+  const encoded = data.content.replace(/\s/g, '');
+  const estimated = Math.floor(encoded.length * 3 / 4) - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0);
+  if (estimated > limits.maxFileBytes) throw new GithubFetchError('Blob exceeds per-file byte limit: ' + file.path);
+  const bytes = Buffer.from(encoded, 'base64');
+  if (Number.isSafeInteger(file.size) && bytes.length !== file.size) {
+    throw new GithubFetchError('Blob size disagrees with pinned tree: ' + file.path);
+  }
+  limits.contentBytes += bytes.length;
+  if (limits.contentBytes > limits.maxRepoBytes) throw new GithubFetchError('Repository content exceeds aggregate size limit');
+  return bytes.toString('utf8');
 }
 
-/**
- * Fetch blob contents with limited concurrency — avoid firing hundreds of
- * requests at once. The `8` default was previously hardcoded with no
- * override; every call site now passes `config.githubFetchConcurrency`
- * explicitly (MOO-72 Commit 8) -- this default only still matters for a
- * caller that omits the argument entirely (e.g. a direct unit test).
- */
-export async function fetchAllContents(owner, repo, files, concurrency = 8) {
-  const results = new Array(files.length);
-  let next = 0;
-  async function worker() {
-    while (next < files.length) {
-      const i = next++;
-      results[i] = await fetchBlobContent(owner, repo, files[i].sha);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker));
+export async function fetchAllContents(owner, repo, files, concurrency = 8, options = {}) {
+  const limits = { maxFileBytes: options.maxFileBytes ?? 1024 * 1024,
+    maxRepoBytes: options.maxRepoBytes ?? 25 * 1024 * 1024, contentBytes: 0 };
+  const results = await drainingMap(files, concurrency, file => fetchBlobContent(owner, repo, file, limits));
+  if (currentWork()?.metrics) currentWork().metrics.contentBytes = limits.contentBytes;
   return results;
 }
 
@@ -438,7 +487,7 @@ export async function resolveGithubRef(request, config) {
  * Fetch and analyze a repository's content at an already-resolved ref.
  * @param {{owner: string, repo: string, ref: string|null, pr: number|null, excludePatterns?: string[]}} request
  * @param {{sourceOwner: string, sourceRepo: string, resolvedSha: string, resolvedRef: string}} refResult - resolveGithubRef's output
- * @param {{githubToken: string, maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number}} config
+ * @param {{githubToken: string, maxFileBytes: number, maxRepoBytes: number}} config
  */
 export async function fetchAndAnalyzeRepo(request, refResult, config) {
   configureGithubClient({ token: config.githubToken });
@@ -453,20 +502,32 @@ export async function fetchAndAnalyzeRepo(request, refResult, config) {
   const compiledExcludePatterns = compileExcludePatterns(rawExcludePatterns.join('\n'));
 
   const { sourceOwner: owner, sourceRepo: repo, resolvedRef, resolvedSha } = refResult;
-  const { files, skippedOversizedFiles } = await fetchTree({
+  const retrievalStart = performance.now();
+  const { files, skippedOversizedFiles, coverage } = await fetchTree({
     owner,
     repo,
-    resolvedRef,
-    maxRepoFiles: config.maxRepoFiles,
+    resolvedRef: resolvedSha,
     maxFileBytes: config.maxFileBytes,
     maxRepoBytes: config.maxRepoBytes,
     compiledExcludePatterns,
   });
-  const contents = await fetchAllContents(owner, repo, files, config.githubFetchConcurrency);
+  let contents;
+  try {
+    contents = await fetchAllContents(owner, repo, files, config.githubFetchConcurrency, config);
+  } catch (err) {
+    coverage.failed = files.length;
+    coverage.failedReasons = { not_analyzed_retrieval_failed: files.length };
+    err.coverage = coverage;
+    throw err;
+  }
+  const retrievalMs = performance.now() - retrievalStart;
+  const analysisStart = performance.now();
 
   const analyzed = [];
   const allFns = [];
+  try {
   for (let i = 0; i < files.length; i++) {
+    if (i % 16 === 0) await yieldWork();
     const file = files[i];
     const content = contents[i] || '';
     const layer = Parser.detectLayer(file.path);
@@ -506,10 +567,17 @@ export async function fetchAndAnalyzeRepo(request, refResult, config) {
     // above is the regex-bearing form used for actual filtering upstream.
     excludePatterns: compiledExcludePatterns.map((p) => p.raw),
     progress() {},
-    yieldFn: async () => {},
+    yieldFn: yieldWork,
   });
 
+  checkpoint();
+  coverage.analyzed = analyzed.length;
+  coverage.contentBytes = files.reduce((n, f) => n + f.size, 0);
+  const measurements = { retrievalMs, analysisMs: performance.now() - analysisStart,
+    ...(currentWork()?.metrics || {}) };
   return {
+    coverage,
+    measurements,
     result,
     resolvedRef,
     fileCount: files.length,
@@ -521,6 +589,15 @@ export async function fetchAndAnalyzeRepo(request, refResult, config) {
     sourceRepo: repo,
     resolvedSha,
   };
+  } catch (err) {
+    coverage.analyzed = analyzed.length;
+    coverage.failed = files.length - analyzed.length;
+    coverage.failedReasons = { not_analyzed_analysis_failed: coverage.failed };
+    // If the aggregate stage failed after per-file parsing, no overview exists.
+    coverage.overviewComplete = false;
+    err.coverage = coverage;
+    throw err;
+  }
 }
 
 /**
@@ -529,7 +606,7 @@ export async function fetchAndAnalyzeRepo(request, refResult, config) {
  * in between; this composed form remains for /api/analyze-repo and for
  * callers that have no cache to consult.
  * @param {{owner: string, repo: string, ref: string|null, pr: number|null, excludePatterns?: string[]}} request
- * @param {{githubToken: string, maxRepoFiles: number, maxFileBytes: number, maxRepoBytes: number}} config
+ * @param {{githubToken: string, maxFileBytes: number, maxRepoBytes: number}} config
  */
 export async function analyzeGithubRepo(request, config) {
   const refResult = await resolveGithubRef(request, config);
@@ -582,5 +659,5 @@ export async function fetchSingleFileContent({ owner, repo, path, ref }, config)
   const resolvedRef = ref || (await resolveRef({ owner, repo, ref: null, pr: null })).ref;
   const entry = await resolvePathEntry({ owner, repo, resolvedRef, path });
   if (!entry || entry.type !== 'blob') return null;
-  return fetchBlobContent(owner, repo, entry.sha);
+  return (await fetchAllContents(owner, repo, [entry], 1, config))[0];
 }

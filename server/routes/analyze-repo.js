@@ -11,6 +11,8 @@ import { isRepoAllowed } from '../lib/allowlist.js';
 import { analyzeGithubRepo, GithubFetchError } from '../lib/github-analyzer-bridge.js';
 import { createRequestLogger } from '../lib/logger.js';
 import { readJsonBody, BodyTooLargeError } from '../lib/http-body.js';
+import { withTimeout, GraphAnalysisTimeoutError } from '../lib/request-work.js';
+import { createRequestAbortSignal, RequestCancelledError } from '../lib/cancellation.js';
 import { sendCapacityResponse } from '../lib/concurrency-limiter.js';
 
 function sendJson(res, status, body) {
@@ -62,23 +64,30 @@ export function createAnalyzeRepoHandler({ config, concurrencyLimiter }) {
       return sendCapacityResponse(res, { requestId, sessionId: null });
     }
 
+    const { signal, cleanup } = createRequestAbortSignal(req, res);
     try {
-      const { result, resolvedRef, fileCount, skippedOversizedFiles } = await analyzeGithubRepo(request, config);
+      const { result, resolvedRef, resolvedSha, fileCount, skippedOversizedFiles, coverage, measurements } =
+        await withTimeout(() => analyzeGithubRepo(request, config), {
+          signal, timeoutMs: config.graphAnalysisTimeoutMs, timeoutMessage: 'Repository analysis timed out',
+        });
       log.info('github analysis complete', {
         resolvedRef,
         fileCount,
         functions: result.stats.functions,
         skippedOversizedFiles,
       });
-      sendJson(res, 200, { ...result, resolvedRef, skippedOversizedFiles });
+      sendJson(res, 200, { ...result, resolvedRef, resolvedSha, skippedOversizedFiles, coverage, measurements });
     } catch (err) {
+      if (err instanceof RequestCancelledError) return;
+      if (err instanceof GraphAnalysisTimeoutError) return sendJson(res, 504, { error: err.message });
       if (err instanceof GithubFetchError) {
         log.warn('github fetch failed', { message: err.message });
-        return sendJson(res, 502, { error: err.message });
+        return sendJson(res, /rate limit/i.test(err.message) ? 429 : 502, { error: err.message });
       }
       log.error('analysis failed', { message: err && err.message });
       sendJson(res, 500, { error: 'Analysis failed', requestId });
     } finally {
+      cleanup();
       release();
     }
   };

@@ -185,3 +185,16 @@ test('tryCreateOpenSourceEventById returns a real event for the correct same-pat
   const evt = tryCreateOpenSourceEventById(graph, 'mod__Service__run');
   assert.equal(evt.coordinate.symbolPath.join('.'), 'Service.run');
 });
+
+for (const path of ['src/ResourceManager.java', 'src/Neuron.kt', 'src/index.js']) {
+  test(`non-Python overview remains selectable/source-addressable but cannot drill down: ${path}`, () => {
+    const graph = graphWithNode(path);
+    const byPath = tryCreateDrillDown(graph, path);
+    const byId = tryCreateDrillDownById(graph, graph.nodes[0].id);
+    assert.equal(byPath.eligible, false);
+    assert.equal(byId.eligible, false);
+    assert.match(byPath.reason, /Python.*heuristic overview/);
+    assert.ok(createSelectionEventForPath(graph, path));
+    assert.ok(tryCreateOpenSourceEvent(graph, path));
+  });
+}
