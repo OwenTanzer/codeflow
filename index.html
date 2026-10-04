@@ -4919,16 +4919,16 @@ function App(){
                     React.createElement('div',{className:'panel-content'},
                         rightTab==='details'&&(selected?React.createElement(React.Fragment,null,
                             React.createElement('button',{className:'top-btn',style:{width:'100%',marginBottom:12},onClick:function(){setSelected(null);setBlastRadius(null);if(nodesRef.current){nodesRef.current.selectAll('.nc').transition().duration(200).attr('opacity',1).attr('fill',getNodeColor);}if(linksRef.current){linksRef.current.transition().duration(200).attr('stroke-opacity',0.4).attr('stroke',theme==='light'?'#ccc':'#333');}}},'← Back to Issues'),
-                            React.createElement('div',{className:'panel-header',style:{margin:'0 -12px 12px',padding:12}},
-                                React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
-                                    React.createElement('div',null,
-                                        React.createElement('div',{className:'panel-title'},React.createElement(Icon,{name:'file',size:'m'}),' ',selected.name),
-                                        React.createElement('div',{className:'panel-subtitle'},selected.folder||'root',' • ',selected.layer,' • ',selected.lines,' lines',selected.complexity&&selected.complexity.score>0?' • Complexity: '+selected.complexity.score:'')
+                            React.createElement('div',{className:'panel-header','data-testid':'selected-file-header',style:{margin:'0 -12px 12px',padding:12,minWidth:0}},
+                                React.createElement('div',{style:{display:'flex',flexWrap:'wrap',gap:12,alignItems:'flex-start',minWidth:0}},
+                                    React.createElement('div',{style:{flex:'1 1 220px',minWidth:0,maxWidth:'100%',overflowWrap:'anywhere',userSelect:'text'}},
+                                        React.createElement('div',{className:'panel-title',style:{whiteSpace:'normal',overflowWrap:'anywhere'}},React.createElement(Icon,{name:'file',size:'m'}),' ',selected.name),
+                                        React.createElement('div',{className:'panel-subtitle',style:{whiteSpace:'normal',overflowWrap:'anywhere'}},selected.folder||'root',' • ',selected.layer,' • ',selected.lines,' lines',selected.complexity&&selected.complexity.score>0?' • Complexity: '+selected.complexity.score:'')
                                     ),
-                                    React.createElement('div',null,
-                                        React.createElement('button',{type:'button',className:'top-btn',style:{minHeight:44},disabled:!tryCreateDrillDown(repositoryGraph,selected.path).eligible,'aria-describedby':'file-open-help',onClick:function(){activateFile(selected.path);}},'Open file'),
-                                        React.createElement('div',{id:'file-open-help',style:{fontSize:11}},tryCreateDrillDown(repositoryGraph,selected.path).reason||'Open this file’s symbol graph, or hold its node until the ring completes.'),
-                                        React.createElement('button',{className:'view-file-btn',onClick:function(){openFilePreview(selected.path);}},iconLabel('eye','View Source'))
+                                    React.createElement('div',{style:{display:'flex',flexDirection:'column',alignItems:'flex-start',gap:8,flex:'1 1 200px',minWidth:0,maxWidth:'100%'}},
+                                        React.createElement('button',{type:'button',className:'top-btn',style:{minHeight:44,maxWidth:'100%'},disabled:!tryCreateDrillDown(repositoryGraph,selected.path).eligible,'aria-describedby':'file-open-help',onClick:function(){activateFile(selected.path);}},'Open file'),
+                                        React.createElement('div',{id:'file-open-help',style:{fontSize:11,minWidth:0,maxWidth:'100%',whiteSpace:'normal',overflowWrap:'anywhere',userSelect:'text'}},tryCreateDrillDown(repositoryGraph,selected.path).reason||'Open this file’s symbol graph, or hold its node until the ring completes.'),
+                                        React.createElement('button',{className:'view-file-btn',style:{minHeight:44,maxWidth:'100%'},onClick:function(){openFilePreview(selected.path);}},iconLabel('eye','View Source'))
                                     )
                                 )
                             ),

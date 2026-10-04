@@ -234,6 +234,82 @@ for(const spec of specs){
       entry.pointerClick.afterSelection=afterSelection;
       await page.screenshot({path:join(out,'matrix-pointer-selection.png')});
       entry.checks.push({name:'ordinary off-center pointer click preserves viewport and selects source',status:'PASS'});
+      // Inspect the same source selected by the ordinary click. Name + full
+      // folder reconstruct the independent coordinate.path; neither may clip.
+      // The repository is replayed, but View Source uses the real local API.
+      entry.inspectorLayouts=[];
+      for(const width of [1100,390]){
+        await page.setViewportSize({width,height:850});
+        if(width===390){
+          await page.getByRole('button',{name:'Open insights panel',exact:true}).click();
+          await page.locator('.right-panel.mobile-visible').waitFor();
+          assert.equal(await page.locator('.right-panel .mobile-panel-subtitle').textContent(),selectedSource.path);
+        }
+        const header=page.getByTestId('selected-file-header');
+        await header.waitFor();
+        await header.scrollIntoViewIfNeeded();
+        const layout=await header.evaluate(el=>{
+          const rect=e=>{const r=e.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
+          const title=el.querySelector('.panel-title'),subtitle=el.querySelector('.panel-subtitle');
+          const parts=[
+            ['name',title],['folder and metadata',subtitle],
+            ['Open file',el.querySelector('[aria-describedby="file-open-help"]')],
+            ['Open help',el.querySelector('#file-open-help')],
+            ['View Source',el.querySelector('.view-file-btn')],
+          ].map(([name,node])=>({
+            name,text:node.textContent.trim(),rect:rect(node),
+            scrollWidth:node.scrollWidth,clientWidth:node.clientWidth,
+            scrollHeight:node.scrollHeight,clientHeight:node.clientHeight,
+            textOverflow:getComputedStyle(node).textOverflow,
+          }));
+          return {viewport:{width:innerWidth,height:innerHeight},panel:rect(el.closest('.right-panel')),header:rect(el),parts};
+        });
+        entry.inspectorLayouts.push(layout);
+        assert.equal(layout.parts[0].text,selectedSource.name,'Inspector shows the full oracle filename');
+        assert.ok(layout.parts[1].text.startsWith(selectedSource.folder+' • '),'Inspector shows the full oracle folder');
+        assert.equal((selectedSource.folder==='root'?'':selectedSource.folder+'/')+layout.parts[0].text,selectedSource.path);
+        for(const part of layout.parts){
+          const r=part.rect,p=layout.panel;
+          assert.ok(r.width>0&&r.height>0,part.name+' has visible dimensions at '+width);
+          assert.ok(r.left>=Math.max(0,p.left)-1&&r.right<=Math.min(width,p.right)+1,
+            part.name+' stays inside Inspector and viewport horizontally at '+width);
+          assert.ok(r.top>=Math.max(0,p.top)-1&&r.bottom<=Math.min(850,p.bottom)+1,
+            part.name+' is reachable inside Inspector and viewport vertically at '+width);
+          assert.ok(part.scrollWidth<=part.clientWidth+1&&part.scrollHeight<=part.clientHeight+1,
+            part.name+' is fully laid out without clipping at '+width);
+        }
+        await page.screenshot({path:join(out,'matrix-inspector-'+width+'.png')});
+        const [response]=await Promise.all([
+          page.waitForResponse(r=>new URL(r.url()).pathname==='/api/github/file-content'&&
+            r.request().postDataJSON()?.path===selectedSource.path,{timeout:300000}),
+          header.getByRole('button',{name:'View Source',exact:true}).click(),
+        ]);
+        const request=response.request().postDataJSON();
+        assert.equal(request.owner,context.owner);assert.equal(request.repo,context.repo);
+        assert.equal(request.ref,context.resolvedSha);assert.equal(request.path,selectedSource.path);
+        layout.sourceAction={status:response.status(),request,
+          mode:'actual local file-content endpoint; server may use cache',
+          cacheControl:response.headers()['cache-control']??null};
+        assert.equal(response.status(),200,'actual source endpoint succeeds at '+width);
+        const source=await response.json();
+        assert.equal(typeof source.content,'string','actual endpoint provides source text');
+        await page.locator('.file-preview-code').waitFor();
+        assert.equal(await page.locator('.file-preview-error').count(),0);
+        assert.equal(await page.locator('.file-preview-path').textContent(),selectedSource.path);
+        assert.equal(await page.locator('.file-preview-name').textContent(),selectedSource.name);
+        assert.deepEqual(await page.locator('.file-preview-text').allTextContents(),source.content.split('\n'),
+          'preview text equals actual source response');
+        layout.sourceAction.lines=source.content.split('\n').length;
+        await page.screenshot({path:join(out,'matrix-source-'+width+'.png')});
+        await page.locator('.file-preview-close').click();
+        await page.locator('.file-preview-overlay').waitFor({state:'hidden'});
+        if(width===390){
+          await page.getByRole('button',{name:'Close details panel',exact:true}).click();
+          await page.locator('.right-panel.mobile-visible').waitFor({state:'hidden'});
+        }
+        entry.checks.push({name:'Inspector complete identity, bounded controls and actual source action',width,path:selectedSource.path,status:'PASS'});
+      }
+      await page.setViewportSize({width:1100,height:850});
     }
     // Switch away, then verify that font/resize events cannot mutate disposed SVG.
     await page.evaluate(selector=>{
