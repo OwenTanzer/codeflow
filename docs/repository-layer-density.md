@@ -1,5 +1,7 @@
 # Repository layer density (MOO-69 Commit 7)
 
+> Status note — October 4, 2026: Historical MOO-69 snapshot. PR #34 (`7ce7aa8`, October 4, 2026) supersedes the main server ingestion cap and old label policy below: eligible files are not count-sampled, and visible labels are complete. The later [acceptance record](integration-acceptance-20261004.md) includes a captured 1,303-file Simbrain graph; its bounded results do not settle broader density/product questions. The [architecture guide](architecture.md#important-exception-legacy-pr-impact-dialog) documents the remaining capped legacy PR dialog. Historical proposals below are not authorization to hide or reduce coverage.
+
 Records current node/edge behavior for the repository layer after MOO-69's
 adaptation to GraphIR, and explicitly defers density judgment/remediation to
 the Garrison Step (MOO-44), per MOO-66's own scoping ("Repository-density

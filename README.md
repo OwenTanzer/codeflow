@@ -2,450 +2,81 @@
 
 # CodeFlow
 
-### Visualize Your Codebase Architecture in Seconds
+Explore repository relationships, Python file symbols and function control flow.
 
-**Zero setup. No installation. Just paste a GitHub URL.**
+[Open CodeFlow](https://codeviz.moopertonic.net/) · [Documentation](docs/README.md) · [Report an issue](https://github.com/OwenTanzer/codeflow/issues)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
-
-[**Try it Now**](https://codeflow-five.vercel.app/) · [Report Bug](https://github.com/braedonsaunders/codeflow/issues) · [Request Feature](https://github.com/braedonsaunders/codeflow/issues)
-
-<img src="./screenshot.png" alt="CodeFlow Screenshot" width="100%"/>
+<img src="./screenshot.png" alt="CodeFlow repository overview" width="100%"/>
 
 </div>
 
----
+## Start here
 
-## Why CodeFlow?
+Paste `owner/repo` or a GitHub repository URL into the application, then analyze it. Select a file to inspect its source, ownership tally and relationships. Eligible Python files expose **Open file**, and eligible functions expose **Open function**; in-app Back returns to the preceding layer. Repository and file labels are complete when visible; function labels remain complete and size their shapes to their text.
 
-Ever opened a new codebase and felt completely lost? **CodeFlow** turns any GitHub repository or local codebase into an interactive architecture map in seconds.
+The repository overview uses heuristic relationships across many source formats, including JavaScript/TypeScript, Python, Java/Kotlin and Markdown/wiki links. This does not imply full language semantics. Deeper file and function navigation is Python-only; unsupported files remain selectable for overview/source inspection. File symbols/calls and function control flow have distinct meanings and limitations.
 
-- **No installation required** — runs entirely in your browser
-- **No data collection** — your code never leaves your machine
-- **No accounts** — just paste a URL or select local files and go
-- **Works offline** — analyze local files without internet
+The main server-backed repository scan has no arbitrary file-count cap. Exclusions, byte budgets, retrieval concurrency and timeouts still apply, with explicit coverage reporting. The **separate legacy PR Impact dialog** still follows a browser-side path with a 750-file sample; its behavior is not covered by the uncapped main-route claim. See the [architecture guide](docs/architecture.md#important-exception-legacy-pr-impact-dialog).
 
-```
-Paste URL / Select Files -> See Architecture -> Make Better Decisions
-```
+## Features and limits
 
----
+- Repository graph, folder filtering, search, selection and blast-radius inspection; alternate spatial and aggregate views.
+- Python file symbol/call graphs from pyan3 and tree-sitter; function control flow from pinned CodeVisualizer core.
+- Source preview and commit-author ownership tally (not line-level git blame).
+- Heuristic health, security, patterns, duplicate/dead-function and architecture reports; these are review aids, not correctness or security guarantees.
+- Local folder/ZIP analysis, configurable excludes, Markdown/wiki-link graphs, report and visual exports.
+- [CodeFlow Card](card/README.md): the same original analyzer used in a GitHub Action to generate README cards and optional PR receipts. Its workflow and parser availability differ from the hosted application.
 
-## Features
+[PR #34](https://github.com/OwenTanzer/codeflow/pull/34) records the October 4, 2026 release at `7ce7aa8020bc9bdf0c70648d175632e19f65b7d6`. The [acceptance report](docs/integration-acceptance-20261004.md) and latest comments on [#27](https://github.com/OwenTanzer/codeflow/issues/27), [#28](https://github.com/OwenTanzer/codeflow/issues/28) and [#29](https://github.com/OwenTanzer/codeflow/issues/29) distinguish local and reported production evidence. Those issues remain open for acceptance reconciliation. This README is not a fresh deployment verification.
 
-### Interactive Dependency Graph
-See how your files connect at a glance. Click any node to highlight its dependencies. Drag, zoom, and explore.
+## Where processing happens
 
-### Blast Radius Analysis
-*"If I change this file, what breaks?"* — CodeFlow answers this instantly. Select any file and see exactly how many files would be affected by changes.
+The main GitHub repository/file/function workflow and source/ownership endpoints use the Node server's GitHub credential. There is no browser token-entry field, and the browser clients do not send Authorization headers. API routes are public and unauthenticated at the application layer; the landing page is not access control. The server applies allowlists and resource limits. Private-repository acceptance remains unverified; do not assume a deployment is a private workspace merely because its token stays server-side.
 
-### Code Ownership
-Know who owns what. See the top contributors for any file based on git history. Perfect for code reviews and knowing who to ask.
+Local folder/ZIP contents are processed in the browser without uploading them in that workflow. They use the original analyzer and local source previews, with no fabricated GitHub revision or server drill-down. Loading the app, fonts, parsers and other CDN assets can still require network access: this is not a guaranteed offline package. Opening `index.html` through `file://` is unsupported.
 
-### Security Scanner
-Automatic detection of:
-- Hardcoded secrets & API keys
-- SQL injection vulnerabilities
-- Dangerous `eval()` usage
-- Debug statements in production code
+Server GraphIR includes function snippets and analysis metadata; whole-file content is retrieved separately for preview. Server workspaces and caches have distinct lifecycles documented in the [architecture guide](docs/architecture.md). The legacy PR dialog exception is described above.
 
-Test files, fixtures, `docs/`, and common tooling directories (`.github/`, `.claude/`, `scripts/`) are excluded from the XSS/shell-execution checks, since findings there don't reflect the shipped product's attack surface. The hardcoded-secret check exempts only tests, fixtures, and docs: CI workflows, hooks, and deploy scripts are executable code, so a real credential there is still a real leak.
+## Local setup and contribution
 
-### Pattern Detection
-Automatically identifies:
-- Singleton patterns
-- Factory patterns
-- Observer/Event patterns
-- React custom hooks
-- Anti-patterns (God Objects, high coupling)
+Use Node matching `^20.19.0 || >=22.12.0`, npm, Git and Python with venv/pip. From a fresh checkout:
 
-### Health Score
-Get an instant A-F grade for your codebase based on:
-- Dead code percentage
-- Circular dependencies
-- Coupling metrics
-- Security issues
-
-### Activity Heatmap
-Color files by commit frequency to see which parts of your codebase are most actively developed.
-
-### PR Impact Analysis
-Paste a PR URL to see exactly which files it affects and calculate the blast radius of proposed changes.
-
-### CodeFlow Card (GitHub Action)
-Health grade, scale, fragility, and hidden costs as a self-updating SVG on your README — recomputed every merge, with optional thermal-receipt PR comments. See [card/](./card/).
-
-### Markdown & Wiki-Link Graph
-Point CodeFlow at an Obsidian vault or any markdown directory to see notes as a connected graph. Both `[[wiki-links]]` and `[text](./relative.md)` links become edges; each note is a `note`-layer node (distinct color) with a `dependencies[]` array in the JSON export.
-
-### Local File Analysis
-Analyze code directly from your computer without uploading to GitHub:
-- **Privacy First:** Your code never leaves your machine
-- **Offline Support:** Works without internet connection
-- **Drag & Drop:** Simply drag files or folders to analyze
-- **Folder Scanning:** Recursively analyze entire project structures
-- **Exclude Patterns:** Skip attachments, caches, generated assets, and other irrelevant paths before scanning
-- **Instant Results:** All processing happens in your browser
-
----
-
-## CodeFlow Card
-
-A GitHub Action that drops an auto-updating SVG card on your README, recomputed on every merge by the same analyzer as the web app. Five styles, accent presets, opt-in PR receipts, and a privacy mode for public repos. The card adapts to the viewer's light/dark theme automatically.
-
-<p align="center">
-  <img src="./card/examples/compact.svg" alt="CodeFlow card — compact style" width="100%" />
-</p>
-
-See [card/](./card/) for setup, or jump to the [style gallery](#card-style-gallery) below.
-
----
-
-## Privacy First
-
-**Your code stays on your machine.** CodeFlow:
-
-- Runs 100% in the browser
-- Makes API calls directly from your browser to GitHub
-- Never stores your code or tokens
-- Works with private repos (just add your token locally)
-- No analytics or tracking
-
-Your GitHub token (if used) is only stored in your browser's memory and is cleared when you close the tab.
-
----
-
-## Quick Start
-
-### Option 1: Use Online (Recommended)
-Just visit [CodeFlow](https://codeflow-five.vercel.app/) and paste any GitHub URL.
-
-### Option 2: Self-Host
 ```bash
-# Clone the repo
 git clone https://github.com/OwenTanzer/codeflow.git
 cd codeflow
-
-# Install dev tooling and start a local server
-npm install
-npm run dev
+npm ci
+npm run build
 ```
 
-Then open the URL Vite prints (defaults to `http://localhost:5173`).
+Installation provisions the pinned CodeVisualizer core and attempts to install pyan3 into `.venv-pyan3`. Build verifies/rebuilds that same core. These are application dependencies, not just development tooling. Exact npm resolution is in `package-lock.json`; the separate core commit is in `codevisualizer-core.lock.json` and Python pin in `requirements.txt`.
 
-Opening `index.html` directly from disk (`file://`, no server) is **not
-supported** — the app's analyzer code is loaded as an ES module
-(`src/analyzer.js`), and browsers block ES module imports under the
-`file://` origin's CORS restrictions. This was an intentional tradeoff made
-while modularizing the codebase for a future server-hosted deployment with
-server-held credentials (see `docs/baseline.md`); a zero-install, double-click
-local file was judged not worth preserving against that direction. A local
-HTTP server is required either way — `npm run dev` for development, or
-`npm run build && npm start` to run the production build locally.
+Follow [Local development in the runbook](docs/deployment.md#local-development) to start `npm start` with existing authorized server credentials and an allowlist. For UI development, run `npm run dev` in a second terminal; Vite proxies `/api`, `/healthz` and `/readyz` to the server on port 3000. Vite or `npm run preview` alone is not the GitHub analysis backend. Never put credentials in the browser, documentation, repository or test artifacts.
 
-### Option 3: Analyze Local Files
-You can now analyze code directly from your local machine without uploading to GitHub:
-
-1. Open CodeFlow in your browser
-2. Click the "Open Folder" button
-3. Select the folder or files you want to analyze
-4. CodeFlow will process them entirely in your browser
-
-**Perfect for:**
-- Private projects you don't want to upload
-- Offline development
-- Quick local analysis before committing
-- Working with sensitive code
-
----
-
-## Usage
-
-### Public Repositories
-```
-Just paste: facebook/react
-Or full URL: https://github.com/facebook/react
-```
-
-### Private Repositories
-1. Create a [GitHub Personal Access Token](https://github.com/settings/tokens) with `repo` scope
-2. Paste it in the Token field
-3. Analyze your private repos
-
-### Local Files
-Click the "Open Folder" button to analyze code from your computer:
-- **Folder Analysis:** Select a folder to analyze all supported files recursively
-- **File Selection:** Choose specific files to analyze
-- **Drag & Drop:** Drag files or folders directly onto the page
-- **Custom Excludes:** Add patterns like `uploads/**`, `**/cache/**`, or `*.png` before scanning
-
-All processing happens locally in your browser - nothing is uploaded.
-
-### Shareable Links
-After analysis, click the "Share" button to copy a shareable link. Anyone can re-run the same analysis.
-
-### Export Reports
-Export your analysis in multiple formats for further processing:
-
-- **JSON Report** - Complete analysis data including:
-  - Repository metadata and health score
-  - All files with functions, dependencies, and churn data
-  - Complete function statistics with callers and usage metrics
-  - Security issues, patterns, and architecture issues
-  - Duplicate code detection and layer violations
-  - Suggestions and recommendations
-  - Language breakdown and folder structure
-  
-  Perfect for programmatic analysis, CI/CD integration, or custom reporting tools.
-
-- **Markdown Report** - Human-readable formatted report
-- **Plain Text Report** - Simple text format
-- **SVG Image** - Export the dependency graph visualization
-- **PDF Document** - Export the dependency graph as a printable PDF
-- **Raw JSON** - Simplified data export
-
-Click the "Export" button in the top bar after analysis to access all export options.
-
----
-
-## Supported Languages
-
-CodeFlow extracts functions and analyzes dependencies for:
-
-| Language | Extensions |
-|----------|------------|
-| JavaScript | `.js`, `.jsx` |
-| TypeScript | `.ts`, `.tsx` |
-| HTML (inline scripts) | `.html`, `.htm`, `.xhtml` |
-| Python | `.py` |
-| Java | `.java` |
-| Go | `.go` |
-| Ruby | `.rb` |
-| PHP | `.php` |
-| Vue | `.vue` |
-| Svelte | `.svelte` |
-| Rust | `.rs` |
-| C | `.c`, `.h` |
-| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` |
-| C# | `.cs` |
-| Swift | `.swift` |
-| Kotlin | `.kt`, `.kts` |
-| Scala | `.scala`, `.sc` |
-| Groovy | `.groovy`, `.gvy` |
-| Elixir | `.ex`, `.exs` |
-| Erlang | `.erl`, `.hrl` |
-| Haskell | `.hs`, `.lhs` |
-| Lua | `.lua` |
-| R | `.r`, `.R` |
-| Julia | `.jl` |
-| Dart | `.dart` |
-| Perl | `.pl`, `.pm` |
-| Shell | `.sh`, `.bash`, `.zsh`, `.fish` |
-| PowerShell | `.ps1`, `.psm1`, `.psd1` |
-| F# | `.fs`, `.fsi`, `.fsx` |
-| OCaml | `.ml`, `.mli` |
-| Clojure | `.clj`, `.cljs`, `.cljc` |
-| Elm | `.elm` |
-| VBA | `.vba`, `.bas`, `.cls`, `.xlsm`, `.xlsb`, `.xlam` |
-
----
-
-## Visualization Modes
-
-| Mode | Description |
-|------|-------------|
-| **Folder** | Color by directory structure |
-| **Layer** | Color by architectural layer (UI, Services, Utils, etc.) |
-| **Churn** | Color by commit frequency (hot spots) |
-| **Blast** | Color by impact when a file is selected |
-
----
-
-## Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Analyze repository |
-| `+` / `-` | Zoom in/out |
-| `Escape` | Close modal |
-
----
-
-## API Limits
-
-GitHub API has rate limits:
-- **Without token:** 60 requests/hour
-- **With Personal Access Token:** 5,000 requests/hour
-- **With GitHub App:** 5,000 requests/hour per installation
-
-### Authentication Methods
-
-#### Personal Access Token (PAT)
-1. Create a [GitHub Personal Access Token](https://github.com/settings/tokens) with `repo` scope
-2. Paste it in the Token field
-3. Analyze your private repos
-
-#### GitHub App Authentication
-For teams and organizations, GitHub App provides better security and higher rate limits:
-
-1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions
-2. Install the app on your organization or personal account
-3. Generate an installation access token
-4. Paste the token in the Token field
-
-**Benefits of GitHub App:**
-- Fine-grained permissions control
-- Revocable access per installation
-- Higher rate limits (5,000 requests/hour)
-- Audit logging and security monitoring
-- No need to share personal credentials
-
-For larger repositories or team usage, we recommend using GitHub App authentication.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────┐
-│                   CodeFlow                      │
-├─────────────────────────────────────────────────┤
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │  Parser  │  │  GitHub  │  │    D3    │       │
-│  │  Module  │  │   API    │  │  Graph   │       │
-│  └──────────┘  └──────────┘  └──────────┘       │
-│        │              │              │          │
-│        └──────────────┼──────────────┘          │
-│                       │                         │
-│              ┌────────▼────────┐                │
-│              │   React App     │                │
-│              └─────────────────┘                │
-└─────────────────────────────────────────────────┘
-```
-
-The analyzer (`Parser`, `buildAnalysisData`, the `GitHub` API client, and
-related logic) lives in `src/analyzer.js`, imported as an ES module by both
-`index.html` and the Node-side tooling (`card/`, tests) — one implementation,
-not a duplicated copy. React, D3, and Babel still load from pinned CDNs at
-runtime; `npm install` only brings in local dev tooling (Vite for
-building/serving, Playwright for headless browser verification), not
-application dependencies.
-
----
-
-## Contributing
-
-We love contributions! Here's how:
-
-1. Fork the repo
-2. Make your changes to `index.html` (app shell/UI) or `src/analyzer.js` (analyzer logic)
-3. Test locally: `npm install && npm run dev`, then open the printed URL
-4. Submit a PR
-
-Node.js unit tests live under `tests/` — run them with:
+Run the actual root checks:
 
 ```bash
-node --test tests/*.test.mjs
+npm test
+npm run build
 ```
 
-(`node --test tests/` without the glob won't discover this repo's flat `tests/*.test.mjs` layout.)
+When pyan3 is installed only in the checkout venv, tests need its interpreter explicitly (POSIX shell):
 
-`tests/verify-brain-vault.mjs` is an optional end-to-end script that always verifies the bundled fixtures and will also scan a real local vault when you explicitly set `BRAIN_VAULT=/path/to/vault`.
+```bash
+PYTHON_BIN="$PWD/.venv-pyan3/bin/python" npm test
+```
 
-### Ideas for Contributions
-- [ ] Add support for more languages
-- [ ] Improve function extraction regex
-- [ ] Add more design pattern detection
-- [ ] Export to different formats (PNG, PDF)
-- [ ] Add code complexity metrics
+On Windows use `.venv-pyan3/Scripts/python.exe` as `PYTHON_BIN`. Runtime config detects the local venv, but some tests default to system Python. There is no root lint/typecheck script. Choose additional server/browser gates from the [test responsibility map](docs/architecture-next-steps.md#testcontract-responsibility-map); live GitHub tests require an existing authorized credential, and browser tests require Playwright's browser installation and CDN access.
 
----
+Read [the architecture guide](docs/architecture.md) before changing a boundary, then the [GraphIR contract](docs/graph-ir-contract.md) and relevant tests. Keep refactors incremental, preserve source identity, complete labels, cancellation and resource policy, and record unverified cases. Operational procedures belong in [deployment.md](docs/deployment.md); dependency updates in [codevisualizer-core-dependency.md](docs/codevisualizer-core-dependency.md).
 
 ## FAQ
 
-**Q: How does it work without a backend?**
-> CodeFlow runs entirely in your browser. It calls the GitHub API directly from your browser and processes everything client-side.
+**Does it need a backend?** The main GitHub workflow does. Local folder/ZIP analysis executes in the browser after the app and required assets load.
 
-**Q: Is my code safe?**
-> Yes. Your code is fetched directly from GitHub to your browser. Nothing is sent to any server we control. The source is open — check it yourself.
+**Why can a repository overview work while drill-down does not?** Overview heuristics cover more formats than the Python-only deeper analyzers. Operator feature flags and unavailable parser dependencies can also limit a layer; diagnostics and provenance describe the result.
 
-**Q: Can I use it offline?**
-> Yes. With the local file analysis feature, you can analyze code from your computer without any internet connection. Click the "Open Folder" button and select your files. All processing happens entirely in your browser.
+**Why is an analysis slow?** Retrieval, parsing, payload transfer, browser reconstruction and rendering are separate costs. The [profiling plan](docs/architecture-profiling.md) records what was actually measured; integrating three analyzers is not itself a measured cause.
 
-**Q: Why is analysis slow?**
-> We make individual API calls for each file to get content. With a token, you get higher rate limits and faster analysis.
+**Can I share a view?** Repository share links can prefill/re-run analysis. They do not establish restoration of every selection/layer via native browser Back/Forward.
 
-**Q: How accurate is the dependency analysis?**
-> It's heuristic: unique functions are matched by name, while duplicate function names are scoped by file and explicit imports before edges are created. It may still miss dynamic imports or renamed runtime references, so it's designed for a quick overview, not 100% accuracy.
-
----
-
-## Card Style Gallery
-
-All examples below are real cards rendered by the [CodeFlow Card Action](./card/) against this very repo. Pick one and drop it on your README.
-
-### `style: compact` — default
-
-<img src="./card/examples/compact.svg" alt="compact" width="100%" />
-
-### `style: compact` with `show-grade: false, show-score: false`
-
-For public READMEs where you'd rather show data than a letter grade. The card stays informational — files, functions, LOC, languages, tests — without the judgmental bits.
-
-<img src="./card/examples/compact-private.svg" alt="compact private" width="100%" />
-
-### `accent` — any preset or CSS color
-
-The accent recolors the sparklines, links, and pin. Presets: `purple` (default), `teal`, `cyan`, `green`, `pink`, `blue`, `amber`, `red`. Or pass any CSS color (e.g. `#ff6b6b`).
-
-<img src="./card/examples/compact-teal.svg" alt="compact teal" width="100%" />
-<img src="./card/examples/compact-pink.svg" alt="compact pink" width="100%" />
-
-### `style: row` — status-bar strip
-
-<img src="./card/examples/row.svg" alt="row" width="100%" />
-
-### `style: minimal` — single text line
-
-<img src="./card/examples/minimal.svg" alt="minimal" width="100%" />
-
-### `style: hero` — splashy gradient
-
-<img src="./card/examples/hero.svg" alt="hero" width="100%" />
-
-`hero` with `show-grade: false`:
-
-<img src="./card/examples/hero-private.svg" alt="hero private" width="100%" />
-
-### `style: detailed` — information-rich
-
-Everything: grade, scale, language breakdown, composition (connections, tests, folders, function stats, patterns), top folders, fragility, hidden costs.
-
-<img src="./card/examples/detailed.svg" alt="detailed" width="100%" />
-
-`detailed` with `show-grade: false`:
-
-<img src="./card/examples/detailed-private.svg" alt="detailed private" width="100%" />
-
----
-
-## Star History
-
-If you find CodeFlow useful, please star the repo.
-
----
-
-## License
-
-MIT License — use it however you want.
-
----
-
-<div align="center">
-
-**Built by developers, for developers**
-
-*Stop guessing. Start seeing.*
-
-</div>
+**How reliable are the graphs?** They are bounded static-analysis views. See [file limitations](docs/file-layer-limitations.md), [function semantics and renderer history](docs/function-layer-renderer.md) and the current acceptance limits; no diagram proves complete runtime behavior.

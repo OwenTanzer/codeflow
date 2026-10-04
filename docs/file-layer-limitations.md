@@ -1,5 +1,11 @@
 # File layer known limitations and Garrison Step handoff (MOO-70 Commit 9)
 
+> Reading note — October 4, 2026: semantic limitations below remain relevant.
+> Provisioning/deployment results are historical. Current runtime setup and
+> flags belong in [deployment.md](deployment.md); [architecture.md](architecture.md)
+> maps shared caches, admission and cancellation. A pyan3 failure degrades only
+> when `DEGRADED_ANALYSIS_ENABLED` permits it, and degraded file results are not cached.
+
 Records known static-analysis limitations of the pyan3 + tree-sitter file
 layer and defers aesthetic/correctness judgment to the Garrison Step
 (MOO-44), matching `docs/repository-layer-density.md`'s own precedent for
@@ -95,6 +101,31 @@ a fresh deployment reached `SUCCESS`, passed its healthcheck, and
 `/readyz` reports `checks.pyan3.ok: true`.
 
 ## Cross-layer resilience (Commit 9's own checklist item)
+
+A pyan3 failure for one `/api/graph/file` request is converted by
+`runPyan3ForFile` into an explicit failed outcome. With degraded analysis enabled,
+the handler serves a warned tree-sitter-only graph; when disabled, it returns an
+error. A degraded file graph is never cached. Regression coverage lives in
+`tests/server-graph-file.test.mjs`.
+
+The file and repository handlers have separate error paths and renderers, while
+sharing graph cache, metrics and admission capacity in the current composition.
+A file-parser failure does not invalidate a loaded repository graph. Shared
+capacity still couples their resource availability; isolation is not a claim
+that one layer can never affect another's latency.
+
+Historically, the startup pyan3 check was changed from process-fatal to a warning
+to preserve the repository layer. Current `refreshDependencyStatuses` checks
+availability at startup and periodically; readiness exposes dependency detail.
+See [architecture.md](architecture.md#server-lifetime-cache-and-operations) for
+current lifetime/cleanup ownership and [deployment.md](deployment.md) for flags.
+
+### Historical Commit 9 record
+
+The original isolation/startup assertions below describe that stage and are
+superseded by the current shared-resource and feature-flag explanation above.
+The handoff remains a historical product-question inventory: later search and
+interaction work supersedes its blanket assertion that no search exists.
 
 A pyan3 failure for one `/api/graph/file` request is isolated to that
 request/response — verified directly (`tests/server-graph-file.test.mjs`,

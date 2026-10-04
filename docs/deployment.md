@@ -3,7 +3,9 @@
 MOO-72 Commits 8-9. This is the operational counterpart to `docs/baseline.md`
 (a narrative commit-by-commit log) — a task-oriented reference for
 deploying, rolling back, and operating this service. It documents the
-**current, confirmed-implemented** state, updated as of MOO-72 Commit 9.
+implemented operational procedures, with historical observations labeled by their stage.
+Current source was rechecked at `7ce7aa8` on October 4, 2026; deployment state
+was not freshly probed. Start architecture reading at [docs/README.md](README.md).
 
 **The production cutover described in this file has happened.** CodeViz is
 live at `https://codeviz.moopertonic.net` (custom domain, valid TLS
@@ -13,9 +15,11 @@ the reusable procedure it's based on.
 ## Local development
 
 ```
-npm install                     # runs setup:codevisualizer + postinstall (pyan3) automatically
-GITHUB_TOKEN=$(gh auth token) ALLOWED_OWNERS=<your-github-username> npm run build
-GITHUB_TOKEN=$(gh auth token) ALLOWED_OWNERS=<your-github-username> npm start
+npm ci                          # exact lock; core setup + best-effort pyan3 install
+npm run build
+# With GITHUB_TOKEN and ALLOWED_OWNERS or ALLOWED_REPOS already set
+# through your existing authorized local environment:
+npm start
 ```
 
 `npm run build` also runs `scripts/generate-build-info.mjs`, which writes
@@ -24,6 +28,14 @@ current `version`/`commitSha`/`dirty` state; `npm start` reads it at
 startup and serves it from `/healthz` and the UI's corner badge. Missing
 the file (e.g. running `node server/index.js` directly without a prior
 build) falls back to `"unknown"` rather than failing startup.
+
+For UI development, keep that API server on port 3000 and run `npm run dev`
+in a second terminal. Vite proxies `/api`, `/healthz` and `/readyz` to it.
+`npm run preview` serves the build but does not replace the API server.
+When tests need checkout-local pyan3, use
+`PYTHON_BIN="$PWD/.venv-pyan3/bin/python" npm test` on POSIX; Windows uses
+`.venv-pyan3/Scripts/python.exe`. Some tests default to system Python even
+though runtime config detects the venv. Do not print credentials in logs.
 
 `GITHUB_TOKEN` and at least one of `ALLOWED_OWNERS`/`ALLOWED_REPOS` are
 required at startup with no bypass. The app's own client-facing auth gate
@@ -123,9 +135,10 @@ upgrades are safe to do casually and which require deliberate re-pinning:
 
 **Exact pins** (reproducible only if bumped deliberately):
 - `@codevisualizer/core` — `codevisualizer-core.lock.json` pins commit
-  `974d907a5490aa96fb8e84b6723d15bc5455c658` of
+  `ea0f56d929375794c1b9e423bede9a91328f7ed8` of
   `OwenTanzer/CodeVisualizer`, provisioned by
-  `scripts/setup-codevisualizer-core.mjs` (runs as `preinstall`).
+  `scripts/setup-codevisualizer-core.mjs` (runs from both `preinstall` and `build`; see
+  [dependency notes](codevisualizer-core-dependency.md)).
 - `pyan3==2.6.2` — `requirements.txt`, installed by
   `scripts/install-pyan3.mjs` (runs as `postinstall`) into a repo-local
   venv (`.venv-pyan3/`).
@@ -256,7 +269,7 @@ requirements differ by what's actually being bumped:
   `curl` checks in the cutover runbook's step 4 above, with the release
   rollback procedure on standby.
 
-## Allowlist, rate limiting, and secret handling — confirmed current state
+## Allowlist, rate limiting, and secret handling
 
 All already implemented (MOO-67/72 Commits 3-6), reconfirmed here rather
 than rebuilt. The app's own client-facing auth gate that once lived here
@@ -267,7 +280,7 @@ unauthenticated; the moopertonic.net landing page is not an access-control
 boundary.
 
 - **Allowlist**: `ALLOWED_OWNERS`/`ALLOWED_REPOS` (`server/lib/allowlist.js`),
-  at least one required at startup. **The deployed instance currently runs
+  at least one required at startup. **The historical deployment record used
   `ALLOWED_OWNERS=*`** (wildcard — any GitHub owner's repos) — see
   `docs/baseline.md`'s "Post-deployment update" section for when and why
   this was widened from the initial `OwenTanzer`-only allowlist. This is a
@@ -433,7 +446,9 @@ unattended.
 
 ## Repository overview resource policy (#29)
 
-Repository and explicitly selected package scans have no file-count cap.
+Server repository and explicitly selected package scans have no file-count cap.
+The separate legacy browser PR dialog still samples at 750; see the
+[architecture exception](architecture.md#important-exception-legacy-pr-impact-dialog).
 MAX_REPO_FILES is retired; setting it has no effect. Existing selection and
 exclusion rules remain in force. MAX_FILE_BYTES (1 MiB) skips oversized files;
 MAX_REPO_BYTES (25 MiB) rejects an oversized aggregate. Unknown tree blob sizes,

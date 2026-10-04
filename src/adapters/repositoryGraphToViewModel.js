@@ -8,14 +8,13 @@
 // repository layer's *fetch* onto the server doesn't require rewiring a
 // dozen-plus UI read sites in the same commit. Local-folder/ZIP analysis
 // keeps producing this shape directly in-browser (via buildAnalysisData/
-// adaptRepositoryAnalysis called locally) and never goes through this
+// runAnalysisData called locally) and never goes through this
 // mapper at all.
 //
 // Deliberately partial in one place: `content` is always '' here, since
-// server-sourced analysis never ships raw file content to the client (see
-// docs/upstream-compatibility equivalent reasoning for the function layer --
-// file preview for GitHub-sourced repositories stays on the existing
-// legacy GitHub-PAT fallback path, unmigrated in this commit).
+// the repository graph omits whole-file content (function snippets remain
+// in metadata.functions). GitHub source preview uses the server-held
+// credential via githubMetaClient and POST /api/github/file-content.
 //
 // @param {import('../graph-ir/graphIR.js').GraphIR} graph - a repository-layer GraphIR from adaptRepositoryAnalysis, as returned by POST /api/graph/repository
 // @returns {object} the legacy analyzer.js buildAnalysisData()-shaped view model
@@ -52,7 +51,7 @@ export function repositoryGraphToViewModel(graph) {
       path,
       name: node.label,
       folder: nodeMetadata.folder,
-      // Never fetched to the client for server-sourced analysis -- see
+      // Whole-file content is fetched separately for preview -- see
       // module doc comment.
       content: '',
       functions: functionsByFile.get(path) || [],

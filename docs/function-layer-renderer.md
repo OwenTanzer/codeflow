@@ -1,5 +1,7 @@
 # Function-layer renderer: shared vs. specialized
 
+> Status note — October 4, 2026: Historical renderer comparison and implementation record. Current behavior at `7ce7aa8` uses complete parser-composed labels (CodeVisualizer pin `ea0f56d`), measured text-sized shapes, dimension-aware layout and font/resize reflow. Old fixed sizes, 20/80-character truncation and screenshots below describe earlier stages, not current behavior. See [architecture](architecture.md#repository--file--function), [full-label acceptance](integration-acceptance-20261004.md) and [test responsibilities](architecture-next-steps.md). The semantic limitations below, including no callee drill-down, are separate from repaired label presentation.
+
 MOO-71 Commit 7. MOO-71's governing decision is to *prefer the shared renderer
 and interaction contract, but allow a specialized function renderer if
 usability requires it*. This records the actual comparison that decision was

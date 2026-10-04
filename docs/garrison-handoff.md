@@ -1,5 +1,7 @@
 # Garrison Step handoff (MOO-72 Commit 9)
 
+> Status note — October 4, 2026: Historical product-evaluation matrix. Start current maintenance work at the [documentation index](README.md). PR #34 supersedes the 750-file main-route cap, truncated labels and absent function search/selection statements below; see [acceptance evidence](integration-acceptance-20261004.md) and [current architecture](architecture.md). The PR dialog remains a distinct exception. PR-review usefulness, broader semantics and Garrison/OA-210 acceptance remain questions; this note does not mark the matrix complete.
+
 This is the one place the Garrison Step (MOO-44) should start reading. It
 does not replace the four detailed docs it cross-references below — those
 remain the backing material — but consolidates every open uncertainty

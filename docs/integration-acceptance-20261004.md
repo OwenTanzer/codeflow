@@ -1,5 +1,7 @@
 # Codeflow PR #34: CodeVisualizer label repair acceptance
 
+> Status note — October 4, 2026: Historical local acceptance evidence. PR #34 subsequently merged at `7ce7aa8020bc9bdf0c70648d175632e19f65b7d6`; its October 4 release update records deployment. The final sentence about no merge/deploy below describes this report’s original test boundary. [Current reading path](README.md) separates that release record from [new documentation-run verification](architecture-profiling.md).
+
 ## Exact inputs and boundary
 
 - Codeflow PR #34's prior head was `7f6f26a3c0902f58613f4e348a8eee1844d8bebf`; its `main` base was `a4589e1f4a0b2b4e8627a7113a315812a447da44`. The tested adoption commit is `7a07e237a48b68be17e1f6d2b288e9605b078a71`, which changes only `codevisualizer-core.lock.json` from pin `974d907a5490aa96fb8e84b6723d15bc5455c658` to `ea0f56d929375794c1b9e423bede9a91328f7ed8`.

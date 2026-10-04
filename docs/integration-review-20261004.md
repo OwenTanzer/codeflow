@@ -1,5 +1,7 @@
 # Coordinated integration review
 
+> Status note — October 4, 2026: Historical integration snapshot: the red label gate and draft/unmerged state below were superseded by [the later acceptance record](integration-acceptance-20261004.md) and PR #34 merged at `7ce7aa8`. Preserve the earlier failures as evidence; consult [the index](README.md) for October 4 release updates. No historical test here is newly executed.
+
 Follow-up acceptance after the reviewed CodeVisualizer repair is recorded in
 [integration-acceptance-20261004.md](integration-acceptance-20261004.md).
 
