@@ -623,7 +623,7 @@ body{height:100dvh;min-height:100dvh}
   marker comments). They now live in src/analyzer.js — the same module
   card/lib/analyzer.js and the Node test suite import directly, so there is
   one canonical implementation instead of a marker-extracted duplicate.
-  This bridge script assigns every one of the module's exports onto window
+  src/browser/startupBridge.js assigns every analyzer export onto window
   (Object.assign, not a hand-picked list, so this stays correct as
   src/analyzer.js's export statement evolves) so the classic (non-module)
   Babel-transpiled app script below can keep referencing them as bare
@@ -643,44 +643,7 @@ body{height:100dvh;min-height:100dvh}
   URL — see src/state/route.js.
 -->
 <script type="module">
-import * as analyzer from './src/analyzer.js';
-import { renderRepositoryGraph } from './src/render/repositoryGraph.js';
-import { renderFileGraph } from './src/render/fileGraph.js';
-import { installAlternateViewport, makeAlternateSelectable } from './src/render/alternateViewport.js';
-import { useRepositorySelection } from './src/state/selection.js';
-import { buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute } from './src/state/route.js';
-import { adaptRepositoryAnalysis } from './src/adapters/repositoryGraphAdapter.js';
-import { repositoryGraphToViewModel } from './src/adapters/repositoryGraphToViewModel.js';
-import { normalizeContext } from './src/graph-ir/githubContext.js';
-import { calcBlastFromGraph } from './src/graph-ir/blastRadius.js';
-import {
-  tryCreateDrillDown,
-  tryCreateDrillDownById,
-  createSelectionEventForPath,
-  tryCreateOpenSourceEvent,
-  tryCreateOpenSourceEventById,
-  githubBlobUrl,
-} from './src/state/repositoryDrillDown.js';
-import { useRepositoryDrillDownPanel } from './src/state/repositoryDrillDownPanel.js';
-import { fetchFileGraph, GraphFileClientError } from './src/state/graphFileClient.js';
-import { fetchRepositoryGraph, GraphRepositoryClientError } from './src/state/graphRepositoryClient.js';
-import { renderFunctionGraph } from './src/render/functionGraph.js';
-import { buildFunctionRenderModel } from './src/render/functionRenderModel.js';
-import { fetchFunctionGraph, GraphFunctionClientError } from './src/state/graphFunctionClient.js';
-import { AnalysisSession } from './src/state/analysisSession.js';
-import { fetchCapabilities } from './src/state/capabilitiesClient.js';
-import { fetchBlame, fetchFileContentFromServer } from './src/state/githubMetaClient.js';
-Object.assign(window, analyzer, {
-  renderRepositoryGraph, renderFileGraph, installAlternateViewport, makeAlternateSelectable, useRepositorySelection, buildRepoUrl, readRouteRepo, writeRepoRoute, clearRoute,
-  adaptRepositoryAnalysis, repositoryGraphToViewModel, normalizeContext, calcBlastFromGraph,
-  tryCreateDrillDown, tryCreateDrillDownById, createSelectionEventForPath, tryCreateOpenSourceEvent, tryCreateOpenSourceEventById, githubBlobUrl,
-  useRepositoryDrillDownPanel,
-  fetchFileGraph, GraphFileClientError,
-  fetchRepositoryGraph, GraphRepositoryClientError,
-  renderFunctionGraph, buildFunctionRenderModel, fetchFunctionGraph, GraphFunctionClientError,
-  AnalysisSession,
-  fetchCapabilities, fetchBlame, fetchFileContentFromServer,
-});
+import './src/browser/startupBridge.js';
 </script>
 <script type="text/babel">
 /*

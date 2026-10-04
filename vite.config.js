@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { preserveAnalyzerSource } from './scripts/vite-analyzer-source.mjs';
 
 // MOO-67 Commit 2: stand up the build/dev tooling against the *existing*
 // index.html unchanged. This intentionally does not touch the app's inline
@@ -8,6 +9,7 @@ import { defineConfig } from 'vite';
 // replacement to move to. This commit only proves the tooling can build and
 // serve the current app byte-for-byte.
 export default defineConfig({
+  plugins: [preserveAnalyzerSource()],
   build: {
     outDir: 'dist',
     rollupOptions: {

@@ -32,11 +32,15 @@ page.on('pageerror', (err) => consoleMessages.push(`[pageerror] ${err.stack || e
 // analyzer module's own resolved URL, e.g. /src/analyzer.js in dev or a
 // hashed /assets/*.js in a production build — actually happens.
 await page.addInitScript(() => {
-  window.__probe = { workerConstructions: 0, analyzerModuleFetches: 0 };
+  window.__probe = { workerConstructions: 0, workerCompletions: 0, analyzerModuleFetches: 0 };
   const OriginalWorker = window.Worker;
   window.Worker = function PatchedWorker(...args) {
     window.__probe.workerConstructions += 1;
-    return new OriginalWorker(...args);
+    const worker = new OriginalWorker(...args);
+    worker.addEventListener('message', event => {
+      if (event.data?.type === 'done') window.__probe.workerCompletions += 1;
+    });
+    return worker;
   };
   window.Worker.prototype = OriginalWorker.prototype;
   const originalFetch = window.fetch.bind(window);
@@ -53,8 +57,8 @@ await page.goto(url, { waitUntil: 'networkidle' });
 
 const result = await page.evaluate(async () => {
   const analyzed = [
-    { path: 'a.py', name: 'a.py', folder: 'root', content: 'def foo():\n    return 1\n', functions: [{ name: 'foo', line: 1 }], lines: 2, layer: 'app', churn: 0, isCode: true },
-    { path: 'b.py', name: 'b.py', folder: 'root', content: 'from a import foo\n\ndef bar():\n    return foo()\n', functions: [{ name: 'bar', line: 3 }], lines: 4, layer: 'app', churn: 0, isCode: true },
+    { path: 'a.py', name: 'a.py', folder: 'root', content: 'def foo():\n    return 1\n', functions: [{ name: 'foo', file: 'a.py', line: 1 }], lines: 2, layer: 'app', churn: 0, isCode: true },
+    { path: 'b.py', name: 'b.py', folder: 'root', content: 'from a import foo\n\ndef bar():\n    return foo()\n', functions: [{ name: 'bar', file: 'b.py', line: 3 }], lines: 4, layer: 'app', churn: 0, isCode: true },
   ];
   const allFns = [
     Object.assign({}, analyzed[0].functions[0], { folder: 'root', layer: 'app' }),
@@ -85,7 +89,7 @@ consoleMessages.forEach((m) => console.log(m));
 
 await browser.close();
 
-const usedWorker = result.ok && result.probe && result.probe.workerConstructions > 0 && result.probe.analyzerModuleFetches > 0;
+const usedWorker = result.ok && result.probe && result.probe.workerConstructions > 0 && result.probe.workerCompletions > 0 && result.probe.analyzerModuleFetches > 0;
 // The in-browser Babel Standalone transformer logs a benign deoptimization
 // notice at console.error level once the (600KB+) inline script exceeds its
 // pretty-printer's 500KB threshold — pre-existing noise, not an app error.
@@ -99,6 +103,6 @@ const consoleErrors = consoleMessages.filter(
 console.log('---');
 console.log('summary: ok=' + result.ok + ' usedWorker=' + usedWorker + ' consoleErrors=' + consoleErrors.length);
 
-if (!result.ok || consoleErrors.length > 0) {
+if (!result.ok || !usedWorker || consoleErrors.length > 0) {
   process.exit(1);
 }
