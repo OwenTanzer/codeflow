@@ -66,6 +66,8 @@ export function renderFileGraph(options) {
     svg.style('touch-action','none');
   svg.selectAll('*').remove();
   var disposeActivation = function () {};
+  var resizeObserver, cleanup = function () { disposeActivation(); resizeObserver?.disconnect(); if(document.fonts)document.fonts.removeEventListener('loadingdone',labelFontListener); if (simRef.current) simRef.current.stop(); svg.on('.zoom',null); };
+  var userMoved=false;
   try {
     var w = svgEl.clientWidth;
     var h = svgEl.clientHeight;
@@ -80,7 +82,7 @@ export function renderFileGraph(options) {
     var centers = {};
     groupIds.forEach(function (g, i) { centers[g] = { x: (i % cols + 1) * cw, y: (Math.floor(i / cols) + 1) * ch }; });
 
-    var zoom = d3.zoom().scaleExtent([0.2, 5]).on('zoom', function (e) { container.attr('transform', e.transform); container.selectAll('text').attr('visibility', e.transform.k < 0.45 ? 'hidden' : null); });
+    var zoom = d3.zoom().scaleExtent([0.2, 5]).on('zoom', function (e) { userMoved=true; container.attr('transform', e.transform); container.selectAll('text').attr('visibility', e.transform.k < 0.45 ? 'hidden' : null); });
     svg.call(zoom);
     zoomRef.current = zoom;
     var container = svg.append('g');
@@ -115,7 +117,7 @@ export function renderFileGraph(options) {
 
     var node = nodeLayer.selectAll('g').data(nodes).join('g').style('cursor', 'pointer');
     node.call(d3.drag()
-      .on('start', function (e, d) { if (!e.active) sim.alphaTarget(0.1).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('start', function (e, d) { userMoved=true; if (!e.active) sim.alphaTarget(0.1).restart(); d.fx = d.x; d.fy = d.y; })
       .on('drag', function (e, d) { d.fx = e.x; d.fy = e.y; })
       .on('end', function (e, d) { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
     // MOO-86: single-click-to-highlight-relations, matching the repository
@@ -143,6 +145,7 @@ export function renderFileGraph(options) {
     node.on('dblclick', function (e, d) { e.stopPropagation(); if (activateSymbolRef && activateSymbolRef.current) activateSymbolRef.current(d.id); });
     disposeActivation = installNodeActivation(node, {
       activate: d => activateSymbolRef.current?.(d.id),
+      select: d => { highlightRelations(d.id); selectSymbolRef.current?.(d.id); },
       eligible: d => !options.canActivate || options.canActivate(d.id),
       label: d => 'Open function: ' + d.label,
     });
@@ -182,14 +185,31 @@ export function renderFileGraph(options) {
     var labelFontListener=function(){refreshLabelCollision();};
     if(document.fonts)document.fonts.addEventListener('loadingdone',labelFontListener);
 
-    sim.on('tick', function () {
+    function draw() {
       link.attr('d', function (d) { return 'M' + d.source.x + ',' + d.source.y + 'L' + d.target.x + ',' + d.target.y; });
       node.attr('transform', function (d) { return 'translate(' + d.x + ',' + d.y + ')'; });
-    });
+    }
+    cleanup.fit=function(){
+      var b=container.node().getBBox(),padding=16;
+      var k=Math.min(1,(svgEl.clientWidth-padding*2)/b.width,(svgEl.clientHeight-padding*2)/b.height);
+      if(!(k>0))return;
+      zoom.scaleExtent([Math.min(0.2,k),5]);
+      svg.call(zoom.transform,d3.zoomIdentity.translate((svgEl.clientWidth-b.width*k)/2-b.x*k,(svgEl.clientHeight-b.height*k)/2-b.y*k).scale(k));
+    };
+    cleanup.readable=function(){
+      var b=container.node().getBBox();
+      svg.call(zoom.transform,d3.zoomIdentity.translate(svgEl.clientWidth/2-b.x-b.width/2,svgEl.clientHeight/2-b.y-b.height/2));
+    };
+    // Settle the small symbol graph before exposing its first hit targets.
+    sim.tick(180);draw();cleanup.fit();
+    sim.on('tick',draw).on('end',function(){if(!userMoved)cleanup.fit();});
+    resizeObserver=typeof ResizeObserver==='undefined'?null:new ResizeObserver(function(){cleanup.fit();});
+    resizeObserver?.observe(svgEl);
+
   } catch (e) {
     console.error('File graph render error:', e);
     svg.selectAll('*').remove();
     svg.append('text').attr('x', 20).attr('y', 30).attr('fill', 'var(--t3)').text('File graph rendering error: ' + e.message);
   }
-  return function () { disposeActivation(); if(document.fonts)document.fonts.removeEventListener('loadingdone',labelFontListener); if (simRef.current) simRef.current.stop(); };
+  return cleanup;
 }

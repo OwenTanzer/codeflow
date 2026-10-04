@@ -169,6 +169,12 @@ async function center(locator){
     }).catch(()=>null);
     stable=point&&previous&&Math.hypot(point.x-previous.x,point.y-previous.y)<2?stable+1:0;
     if(stable>=2)return point;
+    // Full labels can place nodes outside a short landscape viewport at 1x.
+    // Use the real Fit control before attempting a hold; never force-click.
+    if(attempt===30&&!point&&(await locator.getAttribute('aria-label')).startsWith('Open file: ')){
+      await p.getByRole('button',{name:'Fit view',exact:true}).click();
+      await pause(500);
+    }
     previous=point;await pause(50);
   }
   throw new Error('settled target has no stable reachable hit area: '+await locator.getAttribute('aria-label'));
@@ -373,9 +379,10 @@ await check('local repository without revision disables Open file fallback',asyn
   const p=await browser.newPage({viewport:{width:1680,height:1000}});watch(p);
   await p.goto(base);
   await p.locator('input[webkitdirectory]').setInputFiles(new URL('./fixtures/python-symbols/',import.meta.url).pathname.replace(/^\/(C:)/,'$1'));
-  const node=p.getByRole('button',{name:/^Open file: /}).first();
+  const node=p.getByRole('button',{name:/^Select file: /}).first();
   await node.waitFor({timeout:30000});
-  assert.equal(await node.getAttribute('aria-disabled'),'true');
+  assert.equal(await node.getAttribute('aria-disabled'),'false');
+  await node.focus();await node.press('Enter');
   const before=requests.filter(r=>r.phase===phase&&r.url==='/api/graph/file').length;
   const point=await center(node);await p.mouse.click(point.x,point.y);
   assert.equal(await p.getByRole('button',{name:'Open file',exact:true}).isDisabled(),true);

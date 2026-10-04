@@ -2,7 +2,7 @@
 export const HOLD_MS = 650;
 export const MOVE_TOLERANCE = 10;
 
-export function installNodeActivation(nodes, { activate, eligible = () => true, label }) {
+export function installNodeActivation(nodes, { activate, select, eligible = () => true, label }) {
   const elements = nodes.nodes();
   const doc = elements[0]?.ownerDocument;
   if (!doc) return () => {};
@@ -75,12 +75,13 @@ export function installNodeActivation(nodes, { activate, eligible = () => true, 
     el.classList.add('graph-interactive-node');
     el.setAttribute('tabindex', '0');
     el.setAttribute('role', 'button');
-    el.setAttribute('aria-label', label(datum));
-    el.setAttribute('aria-disabled', String(!eligible(datum)));
+    el.setAttribute('aria-label', !eligible(datum) && select ? label(datum).replace(/^Open /, 'Select ') : label(datum));
+    el.setAttribute('aria-disabled', String(!eligible(datum) && !select));
     listen(el, 'keydown', e => {
       if ((e.key === 'Enter' || e.key === ' ') && !e.repeat) {
         e.preventDefault(); e.stopPropagation();
         if (eligible(datum)) activate(datum);
+        else select?.(datum);
       }
     });
     listen(el, 'contextmenu', e => e.preventDefault());

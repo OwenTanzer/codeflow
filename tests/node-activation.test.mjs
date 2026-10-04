@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installNodeActivation, HOLD_MS } from '../src/render/nodeActivation.js';
 
-function setup(t, allowed = true) {
+function setup(t, allowed = true, selectable = false) {
   t.mock.timers.enable({apis:['setTimeout','Date'],now:1000});
   const doc = new EventTarget(), win = new EventTarget();
   win.requestAnimationFrame = () => 1;
@@ -13,8 +13,9 @@ function setup(t, allowed = true) {
   Object.assign(el, {ownerDocument:doc,__data__:{id:'target'},isConnected:true,
     classList:{add(){}},setAttribute:(k,v)=>attributes[k]=v,
     removeAttribute:k=>delete attributes[k],append(){}});
-  const calls = [];
+  const calls = [], selections=[];
   const dispose = installNodeActivation({nodes:()=>[el]}, {
+    select:selectable?d=>selections.push(d.id):undefined,
     activate:d=>calls.push(d.id),eligible:()=>allowed,label:()=> 'Open function: target'
   });
   const fire = (target,type,props={}) => {
@@ -24,7 +25,7 @@ function setup(t, allowed = true) {
   };
   const down = (props={}) => {fire(doc,'pointerdown',props);fire(el,'pointerdown',props);};
   t.after(dispose);
-  return {doc,win,el,attributes,calls,dispose,fire,down};
+  return {doc,win,el,attributes,calls,selections,dispose,fire,down};
 }
 test('hold activates once, exposes feedback, and suppresses compatibility clicks across cleanup',t=>{
   const h=setup(t);h.down();
@@ -93,4 +94,13 @@ test('holding beyond one second still suppresses the eventual release click',t=>
   assert.equal(h.fire(h.doc,'click').defaultPrevented,true);
   h.fire(h.doc,'pointerdown',{pointerId:2});
   assert.equal(h.fire(h.doc,'click').defaultPrevented,false);
+});
+
+test('unsupported but selectable nodes remain accessible without enabling drill-down',t=>{
+ const h=setup(t,false,true);
+ assert.equal(h.attributes['aria-label'],'Select function: target');
+ assert.equal(h.attributes['aria-disabled'],'false');
+ h.down();t.mock.timers.tick(HOLD_MS);assert.deepEqual(h.calls,[]);
+ h.fire(h.el,'keydown',{key:'Enter'});
+ assert.deepEqual(h.calls,[]);assert.deepEqual(h.selections,['target']);
 });

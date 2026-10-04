@@ -101,6 +101,50 @@ export function backPath(s, t, lane, laneBaseX) {
  * @returns {(() => void) & {applySearch?: (q: string) => void, applySelection?: (id: string|null) => void}}
  */
 export function renderFunctionGraph(options) {
+  const { svgEl, graph, zoomRef } = options;
+  if (!graph || !svgEl) return function () {};
+
+  // One public handle and one pair of observers own the lifetime. Reflow
+  // replaces only the current drawing; it never chains historical handles.
+  var disposed = false;
+  var frame = renderFunctionFrame(options);
+  var previousWidth = svgEl.clientWidth, previousHeight = svgEl.clientHeight;
+  function reflow() {
+    if (disposed) return;
+    var transform = d3.zoomTransform(svgEl);
+    var state = frame.getState?.();
+    frame();
+    frame = renderFunctionFrame(options);
+    if (zoomRef.current) d3.select(svgEl).call(zoomRef.current.transform, transform);
+    if (state) {
+      frame.applySelection?.(state.selection);
+      if (state.query) frame.applySearch?.(state.query);
+    }
+  }
+  var observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(function () {
+    if (svgEl.clientWidth === previousWidth && svgEl.clientHeight === previousHeight) return;
+    previousWidth = svgEl.clientWidth;
+    previousHeight = svgEl.clientHeight;
+    reflow();
+  });
+  observer?.observe(svgEl);
+  if (document.fonts) document.fonts.addEventListener('loadingdone', reflow);
+  var cleanup = function () {
+    if (disposed) return;
+    disposed = true;
+    observer?.disconnect();
+    if (document.fonts) document.fonts.removeEventListener('loadingdone', reflow);
+    frame();
+    frame = null;
+  };
+  cleanup.fit = function () { if (!disposed) frame.fit?.(); };
+  cleanup.readable = function () { if (!disposed) frame.readable?.(); };
+  cleanup.applySearch = function (q) { if (!disposed) frame.applySearch?.(q); };
+  cleanup.applySelection = function (id) { if (!disposed) frame.applySelection?.(id); };
+  return cleanup;
+}
+
+function renderFunctionFrame(options) {
   const { svgEl, graph, theme, zoomRef, selectSymbolRef, activateSymbolRef, onHover, onBackgroundClick } = options;
 
   var cleanup = function () {};
@@ -108,6 +152,11 @@ export function renderFunctionGraph(options) {
 
   var svg = d3.select(svgEl);
   svg.selectAll('*').remove();
+  cleanup = function () {
+    svg.on('.zoom', null).on('.functionGraph', null);
+    svg.selectAll('*').on('.functionGraph', null);
+    if (zoomRef.current === zoom) zoomRef.current = null;
+  };
 
   try {
     // Measure with the actual SVG font, including the current fallback font.
@@ -228,16 +277,16 @@ export function renderFunctionGraph(options) {
         });
       });
 
-    node.on('click', function (e, d) {
+    node.on('click.functionGraph', function (e, d) {
       e.stopPropagation();
       applySelection(d.id);
       if (selectSymbolRef && selectSymbolRef.current) selectSymbolRef.current(d.id);
     });
-    node.on('dblclick', function (e, d) {
+    node.on('dblclick.functionGraph', function (e, d) {
       e.stopPropagation();
       if (activateSymbolRef && activateSymbolRef.current) activateSymbolRef.current(d.id);
     });
-    node.on('mouseenter', function (e, d) {
+    node.on('mouseenter.functionGraph', function (e, d) {
       var r = svgEl.getBoundingClientRect();
       onHover({
         x: e.clientX - r.left + 10,
@@ -245,9 +294,9 @@ export function renderFunctionGraph(options) {
         title: d.label,
         content: d.kind + (d.flowchartNodeType && d.flowchartNodeType !== d.kind ? ' · ' + d.flowchartNodeType : ''),
       });
-    }).on('mouseleave', function () { onHover(null); });
+    }).on('mouseleave.functionGraph', function () { onHover(null); });
 
-    svg.on('click', function (e) {
+    svg.on('click.functionGraph', function (e) {
       if (e.target === svgEl) {
         applySelection(null);
         onBackgroundClick();
@@ -264,67 +313,41 @@ export function renderFunctionGraph(options) {
     });
 
     var currentSelection = null, currentQuery = '';
-    function applySelection(selectedId) {
-      currentSelection = selectedId;
-      var keep = selectedId ? neighbors.get(selectedId) : null;
-      node.attr('opacity', function (d) { return !keep || keep.has(d.id) ? 1 : 0.18; });
-      node.selectAll('.fn-nc').attr('stroke-width', function (d) { return selectedId === d.id ? 3 : 1.6; });
-      linkLayer.selectAll('path').attr('stroke-opacity', function (l) {
-        var base = l.data.isBackEdge ? 0.85 : 0.6;
-        if (!selectedId) return base;
-        return l.source.id === selectedId || l.target.id === selectedId ? 1 : 0.1;
-      });
-    }
-
-    // Search highlights in place rather than filtering nodes out: in a
-    // control-flow graph, removing a matched node's surroundings destroys
-    // the very context that makes the match meaningful.
-    function applySearch(query) {
-      currentQuery = query;
-      var q = (query || '').trim().toLowerCase();
+    // Both inputs describe one visual state. Clearing either input restores
+    // the other, independent of update order (including resize/font reflow).
+    function applyHighlightState() {
+      var q = (currentQuery || '').trim().toLowerCase();
+      var keep = currentSelection ? neighbors.get(currentSelection) : null;
+      function matches(d) { return !!q && !!d.label && d.label.toLowerCase().includes(q); }
       node.selectAll('.fn-nc')
-        .attr('stroke', function (d) {
-          if (!q) return colorFor(d);
-          return d.label && d.label.toLowerCase().includes(q) ? '#f0abfc' : colorFor(d);
-        })
+        .attr('stroke', function (d) { return matches(d) ? '#f0abfc' : colorFor(d); })
         .attr('stroke-width', function (d) {
-          if (!q) return 1.6;
-          return d.label && d.label.toLowerCase().includes(q) ? 3 : 1;
+          return currentSelection === d.id || matches(d) ? 3 : q ? 1 : 1.6;
         });
       node.attr('opacity', function (d) {
-        if (!q) return 1;
-        return d.label && d.label.toLowerCase().includes(q) ? 1 : 0.3;
+        // The selected node and search matches remain readable together.
+        if (currentSelection === d.id || matches(d)) return 1;
+        if (keep && !keep.has(d.id)) return 0.18;
+        return q ? 0.3 : 1;
+      });
+      linkLayer.selectAll('path').attr('stroke-opacity', function (l) {
+        var base = l.data.isBackEdge ? 0.85 : 0.6;
+        if (!currentSelection) return base;
+        return l.source.id === currentSelection || l.target.id === currentSelection ? 1 : 0.1;
       });
     }
-
-    var replacement = null, disposed = false;
-    var previousWidth = svgEl.clientWidth, previousHeight = svgEl.clientHeight;
-    function reflow() {
-      if(disposed)return;
-      var transform=d3.zoomTransform(svgEl);
-      var query=currentQuery, selection=currentSelection;
-      cleanup();
-      replacement=renderFunctionGraph(options);
-      d3.select(svgEl).call(zoomRef.current.transform,transform);
-      replacement.applySelection?.(selection);
-      if(query)replacement.applySearch?.(query);
+    function applySelection(selectedId) {
+      currentSelection = selectedId;
+      applyHighlightState();
     }
-    var observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(function() {
-      if(svgEl.clientWidth===previousWidth && svgEl.clientHeight===previousHeight)return;
-      previousWidth=svgEl.clientWidth;previousHeight=svgEl.clientHeight;
-      reflow();
-    });
-    observer?.observe(svgEl);
-    if(document.fonts)document.fonts.addEventListener('loadingdone',reflow);
-    cleanup = function () {
-      if(replacement){replacement();return;}
-      disposed=true;
-      observer?.disconnect();
-      if(document.fonts)document.fonts.removeEventListener('loadingdone',reflow);
-      svg.on('.zoom', null);
-    };
+
+    // Search highlights in place so control-flow context remains visible.
+    function applySearch(query) {
+      currentQuery = query;
+      applyHighlightState();
+    }
+
     cleanup.fit = function() {
-      if(replacement){replacement.fit?.();return;}
       var b=container.node().getBBox(), padding=20;
       var k=Math.min(1,(svgEl.clientWidth-2*padding)/b.width,(svgEl.clientHeight-2*padding)/b.height);
       if(!(k>0))return;
@@ -334,13 +357,14 @@ export function renderFunctionGraph(options) {
         (svgEl.clientHeight-b.height*k)/2-b.y*k).scale(k));
     };
     cleanup.readable = function() {
-      if(replacement){replacement.readable?.();return;}
       svg.call(zoom.transform,initial);
     };
-    cleanup.applySearch = function(q){if(replacement)replacement.applySearch?.(q);else applySearch(q);};
-    cleanup.applySelection = function(id){if(replacement)replacement.applySelection?.(id);else applySelection(id);};
+    cleanup.applySearch = applySearch;
+    cleanup.applySelection = applySelection;
+    cleanup.getState = function() { return {selection:currentSelection,query:currentQuery}; };
     return cleanup;
   } catch (e) {
+    cleanup();
     console.error('Function graph render error:', e);
     svg.selectAll('*').remove();
     svg.append('text').attr('x', 20).attr('y', 30).attr('fill', 'var(--t3)')

@@ -1187,7 +1187,7 @@ function FileGraphCanvas(props){
     var fileGraph=props.fileGraph,theme=props.theme,openFileDrillDown=props.openFileDrillDown,
         showNotification=props.showNotification,onHover=props.onHover;
     var svgRef=useRef(null);
-    var zoomRef=useRef(null),simRef=useRef(null);
+    var zoomRef=useRef(null),simRef=useRef(null),rendererRef=useRef(null);
     var selectSymbolRef=useRef(null);
     var activateSymbolRef=useRef(null);
 
@@ -1204,13 +1204,15 @@ function FileGraphCanvas(props){
 
     useEffect(function(){
         if(!fileGraph||!svgRef.current)return;
-        return renderFileGraph({
+        var dispose=renderFileGraph({
             svgEl:svgRef.current,graph:fileGraph,theme:theme,
             zoomRef:zoomRef,simRef:simRef,
             selectSymbolRef:selectSymbolRef,activateSymbolRef:activateSymbolRef,
             onHover:onHover,onBackgroundClick:function(){setSelectedSymbolId('');},
             canActivate:function(id){return tryCreateDrillDownById(fileGraph,id).eligible;},
         });
+        rendererRef.current=dispose;
+        return function(){dispose();rendererRef.current=null;};
     },[fileGraph,theme]);
 
     var selectedResult=selectedSymbolId?tryCreateDrillDownById(fileGraph,selectedSymbolId):null;
@@ -1223,6 +1225,10 @@ function FileGraphCanvas(props){
             React.createElement('button',{type:'button',className:'top-btn',style:{minHeight:44},disabled:!selectedResult||!selectedResult.eligible,'aria-describedby':'function-open-help',onClick:function(){activateSymbolRef.current(selectedSymbolId);}},'Open function')
         ),
         React.createElement('div',{id:'function-open-help',style:{fontSize:11,marginBottom:8}},selectedResult&&!selectedResult.eligible?selectedResult.reason:'Select a symbol and choose Open function, or hold a node until the ring completes.'),
+        React.createElement('div',{style:{display:'flex',gap:8,marginBottom:8}},
+            React.createElement('button',{type:'button',className:'top-btn','aria-label':'Fit file graph',onClick:function(){rendererRef.current?.fit?.();}},'Fit'),
+            React.createElement('button',{type:'button',className:'top-btn','aria-label':'Readable file view',onClick:function(){rendererRef.current?.readable?.();}},'Readable')
+        ),
         React.createElement('svg',{ref:svgRef,'aria-label':'File symbols',style:{width:'100%',height:320,background:'var(--bg2)',borderRadius:8}})
     );
 }
@@ -1708,6 +1714,8 @@ function App(){
     var _e=useState(''),progress=_e[0],setProgress=_e[1];
     var _f=useState(null),error=_f[0],setError=_f[1];
     var _g=useState(null),data=_g[0],setData=_g[1];
+    var [repositorySearch,setRepositorySearch]=useState('');
+    var repositoryMatches=useMemo(function(){var q=repositorySearch.trim().toLowerCase();return q&&data?data.files.filter(function(f){return f.path.toLowerCase().includes(q);}):[];},[repositorySearch,data]);
     var _h=useState(null),repoInfo=_h[0],setRepoInfo=_h[1];
     // MOO-69 Commit 4: the repository-layer GraphIR for the current
     // analysis, built once (see finishAnalysis' GitHub-backed branch) from
@@ -1764,8 +1772,8 @@ function App(){
     var _l=useState(new Set(['blast','fns'])),expandedCards=_l[0],setExpandedCards=_l[1];
     var _o=useState(null),ownership=_o[0],setOwnership=_o[1];
     var _oe=useState(null),ownershipError=_oe[0],setOwnershipError=_oe[1];
-    var previewGeneration=useRef(0);
-    function closeFilePreview(){previewGeneration.current++;setFilePreview(null);}
+    var previewGeneration=useRef(0),previewController=useRef(null);
+    function closeFilePreview(){previewGeneration.current++;previewController.current?.abort();previewController.current=null;setFilePreview(null);}
     var _p=useState(''),prUrl=_p[0],setPrUrl=_p[1];
     var _q=useState(null),prData=_q[0],setPrData=_q[1];
     var _r=useState(false),showExport=_r[0],setShowExport=_r[1];
@@ -1999,6 +2007,8 @@ function App(){
     }
 
     function resetAnalysisState(){
+        setRepositorySearch('');
+        closeFilePreview();
         setError(null);
         setData(null);
         setRepositoryGraph(null);
@@ -2069,6 +2079,13 @@ function App(){
 
     function toggleMobilePanel(panel){
         setMobilePanel(function(prev){return prev===panel?null:panel;});
+    }
+
+    function cancelRepositoryLoad(){
+        beginNewAnalysisGeneration();
+        resetAnalysisState();
+        setLoading(false);
+        setProgress('');
     }
 
     function analyze(){
@@ -2661,56 +2678,31 @@ function App(){
     var toggleCard=useCallback(function(id){setExpandedCards(function(prev){var n=new Set(prev);if(n.has(id))n.delete(id);else n.add(id);return n;});},[]);
     var toggleFn=useCallback(function(name){setExpandedFns(function(prev){var n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});},[]);
 
-    // Syntax highlighting function
+    // Tokenize source once; never match generated highlighting markup.
     function highlightSyntax(code,filename){
-        if(!code)return'';
         var ext=(filename||'').split('.').pop().toLowerCase();
-        var isJS=['js','jsx','ts','tsx','mjs','cjs'].includes(ext);
-        var isPy=['py','pyw','pyi'].indexOf(ext)>=0;
-        var isJava=['java','kt','scala','cs','go'].includes(ext);
-        var isHTML=['html','htm','vue','svelte'].includes(ext);
-        var isCSS=['css','scss','sass','less'].includes(ext);
-        var isJSON=['json','yaml','yml','toml'].includes(ext);
-        var isRuby=['rb','rake'].includes(ext);
-        var isPHP=ext==='php';
-        var isVBA=['vba','bas','cls','xlsm','xlam','xlsb','xla','xlw'].includes(ext);
-        function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-        // Split into tokens while preserving structure
-        var result=code.split('\n').map(function(line){
-            var escaped=esc(line);
-            // Comments
-            if(isJS||isJava||isPHP||isCSS)escaped=escaped.replace(/(\/\/.*$)/gm,'<span class="syn-com">$1</span>');
-            if(isPy||isRuby)escaped=escaped.replace(/(#.*$)/gm,'<span class="syn-com">$1</span>');
-            if(isHTML)escaped=escaped.replace(/(&lt;!--[\s\S]*?--&gt;)/g,'<span class="syn-com">$1</span>');
-            // Strings - careful with order
-            escaped=escaped.replace(/(&quot;[^&]*&quot;|'[^']*'|`[^`]*`)/g,'<span class="syn-str">$1</span>');
-            // Numbers
-            escaped=escaped.replace(/\b(\d+\.?\d*)\b/g,'<span class="syn-num">$1</span>');
-            // Keywords
-            if(isJS)escaped=escaped.replace(/\b(const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|import|export|from|default|async|await|yield|typeof|instanceof|in|of|this|super|null|undefined|true|false|void|static|get|set)\b/g,'<span class="syn-kw">$1</span>');
-            if(isPy){
-                escaped=escaped.replace(/\b(async|await|def|class|return|if|elif|else|for|while|try|except|finally|raise|import|from|as|with|pass|break|continue|lambda|yield|global|nonlocal|assert|True|False|None|and|or|not|in|is|del|match|case|type)\b/g,'<span class="syn-kw">$1</span>');
-                escaped=escaped.replace(/(@\w+)/g,'<span class="syn-fn">$1</span>');
-                escaped=escaped.replace(/\b(self|cls)\b/g,'<span class="syn-kw" style="opacity:0.7">$1</span>');
-            }
-            if(isJava)escaped=escaped.replace(/\b(public|private|protected|static|final|void|class|interface|extends|implements|return|if|else|for|while|do|switch|case|break|continue|try|catch|finally|throw|new|import|package|this|super|null|true|false)\b/g,'<span class="syn-kw">$1</span>');
-            if(isRuby)escaped=escaped.replace(/\b(def|class|module|end|return|if|elsif|else|unless|case|when|for|while|until|do|begin|rescue|ensure|raise|require|include|extend|attr_accessor|attr_reader|attr_writer|true|false|nil|self)\b/g,'<span class="syn-kw">$1</span>');
-            if(isPHP)escaped=escaped.replace(/\b(function|class|return|if|else|elseif|for|foreach|while|do|switch|case|break|continue|try|catch|finally|throw|new|public|private|protected|static|const|use|namespace|extends|implements|true|false|null)\b/g,'<span class="syn-kw">$1</span>');
-            if(isVBA)escaped=escaped.replace(/\b(Public|Private|Friend|Static|Dim|Set|Let|Get|Call|Function|Sub|End Sub|End Function|Exit Sub|Exit Function|If|Then|Else|ElseIf|End If|For|To|Step|Next|Do|Loop|While|Wend|Select|Case|End Select|With|End With|On Error|Resume|GoTo|ByVal|ByRef|Optional|ParamArray|As|Type|Enum|Const|True|False|Nothing|Empty|Null|Me|Application|ThisWorkbook|Worksheets|Cells|Range|MsgBox|InputBox|Debug\.Print)\b/gi,'<span class="syn-kw">$1</span>');
-            if(isCSS)escaped=escaped.replace(/(@media|@import|@keyframes|@font-face|!important)/g,'<span class="syn-kw">$1</span>');
-            if(isHTML){escaped=escaped.replace(/(&lt;\/?)([\w-]+)/g,'$1<span class="syn-tag">$2</span>');escaped=escaped.replace(/([\w-]+)(=)/g,'<span class="syn-attr">$1</span>$2');}
-            // Function calls
-            escaped=escaped.replace(/\b([a-zA-Z_]\w*)\s*\(/g,'<span class="syn-fn">$1</span>(');
-            // Types (capitalized words in certain contexts)
-            if(isJS||isJava)escaped=escaped.replace(/:\s*([A-Z]\w*)/g,': <span class="syn-type">$1</span>');
-            return escaped;
+        var hashComments=['py','pyw','pyi','rb','rake','yaml','yml','toml'].includes(ext);
+        var keywords=new Set(('async await def class return if elif else for while try except finally raise import from as with pass break continue lambda yield global nonlocal assert True False None and or not in is del match case type const let var function new export default switch throw catch public private protected static final void interface extends implements package this super null true false').split(' '));
+        function esc(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+        return String(code||'').split('\n').map(function(line){
+            var tokens=/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60(?:\\.|[^\x60\\])*\x60|\/\/.*$|#.*$|\b\d+(?:\.\d+)?\b|\b[A-Za-z_]\w*\b|[\s\S]/g;
+            return Array.from(line.matchAll(tokens),function(m){
+                var t=m[0],kind='';
+                if(/^["'\x60]/.test(t))kind='str';
+                else if(t.startsWith('//')||(hashComments&&t.startsWith('#')))kind='com';
+                else if(/^\d/.test(t))kind='num';
+                else if(keywords.has(t))kind='kw';
+                else if(/^[A-Za-z_]\w*$/.test(t)&&/^\s*\(/.test(line.slice(m.index+t.length)))kind='fn';
+                return kind?'<span class="syn-'+kind+'">'+esc(t)+'</span>':esc(t);
+            }).join('');
         });
-        return result;
     }
 
     // Open file preview
     function openFilePreview(path,line){
         if(!repoInfo)return;
+        previewController.current?.abort();
+        var controller=new AbortController();previewController.current=controller;
         var generation=++previewGeneration.current;
         function settlePreview(value){if(generation===previewGeneration.current)setFilePreview(value);}
         var filename=path.split('/').pop();
@@ -2718,7 +2710,7 @@ function App(){
         // Check if we already have the content in data
         if(data){
             var existingFile=data.files.find(function(f){return f.path===path;});
-            if(existingFile&&existingFile.content){
+            if(existingFile&&(existingFile.content||(localSourceKind&&existingFile.content!=null))){
                 settlePreview({path:path,filename:filename,content:existingFile.content,line:line||null,loading:false,error:null});
                 return;
             }
@@ -2777,8 +2769,8 @@ function App(){
             var previewRef=repositoryGraph&&repositoryGraph.context&&repositoryGraph.context.resolvedSha;
             // MOO-86: runs server-side now (the server's own GITHUB_TOKEN)
             // instead of the removed client-side GitHub PAT field.
-            Promise.resolve().then(function(){return fetchFileContentFromServer({owner:previewOwner,repo:previewRepo,path:path,ref:previewRef});}).then(function(content){
-                if(content){
+            Promise.resolve().then(function(){return fetchFileContentFromServer({owner:previewOwner,repo:previewRepo,path:path,ref:previewRef,signal:controller.signal});}).then(function(content){
+                if(content!=null){
                     settlePreview({path:path,filename:filename,content:content,line:line||null,loading:false,error:null});
                 }else{
                     settlePreview({path:path,filename:filename,content:null,line:line||null,loading:false,error:'Could not load file content'});
@@ -2789,13 +2781,16 @@ function App(){
         }
     }
 
-    // Scroll to highlighted line after file preview loads
+    // A dismissed/replaced preview must not scroll a later modal.
     useEffect(function(){
-        if(filePreview&&filePreview.content&&filePreview.line&&filePreviewRef.current){
-            setTimeout(function(){
-                var el=filePreviewRef.current.querySelector('.file-preview-line.highlighted');
+        if(filePreview&&filePreview.content!=null&&filePreview.line&&filePreviewRef.current){
+            var element=filePreviewRef.current;
+            var timer=setTimeout(function(){
+                if(filePreviewRef.current!==element)return;
+                var el=element.querySelector('.file-preview-line.highlighted');
                 if(el)el.scrollIntoView({behavior:'smooth',block:'center'});
             },100);
+            return function(){clearTimeout(timer);};
         }
     },[filePreview]);
 
@@ -3216,7 +3211,9 @@ function App(){
         if(!data||!treemapRef.current||graphConfig.vizType!=='treemap')return;
         var container=d3.select(treemapRef.current);
         container.selectAll('*').remove();
-        var w=treemapRef.current.clientWidth||800,h=treemapRef.current.clientHeight||600;
+        var totalWidth=treemapRef.current.clientWidth||800,h=treemapRef.current.clientHeight||600;
+        var w=Math.max(80,totalWidth*0.55);
+        var labelList=container.append('div').attr('class','treemap-label-list').attr('aria-label','Treemap file labels').style('position','absolute').style('left',w+'px').style('right','0').style('top','0').style('bottom','0').style('overflow','auto').style('padding','6px');
         var svg=container.append('svg').attr('width',w).attr('height',h).style('cursor','grab');
         var g=svg.append('g');
         var zoom=d3.zoom().scaleExtent([0.3,4]).on('zoom',function(e){g.attr('transform',e.transform);g.selectAll('text').attr('visibility',e.transform.k<0.45?'hidden':null);svg.style('cursor',e.transform.k>1?'grab':'default');});
@@ -3239,9 +3236,17 @@ function App(){
         cells.append('rect').attr('class','treemap-rect').attr('width',function(d){return Math.max(0,d.x1-d.x0);}).attr('height',function(d){return Math.max(0,d.y1-d.y0);})
             .attr('fill',function(d){return colorMap[d.parent.data.name]||COLORS[hier.children.indexOf(d.parent.data)%COLORS.length];})
             .attr('opacity',0.85).attr('rx',3).attr('stroke','var(--bg0)').attr('stroke-width',1).style('cursor','pointer');
-        cells.append('text').attr('class','treemap-text')
-            .attr('x',function(d){return w+12-d.x0;}).attr('y',function(d,i){return 14+i*18-d.y0;}).attr('fill','var(--t1)').attr('font-size','10px').attr('font-weight','500').style('text-shadow','0 1px 2px rgba(0,0,0,0.5)').style('pointer-events','none')
-            .text(function(d){return d.data.name;});
+        labelList.selectAll('button').data(root.leaves()).join('button')
+            .attr('type','button').attr('class','top-btn treemap-text')
+            .attr('aria-label',function(d){return 'Select treemap file: '+d.data.path;})
+            .style('display','block').style('width','100%').style('min-height','36px')
+            .style('text-align','left').style('white-space','normal').style('overflow-wrap','anywhere')
+            .style('border-left',function(d){return '4px solid '+(colorMap[d.parent.data.name]||COLORS[0]);})
+            .style('background',function(d){return selected?.path===d.data.path?'var(--accbg)':'';})
+            .text(function(d){return d.data.name;})
+            .on('mouseenter',function(e,d){cells.select('rect').attr('opacity',function(n){return n===d?1:0.25;});})
+            .on('mouseleave',function(){cells.select('rect').attr('opacity',0.85);})
+            .on('click',function(e,d){e.stopPropagation();selectFileRef.current?.(d.data.path);});
         cells.filter(function(d){return d.x1-d.x0>60&&d.y1-d.y0>35;}).append('text').attr('class','treemap-subtext')
             .attr('x',4).attr('y',26).attr('fill','rgba(255,255,255,0.7)').attr('font-size','8px').style('pointer-events','none')
             .text(function(d){return d.data.value+' lines';});
@@ -3281,7 +3286,7 @@ function App(){
             cells.select('rect').transition().duration(300).attr('opacity',0.85).attr('fill',function(d){return colorMap[d.parent.data.name]||COLORS[0];}).attr('stroke','var(--bg0)').attr('stroke-width',1);
         });
         svg.on('dblclick.zoom',function(e){e.preventDefault();svg.transition().duration(300).call(zoom.scaleTo,1);});
-    },[data,graphConfig.vizType,colorMap,folderFilter,selected,blastRadius]);
+    },[data,graphConfig.vizType,colorMap,folderFilter,selected,blastRadius,viewportWidth,sidebarWidth,rightPanelWidth]);
 
     // Dependency Matrix visualization - Interactive with zoom, highlighting, selection
     useEffect(function(){
@@ -4292,7 +4297,7 @@ function App(){
                         ]).then(function(results){
                             var content=results[0];
                             var commits=results[1];
-                            if(content){
+                            if(content!=null){
                                 var layer=Parser.detectLayer(f.path);
                                 var actualIsCode=!Parser.isScriptContainer(f.path)||Parser.hasEmbeddedCode(content,f.path);
                                 var fns=actualIsCode?Parser.extract(content,f.path):[];
@@ -4370,7 +4375,7 @@ function App(){
             if(isCurrentAnalysisGeneration(generation)){showNotification('Could not load PR','error');setLoading(false);}
         });
     }
-    function resetAnalysis(){if(pendingSessionRef.current){pendingSessionRef.current.cancelAll();pendingSessionRef.current=null;}if(activeSessionRef.current){activeSessionRef.current.cancelAll();activeSessionRef.current=null;}setData(null);setRepositoryGraph(null);resetNavHistory();graphCacheRef.current.clear();setSelected(null);setBlastRadius(null);setOwnership(null);setRepoInfo(null);setRepoUrl('');setPrData(null);setFolderFilter(null);setLocalDirHandle(null);setLocalSourceKind(null);setArchitectureIncludeTests(false);setArchitectureIncludeBuildOutput(false);zipArchiveRef.current=null;zipFileRef.current=null;clearRoute();}
+    function resetAnalysis(){beginNewAnalysisGeneration();closeFilePreview();setRepositorySearch('');setLoading(false);if(pendingSessionRef.current){pendingSessionRef.current.cancelAll();pendingSessionRef.current=null;}if(activeSessionRef.current){activeSessionRef.current.cancelAll();activeSessionRef.current=null;}setData(null);setRepositoryGraph(null);resetNavHistory();graphCacheRef.current.clear();setSelected(null);setBlastRadius(null);setOwnership(null);setRepoInfo(null);setRepoUrl('');setPrData(null);setFolderFilter(null);setLocalDirHandle(null);setLocalSourceKind(null);setArchitectureIncludeTests(false);setArchitectureIncludeBuildOutput(false);zipArchiveRef.current=null;zipFileRef.current=null;clearRoute();}
     function filterByFolder(path){setFolderFilter(function(prev){return prev===path?null:path;});}
     function getArchitectureViewStats(diagram,includeTests,includeBuildOutput){
         if(!diagram)return{blocks:0,dependencies:0,routes:0,apiRoutes:0,databaseTouchpoints:0,warnings:0};
@@ -4645,6 +4650,9 @@ function App(){
                     ),
                     React.createElement('div',{className:'sidebar-section',style:{paddingBottom:8}},
                         React.createElement('div',{className:'sidebar-title'},'Explorer'),
+                        React.createElement('input',{type:'search','aria-label':'Search repository files',placeholder:'Search file paths',value:repositorySearch,onChange:function(e){setRepositorySearch(e.target.value);},style:{width:'100%',boxSizing:'border-box',marginTop:8,minHeight:36}}),
+                        repositorySearch.trim()&&React.createElement('div',{'aria-live':'polite',style:{fontSize:11,marginTop:6}},repositoryMatches.length+' matching files'),
+                        repositorySearch.trim()&&React.createElement('div',{'aria-label':'Repository search results',style:{maxHeight:240,overflow:'auto'}},repositoryMatches.map(function(f){return React.createElement('button',{key:f.path,type:'button',className:'top-btn','aria-label':'Select file: '+f.path,onClick:function(){selectFile(f.path);},style:{display:'block',width:'100%',textAlign:'left',whiteSpace:'normal',overflowWrap:'anywhere',minHeight:36}},f.path);})),
                         folderFilter&&React.createElement('button',{className:'top-btn',style:{width:'100%',marginTop:8},onClick:function(){setFolderFilter(null);}},
                             React.createElement(Icon,{name:'close',size:'s'}),
                             ' Clear Filter: ',
@@ -4659,7 +4667,7 @@ function App(){
                 )
             ),
             React.createElement('div',{className:'canvas-area'},
-                loading?React.createElement('div',{className:'loading'},React.createElement('div',{className:'spinner'}),React.createElement('div',{className:'loading-text'},'Analyzing...'),React.createElement('div',{className:'loading-progress'},progress)):
+                loading?React.createElement('div',{className:'loading'},React.createElement('div',{className:'spinner'}),React.createElement('div',{className:'loading-text'},'Analyzing...'),React.createElement('div',{className:'loading-progress'},progress),pendingSessionRef.current&&React.createElement('button',{type:'button',className:'top-btn','aria-label':'Cancel repository load',onClick:cancelRepositoryLoad,style:{marginTop:16,minHeight:44}},'Cancel repository load')):
                 !data?React.createElement('div',{className:'empty-state'},
                     React.createElement(Icon,{name:'logo',size:'xxl',className:'empty-icon'}),
                     React.createElement('div',{className:'empty-title'},'CodeFlow'),
@@ -5572,13 +5580,13 @@ function App(){
                     ):filePreview.error?React.createElement('div',{className:'file-preview-error'},
                         React.createElement(Icon,{name:'warning',size:'xxl',className:'file-preview-error-icon'}),
                         React.createElement('div',null,filePreview.error)
-                    ):filePreview.content?React.createElement('pre',{className:'file-preview-code'},
+                     ):filePreview.content!=null?React.createElement('pre',{className:'file-preview-code'},
                         highlightSyntax(filePreview.content,filePreview.filename).map(function(lineHtml,i){
                             var lineNum=i+1;
                             var isHighlighted=filePreview.line&&lineNum===filePreview.line;
                             return React.createElement('div',{key:i,className:'file-preview-line'+(isHighlighted?' highlighted':'')},
                                 React.createElement('span',{className:'file-preview-linenum'},lineNum),
-                                React.createElement('span',{className:'file-preview-text',dangerouslySetInnerHTML:{__html:lineHtml||' '}})
+                                React.createElement('span',{className:'file-preview-text',dangerouslySetInnerHTML:{__html:lineHtml}})
                             );
                         })
                     ):null

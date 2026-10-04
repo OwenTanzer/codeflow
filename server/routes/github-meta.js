@@ -9,17 +9,16 @@
 // field be removed entirely -- these now run with the server's own
 // GITHUB_TOKEN, same as every other GitHub-backed route.
 //
-// Deliberately much lighter-weight than the three graph routes
-// (graph-repository.js/graph-file.js/graph-function.js): each is a single
-// GitHub API round trip with no analysis, so there's no GraphIR/
-// AdapterResult, cache, concurrency limiter, or per-request metrics here --
-// that machinery exists to bound and observe expensive analyses, and would
-// be pure overhead for a cheap read a client already retries on its own.
+// These reads do not analyze or cache graphs. Source fallback can walk
+// several tree segments before fetching a blob, so it must propagate client
+// cancellation through every hop and drain active work before settling.
 import { readJsonBody, BodyTooLargeError } from '../lib/http-body.js';
 import { isRepoAllowed } from '../lib/allowlist.js';
 import { createRequestLogger } from '../lib/logger.js';
 import { validateGithubMetaRequest, ValidationError } from '../lib/validate-github-meta-request.js';
 import { fetchCommitAuthorTally, fetchSingleFileContent, GithubFetchError } from '../lib/github-analyzer-bridge.js';
+import { createRequestAbortSignal, throwIfCancelled, RequestCancelledError } from '../lib/cancellation.js';
+import { withTimeout, GraphAnalysisTimeoutError } from '../lib/request-work.js';
 
 function sendJson(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -32,11 +31,13 @@ function sendJson(res, status, body) {
  * each handler can just check for that and return.
  * @returns {Promise<{owner: string, repo: string, ref: string|null, path: string}|null>}
  */
-async function parseAndAuthorize(req, res, config, requestId, log) {
+async function parseAndAuthorize(req, res, config, requestId, log, signal) {
   let body;
   try {
     body = await readJsonBody(req, config.maxRequestBodyBytes);
+    throwIfCancelled(signal);
   } catch (err) {
+    if (signal.aborted) return null;
     if (err instanceof BodyTooLargeError) {
       sendJson(res, 413, { error: 'Request body too large', requestId });
     } else {
@@ -70,12 +71,21 @@ async function parseAndAuthorize(req, res, config, requestId, log) {
 export function createGithubBlameHandler({ config }) {
   return async function handleGithubBlame(req, res, requestId) {
     const log = createRequestLogger(requestId, { layer: 'github-blame' });
-    const request = await parseAndAuthorize(req, res, config, requestId, log);
-    if (!request) return;
+    const { signal, cleanup } = createRequestAbortSignal(req, res);
     try {
-      const authors = await fetchCommitAuthorTally(request, config);
+      const request = await parseAndAuthorize(req, res, config, requestId, log, signal);
+      if (!request) return;
+      const authors = await withTimeout(() => fetchCommitAuthorTally(request, config), {
+        signal, timeoutMs: config.graphAnalysisTimeoutMs,
+        timeoutMessage: 'Commit history retrieval timed out',
+      });
       sendJson(res, 200, { authors, requestId });
     } catch (err) {
+      if (err instanceof RequestCancelledError) return;
+      if (err instanceof GraphAnalysisTimeoutError) {
+        sendJson(res, 504, { error: err.message, requestId });
+        return;
+      }
       if (err instanceof GithubFetchError) {
         log.warn('github blame fetch failed', { errorMessage: err.message });
         sendJson(res, 502, { error: err.message, requestId });
@@ -83,6 +93,8 @@ export function createGithubBlameHandler({ config }) {
       }
       log.error('github blame internal error', { errorMessage: err && err.message });
       sendJson(res, 500, { error: 'Failed to fetch commit history', requestId });
+    } finally {
+      cleanup();
     }
   };
 }
@@ -91,16 +103,25 @@ export function createGithubBlameHandler({ config }) {
 export function createGithubFileContentHandler({ config }) {
   return async function handleGithubFileContent(req, res, requestId) {
     const log = createRequestLogger(requestId, { layer: 'github-file-content' });
-    const request = await parseAndAuthorize(req, res, config, requestId, log);
-    if (!request) return;
+    const { signal, cleanup } = createRequestAbortSignal(req, res);
     try {
-      const content = await fetchSingleFileContent(request, config);
+      const request = await parseAndAuthorize(req, res, config, requestId, log, signal);
+      if (!request) return;
+      const content = await withTimeout(() => fetchSingleFileContent(request, config), {
+        signal, timeoutMs: config.graphAnalysisTimeoutMs,
+        timeoutMessage: 'File content retrieval timed out',
+      });
       if (content == null) {
         sendJson(res, 404, { error: 'File not found at the requested revision', requestId });
         return;
       }
       sendJson(res, 200, { content, requestId });
     } catch (err) {
+      if (err instanceof RequestCancelledError) return;
+      if (err instanceof GraphAnalysisTimeoutError) {
+        sendJson(res, 504, { error: err.message, requestId });
+        return;
+      }
       if (err instanceof GithubFetchError) {
         log.warn('github file-content fetch failed', { errorMessage: err.message });
         sendJson(res, 502, { error: err.message, requestId });
@@ -108,6 +129,8 @@ export function createGithubFileContentHandler({ config }) {
       }
       log.error('github file-content internal error', { errorMessage: err && err.message });
       sendJson(res, 500, { error: 'Failed to fetch file content', requestId });
+    } finally {
+      cleanup();
     }
   };
 }

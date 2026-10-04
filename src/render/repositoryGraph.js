@@ -74,6 +74,7 @@ export function renderRepositoryGraph(options) {
     svg.style('touch-action','none');
         svg.selectAll('*').remove();
     var disposeActivation = function () {};
+    var userMoved=false;
         try{
         var w=svgEl.clientWidth;
         var h=svgEl.clientHeight;
@@ -93,7 +94,7 @@ export function renderRepositoryGraph(options) {
         var ch=h/(Math.ceil(folders.length/cols)+1);
         var centers={};
         folders.forEach(function(f,i){centers[f]={x:(i%cols+1)*cw,y:(Math.floor(i/cols)+1)*ch};});
-        var zoom=d3.zoom().scaleExtent([0.2,5]).on('zoom',function(e){container.attr('transform',e.transform);container.selectAll('text').attr('visibility',e.transform.k<0.45?'hidden':null);});
+        var zoom=d3.zoom().scaleExtent([0.2,5]).on('zoom',function(e){userMoved=true;container.attr('transform',e.transform);container.selectAll('text').attr('visibility',e.transform.k<0.45?'hidden':null);});
         svg.call(zoom);
         zoomRef.current=zoom;
         var container=svg.append('g');
@@ -169,11 +170,12 @@ export function renderRepositoryGraph(options) {
         linksRef.current=link;
         var node=nodeLayer.selectAll('g').data(nodes).join('g').style('cursor','pointer');
         nodesRef.current=node;
-        node.call(d3.drag().on('start',function(e,d){if(!e.active)sim.alphaTarget(0.1).restart();d.fx=d.x;d.fy=d.y;}).on('drag',function(e,d){d.fx=e.x;d.fy=e.y;}).on('end',function(e,d){if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
+        node.call(d3.drag().on('start',function(e,d){userMoved=true;if(!e.active)sim.alphaTarget(0.1).restart();d.fx=d.x;d.fy=d.y;}).on('drag',function(e,d){d.fx=e.x;d.fy=e.y;}).on('end',function(e,d){if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
         node.on('click',function(e,d){e.stopPropagation();if(selectFileRef.current)selectFileRef.current(d.id);});
         node.on('dblclick',function(e,d){e.stopPropagation();if(activateFileRef&&activateFileRef.current)activateFileRef.current(d.id);});
         disposeActivation = installNodeActivation(node, {
             activate: d => activateFileRef.current?.(d.id),
+            select: d => selectFileRef.current?.(d.id),
             label: d => 'Open file: ' + d.id,
             eligible: d => !options.canActivate || options.canActivate(d.id),
         });
@@ -227,7 +229,7 @@ export function renderRepositoryGraph(options) {
         // Throttle hull updates for large graphs (every N ticks instead of every tick)
         var hullInterval=isLargeGraph?5:1;
         var tickCount=0;
-        sim.on('tick',function(){
+        function draw(){
             if(graphConfig.curvedLinks){
                 link.attr('d',function(d){var dx=d.target.x-d.source.x,dy=d.target.y-d.source.y,dr=Math.sqrt(dx*dx+dy*dy);return'M'+d.source.x+','+d.source.y+'A'+dr+','+dr+' 0 0,1 '+d.target.x+','+d.target.y;});
             }else{
@@ -236,6 +238,19 @@ export function renderRepositoryGraph(options) {
             node.attr('transform',function(d){return'translate('+d.x+','+d.y+')';});
             tickCount++;
             if(tickCount%hullInterval===0)updateHulls();
+        }
+        sim.on('tick',draw).on('end',function(){
+            // Attraction can still compress measured labels when alpha cools.
+            // Finish with bounded collision-only relaxation, preserving the
+            // force layout's neighborhoods and every node (no sampling).
+            var settle=d3.forceSimulation(nodes).stop().velocityDecay(0.2)
+                .force('collision',d3.forceCollide().radius(function(d){return d.labelCollisionRadius;}).iterations(8));
+            settle.tick(80);settle.stop();draw();updateHulls();
+            if(!userMoved&&nodes.length>300){
+                var b=container.node().getBBox(),pad=24;
+                var k=Math.min(1,(w-pad*2)/b.width,(h-pad*2)/b.height);
+                if(k>0){zoom.scaleExtent([Math.min(0.2,k),5]);svg.call(zoom.transform,d3.zoomIdentity.translate((w-b.width*k)/2-b.x*k,(h-b.height*k)/2-b.y*k).scale(k));}
+            }
         });
         node.selectAll('text').attr('opacity',graphConfig.showLabels?1:0);
         }catch(e){console.error('Force graph error:',e);svg.selectAll('*').remove();svg.append('text').attr('x',20).attr('y',30).attr('fill','var(--t3)').text('Graph rendering error: '+e.message);}
