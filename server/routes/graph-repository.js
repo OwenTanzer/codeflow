@@ -22,11 +22,15 @@ import { readJsonBody, BodyTooLargeError } from '../lib/http-body.js';
 import { createRequestAbortSignal, throwIfCancelled, RequestCancelledError } from '../lib/cancellation.js';
 import { isValidSessionId } from '../lib/session-id.js';
 import { adaptRepositoryAnalysis } from '../../src/adapters/repositoryGraphAdapter.js';
-import { normalizeContext, AnalysisContextError } from '../../src/graph-ir/githubContext.js';
+import { AnalysisContextError } from '../../src/graph-ir/githubContext.js';
 import { GRAPH_IR_SCHEMA_VERSION } from '../../src/graph-ir/graphIR.js';
 import { AdapterError, buildAdapterResult, AdapterResultError, sanitizeDiagnostic } from '../../src/graph-ir/adapterResult.js';
 import { buildCacheKey } from '../../src/graph-ir/cacheKey.js';
 import { sendCapacityResponse } from '../lib/concurrency-limiter.js';
+
+import { buildRequestContext, cacheKeyRequestIdentity } from '../lib/graph-request-context.js';
+// Preserve the original import surface for existing callers.
+export { buildRequestContext, cacheKeyRequestIdentity } from '../lib/graph-request-context.js';
 
 const ANALYZER = { name: 'codeflow-repository-adapter', version: '1.3.0' };
 
@@ -95,49 +99,6 @@ export const RATE_LIMIT_PATTERN = /rate limit/i;
 
 export { withTimeout, GraphAnalysisTimeoutError } from '../lib/request-work.js';
 import { withTimeout, GraphAnalysisTimeoutError } from '../lib/request-work.js';
-
-/**
- * Build the normalized AnalysisContext for this request from the original
- * (pre-resolution) request plus what analyzeGithubRepo actually resolved --
- * sourceOwner/sourceRepo only ever differ from the requested owner/repo for
- * a forked PR (see github-analyzer-bridge.js's resolveRef doc comment), and
- * normalizeContext only accepts them in pr mode.
- */
-export function buildRequestContext(request, resolved) {
-  const isPr = request.pr != null;
-  return normalizeContext({
-    owner: request.owner,
-    repo: request.repo,
-    mode: isPr ? 'pr' : request.ref ? 'branch' : 'repository',
-    ref: !isPr && request.ref ? request.ref : undefined,
-    prNumber: isPr ? request.pr : undefined,
-    resolvedSha: resolved.resolvedSha,
-    ...(isPr ? { sourceOwner: resolved.sourceOwner, sourceRepo: resolved.sourceRepo } : {}),
-  });
-}
-
-/**
- * Cache-key option fields that distinguish two requests which resolve to
- * the same commit but must not share a cached response — MOO-72 Commit 2.
- *
- * contextIdentityKey() (which buildCacheKey hashes) keys on
- * sourceOwner/sourceRepo@resolvedSha, deliberately omitting mode and ref:
- * that's the right rule for "is this the same source content", but it is
- * *not* sufficient for caching a whole response. A default-branch request
- * and an explicit `ref: 'main'` request can resolve to the identical SHA
- * while requiring different `graph.context` values (mode 'repository' vs
- * 'branch', ref null vs 'main') in what gets served back. Folding both into
- * the key keeps those entries distinct without changing the shared
- * contextIdentityKey contract every other consumer depends on.
- * @param {import('../../src/graph-ir/githubContext.js').AnalysisContext} context
- * @returns {{requestMode: string, requestRef?: string}}
- */
-export function cacheKeyRequestIdentity(context) {
-  return {
-    requestMode: context.mode,
-    ...(context.mode === 'branch' ? { requestRef: context.ref } : {}),
-  };
-}
 
 /** @param {{config: object, cache: import('../lib/graph-cache.js').GraphCache, metrics: import('../lib/metrics.js').Metrics, concurrencyLimiter: import('../lib/concurrency-limiter.js').ConcurrencyLimiter}} deps */
 export function createGraphRepositoryHandler({ config, cache, metrics, concurrencyLimiter }) {
