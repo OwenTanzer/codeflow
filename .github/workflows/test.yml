@@ -15,6 +15,9 @@ jobs:
   test:
     name: Build and test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -43,18 +46,8 @@ jobs:
       - name: Run test suite
         run: node --test tests/*.test.mjs
 
-      # MOO-72 Commit 7: structural end-to-end smoke tests, run against the
-      # real built app + real server process + real (public-repo-read-only)
-      # GitHub API calls -- "a clean environment can execute the full
-      # pipeline" is satisfied by these running here, on a fresh Actions
-      # runner, not just asserted locally. Uses the Actions-provided
-      # automatic token (no new secret to configure) -- sufficient for the
-      # public-repo reads both scripts make, including on a pull_request
-      # run from a fork. Deliberately does NOT run function-layer-smoke.mjs
-      # here -- that one is Playwright/browser-driven, needs a real GitHub
-      # PAT (not just API-read access) via a separate-terminal flow, and
-      # belongs to MOO-71's visual-smoke path, not this structural-smoke
-      # commit.
+      # Structural smoke uses the same read-only server credential as the
+      # browser acceptance below. The credential is never sent by the UI.
       - name: Run server smoke test
         run: node tests/server-smoke.mjs
         env:
@@ -64,3 +57,24 @@ jobs:
         run: node tests/e2e-construction-smoke.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Chromium for browser acceptance
+        run: npx playwright install --with-deps chromium
+
+      - name: Run dev and built browser acceptance
+        run: node scripts/browser-acceptance.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload browser acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-acceptance
+          include-hidden-files: true
+          path: |
+            .git/browser-acceptance/
+            .git/run2-browser.json
+            .git/run2-lane28-*.png
+            docs/img/smoke-*.png
+          retention-days: 7

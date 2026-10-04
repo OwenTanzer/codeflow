@@ -10,7 +10,7 @@ const appSource = readFileSync(new URL('index.html', root), 'utf8');
 const contract = JSON.parse(readFileSync(new URL('fixtures/startup-bridge-contract.json', import.meta.url)));
 
 test('actual entry registers the complete bridge with original identities and precedence', async () => {
-  const scripts = [...appSource.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
+  const scripts = [...appSource.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
   const entries = scripts.filter(m => /type="module"/.test(m[1]));
   assert.equal(entries.length, 1);
   const entry = entries[0];

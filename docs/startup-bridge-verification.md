@@ -2,6 +2,14 @@
 
 Related to #30, proposal 2 (startup only). Fresh isolated branch from main at **21e48a246210af76b302ef83f65a4645ad884e9b**, exactly the reviewed documentation baseline and merge of PR #35. Main advanced during publication when PR #36 merged. The single bridge commit was rebased onto **10ad01945a280bc7321419b527d2460e6fea4510**; the only conflict was the architecture-plan introduction, reconciled to retain both ownership updates. Root tests/build were rerun; no browser source changed in the rebase. Read README, architecture/next-steps and PR #35 before editing; this baseline contains no AGENTS.md, CLAUDE.md or `.agents/skills` instructions.
 
+## Follow-up repair and current acceptance
+
+After the request to continue reviewing and repairing, a separate commit adds a build-only Vite plugin that emits the analyzer module byte-for-byte, under a content-hashed asset name. The worker implementation, source markers, `import.meta.url` fetch, CDN/parser versions and fallbacks are unchanged. Both dev and built strict browser gates now pass all four modes, including a real worker `done` message, matching analysis output, termination and Blob URL revocation; no unexpected console/page errors. The complete local suite passes **793 tests**, and the build passes.
+
+A new bundler regression verifies the actual emitted asset matches the source bytes, the entry imports that asset, there is no bundled second analyzer copy, and its worker core defines `buildAnalysisData`. The CodeQL warning in the owned-HTML test parser is fixed with case-insensitive script-tag matching.
+
+The existing CI job now runs the browser suites using its read-only Actions token solely in the local server. No token is passed to browser-test child processes and no browser Authorization header is introduced. Live CI acceptance is pending at this checkpoint; the local environment still has no server credential. The historical extraction evidence below records the original blocker rather than rewriting it as a past success.
+
 ## Ownership and parity
 
 `index.html` retains its inline module entry immediately before `text/babel`. That entry imports `src/browser/startupBridge.js`, the sole owner of the existing imports and `Object.assign(window, analyzer, explicitHelpers)` registration. Import order, assignment order and module function/object identities are unchanged. Explicit helpers still overwrite analyzer names on any collision; pre-existing unrelated globals survive.
@@ -20,7 +28,7 @@ The replacement unit test parses the actual HTML entry, imports its named owner,
 
 The complete Babel application body is byte-identical to the base. App and both panels remain inline. The extracted bridge body is identical except for relative import paths. `src/analyzer.js`, parser provisioning, workers, clients, renderer implementations, local ingestion and PR Impact are unchanged. Local folder/ZIP completion **still lacks generation protection**; this PR makes no contrary claim.
 
-## Checks
+## Initial extraction checks (before the follow-up repair)
 
 Environment: Node 24.19.0 (within the declared engine range), Python 3.12 using `.venv-pyan3/bin/python`, pyan3 2.6.2, headless Chromium 153.0.8010.0 via Playwright on Linux. No physical iOS/Android device was used.
 
@@ -31,11 +39,11 @@ Environment: Node 24.19.0 (within the declared engine range), Python 3.12 using 
 - `ui-smoke.mjs`: passed against dev and built assets; local-folder graph, selection, alternate view, route restoration, browser Back/Forward and no unexpected console/page errors.
 - `full-labels-browser.mjs`: passed against dev assets; source-oracle cases and desktop/mobile-sized geometry, no acceptance failures.
 - `function-reflow-browser.mjs`: passed against dev assets, including resize/font updates and disposal (observers/listeners released, no later redraw/callback, zoom released); no console/page errors.
-- `startup-bridge-browser.mjs`: dev passed all four modes (real worker completion, controlled worker error, unavailable Worker, failed source extraction), 55-key/reference parity, exact analysis result parity and disposal. Built registration/startup and all fallback/disposal checks passed, but **the real-worker-completion gate failed**. This remains an acceptance blocker.
+- `startup-bridge-browser.mjs`: dev passed all four modes (real worker completion, controlled worker error, unavailable Worker, failed source extraction), 55-key/reference parity, exact analysis result parity and disposal. Built registration/startup and all fallback/disposal checks passed, but **the real-worker-completion gate failed**. This was the acceptance blocker addressed by the follow-up repair.
 
 The standalone worker probe now supplies the required `file` field in its function fixture and counts actual `done` messages. Merely constructing a Worker and then silently falling back no longer counts as worker success. These are test repairs, not production worker changes.
 
-## Built worker blocker: reproduced on untouched baseline
+## Historical built worker blocker: reproduced on untouched baseline
 
 A freshly built detached checkout of **21e48a246210af76b302ef83f65a4645ad884e9b** and this extraction emit byte-identical `assets/index-CJVJFSy5.js`:
 
@@ -45,7 +53,7 @@ SHA-256 f0408bb32199015c858325d25dc8e3904702f20d9fec18d6e854ad97dd8b6cee
 
 Both return the same worker error, **`buildAnalysisData is not defined`**. Both construct one worker, receive zero `done` messages, terminate it, revoke the Blob URL and produce the correct result through the existing main-thread fallback. `import.meta.url` fetches `/src/analyzer.js` in dev and the hashed bundle in built mode. Source inspection shows the minified bundle retains marker strings inside the worker bootstrap, but not the original executable core slice under its original names. The final post-rebase build retains this same bundle hash, so the browser evidence applies to byte-identical client assets. No worker or Vite repair was made to make this extraction pass.
 
-The stronger browser gate intentionally exits nonzero on this baseline defect. Unit-test/build success does not waive it.
+The stronger browser gate intentionally exits nonzero on the original baseline defect. Unit-test/build success does not waive it.
 
 ## Requests browser evidence boundary
 
@@ -80,4 +88,4 @@ LABEL_TEST_URL=http://127.0.0.1:5173/ node tests/full-labels-browser.mjs
 node tests/function-reflow-browser.mjs http://127.0.0.1:5173/
 ```
 
-Run startup/worker/UI checks again against built assets. Run the existing function-layer, interaction-repairs and integration-preview suites against a properly credentialed local server for the missing live acceptance. The strict built-worker check is expected to fail until a separately scoped worker repair is accepted. No public deployment was made. Rollback is one commit revert, with no data migration. No issue closure, panel extraction, merge or auto-merge is included.
+Run startup/worker/UI checks again against built assets. Run the existing function-layer, interaction-repairs and integration-preview suites against a properly credentialed local server for the missing live acceptance. The strict built-worker check now passes with the follow-up build repair; it still fails against the historical baseline. No public deployment was made. The bridge extraction and follow-up build/acceptance repair are separate revertible commits, with no data migration. No issue closure, panel extraction, merge or auto-merge is included.
