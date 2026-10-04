@@ -2,10 +2,10 @@
 //
 // The file-layer counterpart to server/routes/graph-repository.js: same
 // phase1 (network/subprocess, categorized failures) / phase2 (pure glue,
-// AdapterResult) structure, reusing that file's buildRequestContext/
-// withTimeout/GraphAnalysisTimeoutError/RATE_LIMIT_PATTERN directly rather
-// than duplicating them. Fetches only the requested file/package's blobs
-// (never the whole repository, unlike analyzeGithubRepo) via
+// AdapterResult) structure, sharing identity via graph-request-context.js
+// and withTimeout/GraphAnalysisTimeoutError/RATE_LIMIT_PATTERN via the
+// repository route rather than duplicating them. Fetches only the requested
+// file/package's blobs (never the whole repository, unlike analyzeGithubRepo) via
 // github-analyzer-bridge.js's resolveRef/resolveCommitSha/
 // resolvePathEntry/fetchSubtreeFiles/fetchAllContents -- resolvePathEntry
 // walks non-recursively to the requested path itself rather than ever
@@ -31,7 +31,8 @@ import {
   fetchAllContents,
   GithubFetchError,
 } from '../lib/github-analyzer-bridge.js';
-import { buildRequestContext, withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN, cacheKeyRequestIdentity } from './graph-repository.js';
+import { buildRequestContext, cacheKeyRequestIdentity } from '../lib/graph-request-context.js';
+import { withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN } from './graph-repository.js';
 import { stagePythonFiles, runPyan3 } from '../lib/pyan3Adapter.js';
 import { parseDotGraph, extractPyanNodes, extractPyanEdges } from '../lib/dotGraph.js';
 import { indexPythonSymbols } from '../lib/pythonSymbolIndex.js';

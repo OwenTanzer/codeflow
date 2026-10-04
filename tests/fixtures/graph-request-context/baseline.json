@@ -1,0 +1,448 @@
+[
+  {
+    "name": "omitted ref",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project"
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project"
+    },
+    "context": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "mode": "repository",
+      "ref": null,
+      "resolvedSha": "abcdef0123456789abcdef0123456789abcdef01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project",
+      "baseSha": null,
+      "headSha": null,
+      "prNumber": null
+    },
+    "identity": {
+      "requestMode": "repository"
+    },
+    "keys": {
+      "repository": "graphir:v1:0c9600d71406cdb5",
+      "repositoryDegraded": "graphir:v1:8801163c21fbfe08",
+      "fileAuto": "graphir:v1:d75aa62c28d56e06",
+      "fileDepth2": "graphir:v1:3788053289cd6d91",
+      "fileInflight": "graphir:v1:3a9e3d7f61d8f773",
+      "function": "graphir:v1:65266834966cf20f"
+    }
+  },
+  {
+    "name": "explicit main",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "ref": "main"
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project"
+    },
+    "context": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "mode": "branch",
+      "ref": "main",
+      "resolvedSha": "abcdef0123456789abcdef0123456789abcdef01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project",
+      "baseSha": null,
+      "headSha": null,
+      "prNumber": null
+    },
+    "identity": {
+      "requestMode": "branch",
+      "requestRef": "main"
+    },
+    "keys": {
+      "repository": "graphir:v1:8b2726d13997f742",
+      "repositoryDegraded": "graphir:v1:e89d6458d9e87073",
+      "fileAuto": "graphir:v1:976bdf7695c79aed",
+      "fileDepth2": "graphir:v1:6f9abf33ab6a951e",
+      "fileInflight": "graphir:v1:4fa3b868ca975a0c",
+      "function": "graphir:v1:6d65b63cd0702038"
+    }
+  },
+  {
+    "name": "explicit release/topic",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "ref": "release/topic"
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project"
+    },
+    "context": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "mode": "branch",
+      "ref": "release/topic",
+      "resolvedSha": "abcdef0123456789abcdef0123456789abcdef01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project",
+      "baseSha": null,
+      "headSha": null,
+      "prNumber": null
+    },
+    "identity": {
+      "requestMode": "branch",
+      "requestRef": "release/topic"
+    },
+    "keys": {
+      "repository": "graphir:v1:75a8e80a7810373c",
+      "repositoryDegraded": "graphir:v1:11aa3ec4e31f6bff",
+      "fileAuto": "graphir:v1:0ffa42e77deb1e0d",
+      "fileDepth2": "graphir:v1:195ecd4c0543a748",
+      "fileInflight": "graphir:v1:bbfc78558962fd22",
+      "function": "graphir:v1:184d5daea6e5b35e"
+    }
+  },
+  {
+    "name": "explicit v1.2.3",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "ref": "v1.2.3"
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project"
+    },
+    "context": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "mode": "branch",
+      "ref": "v1.2.3",
+      "resolvedSha": "abcdef0123456789abcdef0123456789abcdef01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project",
+      "baseSha": null,
+      "headSha": null,
+      "prNumber": null
+    },
+    "identity": {
+      "requestMode": "branch",
+      "requestRef": "v1.2.3"
+    },
+    "keys": {
+      "repository": "graphir:v1:d2034c522e053753",
+      "repositoryDegraded": "graphir:v1:7b292a2e6c5f124e",
+      "fileAuto": "graphir:v1:f11513e6b42cf200",
+      "fileDepth2": "graphir:v1:699fd63eaf876d67",
+      "fileInflight": "graphir:v1:23fff61b421b08fd",
+      "function": "graphir:v1:3ef66681d245a671"
+    }
+  },
+  {
+    "name": "explicit ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "ref": "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project"
+    },
+    "context": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "mode": "branch",
+      "ref": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "resolvedSha": "abcdef0123456789abcdef0123456789abcdef01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project",
+      "baseSha": null,
+      "headSha": null,
+      "prNumber": null
+    },
+    "identity": {
+      "requestMode": "branch",
+      "requestRef": "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+    },
+    "keys": {
+      "repository": "graphir:v1:b2109dde6f8ce87d",
+      "repositoryDegraded": "graphir:v1:5267fbc3e1e7a7bc",
+      "fileAuto": "graphir:v1:033809ab37ed279e",
+      "fileDepth2": "graphir:v1:2ec38d7ea6c0fcd1",
+      "fileInflight": "graphir:v1:c566dfdce4c2c267",
+      "function": "graphir:v1:272555232447ed5b"
+    }
+  },
+  {
+    "name": "same-repository PR",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "pr": 7
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project"
+    },
+    "context": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "mode": "pr",
+      "ref": null,
+      "resolvedSha": "abcdef0123456789abcdef0123456789abcdef01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project",
+      "baseSha": null,
+      "headSha": null,
+      "prNumber": 7
+    },
+    "identity": {
+      "requestMode": "pr"
+    },
+    "keys": {
+      "repository": "graphir:v1:1e19968b94eb3618",
+      "repositoryDegraded": "graphir:v1:447a948e489c57e9",
+      "fileAuto": "graphir:v1:e1f257e05e571585",
+      "fileDepth2": "graphir:v1:10abb43b9442db34",
+      "fileInflight": "graphir:v1:987042b9b6efbce2",
+      "function": "graphir:v1:bc279c9d1c8cde0c"
+    }
+  },
+  {
+    "name": "forked PR",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "pr": 7
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Contributor",
+      "sourceRepo": "RenamedFork"
+    },
+    "context": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "mode": "pr",
+      "ref": null,
+      "resolvedSha": "abcdef0123456789abcdef0123456789abcdef01",
+      "sourceOwner": "Contributor",
+      "sourceRepo": "RenamedFork",
+      "baseSha": null,
+      "headSha": null,
+      "prNumber": 7
+    },
+    "identity": {
+      "requestMode": "pr"
+    },
+    "keys": {
+      "repository": "graphir:v1:3a8501e120f312cb",
+      "repositoryDegraded": "graphir:v1:e076cf563d8ac0fe",
+      "fileAuto": "graphir:v1:cc2407a2b53c5718",
+      "fileDepth2": "graphir:v1:036f945b94c6b3fb",
+      "fileInflight": "graphir:v1:5bae76c9a0b32d3d",
+      "function": "graphir:v1:d02fba95a4b6db9c"
+    }
+  },
+  {
+    "name": "another forked PR at same SHA",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "pr": 8
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Contributor",
+      "sourceRepo": "RenamedFork"
+    },
+    "context": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "mode": "pr",
+      "ref": null,
+      "resolvedSha": "abcdef0123456789abcdef0123456789abcdef01",
+      "sourceOwner": "Contributor",
+      "sourceRepo": "RenamedFork",
+      "baseSha": null,
+      "headSha": null,
+      "prNumber": 8
+    },
+    "identity": {
+      "requestMode": "pr"
+    },
+    "keys": {
+      "repository": "graphir:v1:195c701eb6229594",
+      "repositoryDegraded": "graphir:v1:5d692a4b6d64209d",
+      "fileAuto": "graphir:v1:deba4ed6134fb71d",
+      "fileDepth2": "graphir:v1:96f452b5dbfa9acc",
+      "fileInflight": "graphir:v1:a01405844adefb0a",
+      "function": "graphir:v1:7a79538f1d1156df"
+    }
+  },
+  {
+    "name": "invalid owner",
+    "request": {
+      "owner": "bad/name",
+      "repo": "Project"
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project"
+    },
+    "error": {
+      "name": "AnalysisContextError",
+      "message": "Invalid analysis context:\n - owner is required and must be a valid GitHub owner name",
+      "errors": [
+        "owner is required and must be a valid GitHub owner name"
+      ]
+    }
+  },
+  {
+    "name": "missing repo",
+    "request": {
+      "owner": "Upstream"
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project"
+    },
+    "error": {
+      "name": "AnalysisContextError",
+      "message": "Invalid analysis context:\n - repo is required and must be a valid GitHub repository name",
+      "errors": [
+        "repo is required and must be a valid GitHub repository name"
+      ]
+    }
+  },
+  {
+    "name": "invalid resolved SHA",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project"
+    },
+    "resolved": {
+      "resolvedSha": "main",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project"
+    },
+    "error": {
+      "name": "AnalysisContextError",
+      "message": "Invalid analysis context:\n - resolvedSha is required and must already be a resolved commit SHA (this module does not resolve refs)",
+      "errors": [
+        "resolvedSha is required and must already be a resolved commit SHA (this module does not resolve refs)"
+      ]
+    }
+  },
+  {
+    "name": "invalid ref type",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "ref": 123
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project"
+    },
+    "error": {
+      "name": "AnalysisContextError",
+      "message": "Invalid analysis context:\n - ref is required in branch mode",
+      "errors": [
+        "ref is required in branch mode"
+      ]
+    }
+  },
+  {
+    "name": "invalid PR zero",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "pr": 0
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project"
+    },
+    "error": {
+      "name": "AnalysisContextError",
+      "message": "Invalid analysis context:\n - prNumber is required and must be a positive integer in pr mode",
+      "errors": [
+        "prNumber is required and must be a positive integer in pr mode"
+      ]
+    }
+  },
+  {
+    "name": "invalid PR string",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "pr": "7"
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Upstream",
+      "sourceRepo": "Project"
+    },
+    "error": {
+      "name": "AnalysisContextError",
+      "message": "Invalid analysis context:\n - prNumber is required and must be a positive integer in pr mode",
+      "errors": [
+        "prNumber is required and must be a positive integer in pr mode"
+      ]
+    }
+  },
+  {
+    "name": "partial fork",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "pr": 7
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "Contributor"
+    },
+    "error": {
+      "name": "AnalysisContextError",
+      "message": "Invalid analysis context:\n - sourceOwner and sourceRepo must be provided together, or neither (a partial override would construct a nonexistent hybrid repository identity)",
+      "errors": [
+        "sourceOwner and sourceRepo must be provided together, or neither (a partial override would construct a nonexistent hybrid repository identity)"
+      ]
+    }
+  },
+  {
+    "name": "invalid fork",
+    "request": {
+      "owner": "Upstream",
+      "repo": "Project",
+      "pr": 7
+    },
+    "resolved": {
+      "resolvedSha": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "sourceOwner": "bad/name",
+      "sourceRepo": "Project"
+    },
+    "error": {
+      "name": "AnalysisContextError",
+      "message": "Invalid analysis context:\n - sourceOwner must be a valid GitHub owner name when present",
+      "errors": [
+        "sourceOwner must be a valid GitHub owner name when present"
+      ]
+    }
+  }
+]

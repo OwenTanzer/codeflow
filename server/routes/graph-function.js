@@ -33,7 +33,8 @@ import {
   fetchAllContents,
   GithubFetchError,
 } from '../lib/github-analyzer-bridge.js';
-import { buildRequestContext, withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN, cacheKeyRequestIdentity } from './graph-repository.js';
+import { buildRequestContext, cacheKeyRequestIdentity } from '../lib/graph-request-context.js';
+import { withTimeout, GraphAnalysisTimeoutError, RATE_LIMIT_PATTERN } from './graph-repository.js';
 import { assertRevisionStillExpected } from './graph-file.js';
 import { indexPythonSymbols } from '../lib/pythonSymbolIndex.js';
 import { lineColumnToCodeUnitOffset } from '../../src/graph-ir/codeUnitOffset.js';
