@@ -243,6 +243,16 @@ for(const spec of specs){
         if(width===390){
           await page.getByRole('button',{name:'Open insights panel',exact:true}).click();
           await page.locator('.right-panel.mobile-visible').waitFor();
+          // The class makes the panel visible at the start of its CSS slide.
+          // Measure complete text only once that real transition is finished
+          // and the 390px panel is actually seated inside the viewport.
+          await page.waitForFunction(()=>{
+            const panel=document.querySelector('.right-panel.mobile-visible');
+            if(!panel)return false;
+            const bounds=panel.getBoundingClientRect();
+            return Math.abs(bounds.left)<.5&&Math.abs(bounds.right-innerWidth)<.5&&
+              panel.getAnimations().every(animation=>!animation.pending&&animation.playState!=='running');
+          });
           const mobileHeader=page.locator('.right-panel .mobile-panel-header');
           const mobile=await mobileHeader.evaluate(header=>{
             const rect=r=>({left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height});
